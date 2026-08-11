@@ -5,7 +5,7 @@ import os
 
 from itertools import product
 from pyomo.environ import *
-from pyomo.opt import SolverFactory
+from pyomo.opt import SolverFactory, TerminationCondition
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -483,7 +483,10 @@ class HeatNetworkModel(ConcreteModel):
 
         
     def model_run(self, config: dict):
-        """Run the model to solve the optimization problem. The solver can be defined here.
+        """Solve the optimization model with an explicitly supported solver.
+
+        HiGHS is the portable default.  A requested solver must be available and
+        return ``optimal`` before its variable values are loaded into this model.
         """
 
         if self.logging:
@@ -491,25 +494,103 @@ class HeatNetworkModel(ConcreteModel):
             self.logger.info("Start: model solve")
             self.logger.info("#############################")
 
+        raw_solver_name = config.get('solver')
+        if raw_solver_name is None or (
+            isinstance(raw_solver_name, str) and not raw_solver_name.strip()
+        ):
+            solver_name = 'highs'
+        elif isinstance(raw_solver_name, str):
+            solver_name = raw_solver_name.strip().lower()
+        else:
+            raise ValueError("solver 必须是 'highs' 或 'gurobi'")
 
-        solver = config['solver']
-        mip_gap = config['mip_gap']
-        if solver is None:
-            print("Warning: No solver defined, using default 'appsi_highs'")
-            solver = 'appsi_highs'
+        if solver_name not in {'highs', 'gurobi'}:
+            raise ValueError(
+                f"不支持的 solver={raw_solver_name!r}；只能配置 'highs' 或 'gurobi'，"
+                "不要填写内部名称 'appsi_highs'"
+            )
 
+        raw_mip_gap = config.get('mip_gap', 0.015)
+        if isinstance(raw_mip_gap, bool):
+            raise ValueError("mip_gap 必须是 [0, 1) 内的有限数值")
+        try:
+            mip_gap = float(raw_mip_gap)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("mip_gap 必须是 [0, 1) 内的有限数值") from exc
+        if not np.isfinite(mip_gap) or not 0 <= mip_gap < 1:
+            raise ValueError("mip_gap 必须是 [0, 1) 内的有限数值")
+
+        solver_threads = config.get('solver_threads', 1)
+        if (
+            isinstance(solver_threads, bool)
+            or not isinstance(solver_threads, (int, np.integer))
+            or solver_threads != 1
+        ):
+            raise ValueError("solver_threads 必须为 1，以保持可复现的单线程求解")
+
+        raw_time_limit = config.get('solver_time_limit_seconds', 60)
+        if isinstance(raw_time_limit, bool):
+            raise ValueError("solver_time_limit_seconds 必须是大于 0 的有限数值")
+        try:
+            time_limit = float(raw_time_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("solver_time_limit_seconds 必须是大于 0 的有限数值") from exc
+        if not np.isfinite(time_limit) or time_limit <= 0:
+            raise ValueError("solver_time_limit_seconds 必须是大于 0 的有限数值")
+
+        solver_random_seed = config.get('solver_random_seed', 202611)
+        if (
+            isinstance(solver_random_seed, bool)
+            or not isinstance(solver_random_seed, (int, np.integer))
+            or not 0 <= solver_random_seed <= 2_147_483_647
+        ):
+            raise ValueError("solver_random_seed 必须是 0 到 2147483647 的整数")
+
+        solver_tee = config.get('solver_tee', False)
+        if not isinstance(solver_tee, bool):
+            raise ValueError("solver_tee 必须是布尔值 true 或 false")
+
+        if solver_name == 'highs':
+            factory_name = 'appsi_highs'
+            solver_options = {
+                'mip_rel_gap': mip_gap,
+                'threads': int(solver_threads),
+                'time_limit': time_limit,
+                'random_seed': int(solver_random_seed),
+            }
+        else:
+            factory_name = 'gurobi'
+            solver_options = {
+                'MIPGap': mip_gap,
+                'Threads': int(solver_threads),
+                'TimeLimit': time_limit,
+                'Seed': int(solver_random_seed),
+            }
+
+        solver = SolverFactory(factory_name)
+        if not solver.available(exception_flag=False):
+            raise RuntimeError(
+                f"请求的求解器 {solver_name!r} 在当前环境中不可用；"
+                "不会自动切换到其他求解器"
+            )
 
         start = time.time()
-        print("Start: solve model")
-        if solver == 'gurobi':
-            solver = SolverFactory('gurobi')
-            results = solver.solve(self, tee=True, options={'MIPGap': mip_gap, 'Threads':os.cpu_count()})
-        elif solver == 'highs':
-            solver = SolverFactory('appsi_highs')
-            results = solver.solve(self, tee=True, options={'mip_rel_gap': mip_gap, 'threads':os.cpu_count()})
-        else:
-            print("Error: Solver not recognized")
-            return None
+        print(f"Start: solve model with {solver_name}")
+        results = solver.solve(
+            self,
+            tee=solver_tee,
+            load_solutions=False,
+            options=solver_options,
+        )
+
+        termination_condition = results.solver.termination_condition
+        if termination_condition != TerminationCondition.optimal:
+            raise RuntimeError(
+                "求解未达到 optimal，变量未加载且不会导出结果："
+                f"solver={solver_name}, termination_condition={termination_condition}"
+            )
+
+        self.solutions.load_from(results)
 
         print("Done: solve model")
         print("Time: ", time.time() - start)

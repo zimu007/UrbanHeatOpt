@@ -11,8 +11,12 @@ default_data: "default"
 parameter_dir: "general_parameters"
 building_data_dir: "building_energy_data"
 MCMC_dir: "MCMC_data"
-solver: 'gurobi'
+solver: 'highs'
 mip_gap: 0.015
+solver_threads: 1
+solver_time_limit_seconds: 60
+solver_random_seed: 202611
+solver_tee: false
 
 model_data:
   root_dir: "heat_network"

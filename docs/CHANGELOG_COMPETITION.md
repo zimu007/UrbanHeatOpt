@@ -1,5 +1,40 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-11 — SOLVER-01 确定可移植求解器
+
+### 更改内容
+
+- 将 `_config.yaml` 的默认求解器从 Gurobi 改为 `highs`，固定 `solver_threads: 1`、`solver_time_limit_seconds: 60`、`solver_random_seed: 202611` 和 `solver_tee: false`；保留原 `mip_gap: 0.015`。
+- `model.py` 的外部配置只接受 `highs` 或 `gurobi`；`highs` 在内部映射到 Pyomo 的 `appsi_highs`，配置为空时也安全回退到 `highs`。
+- 在创建求解器前校验名称、MIP gap、线程数、时限、随机种子和日志开关；求解前检查请求的求解器是否可用，不把不可用 Gurobi 静默替换成其他求解器。
+- 所有求解均使用 `load_solutions=False`；只有终止状态严格为 `optimal` 才将解加载到模型。不可行、时限或其他非最优状态会抛出中文错误，使后续导出不再继续。
+- 新增 `tests/test_solver_interface.py`，覆盖真实 HiGHS 最优/不可行模型、空值回退、内部名称误填、不可用 Gurobi、求解参数透传和非法配置门禁。
+
+### 更改目的
+
+消除默认依赖商业 Gurobi、线程数随机器变化和非最优解继续导出的风险，使现有 Windows Conda 环境可以用开源 CPU HiGHS 以固定参数重复调用，同时保留用户明确选择 Gurobi 的兼容入口。
+
+### 验证方法与结果
+
+```powershell
+conda run --no-capture-output -n urbanheatopt_env python scripts/check_environment.py
+conda run --no-capture-output -n urbanheatopt_env python -m pytest -q tests/test_solver_interface.py
+conda run --no-capture-output -n urbanheatopt_env python -m pytest -q
+git diff --check
+```
+
+- 修改前专项测试复现为 14 项失败、1 项通过，覆盖默认 Gurobi、错误空值回退、缺少可用性检查、CPU 数线程和不可行解加载等旧行为。
+- 修改后 15 项求解器接口测试全部通过：真实 HiGHS 一变量模型返回 `optimal` 且值为 1；不可行模型不加载变量；不可用 Gurobi 不进入 `solve()`。
+- HiGHS 收到固定的 `mip_rel_gap`、单线程、60 秒时限和随机种子，并且显式延迟解加载。
+- 完整测试套件共 48 项通过；环境检查继续确认 APPSI HiGHS 可用并返回 `optimal`。
+
+### 已知风险与边界
+
+- 本机没有可用 Gurobi，因此只验证了其显式选择、可用性门禁和不静默回退；没有执行真实 Gurobi 求解。
+- 本节点只验证求解器接口和一变量最优/不可行模型，尚未建立最小合成案例，也未运行完整 UrbanHeatOpt 成本模型、CLI 或结果导出。
+- `time_limit` 等非 `optimal` 状态按当前 P0 安全口径一律失败，即使求解器可能已有 incumbent 也不加载或导出。
+- 标准 `case_config.yaml` 的嵌套求解器配置将在后续完整适配器/CLI 中映射到原项目平面 `_config.yaml`；本节点没有越级实现该适配。
+
 ## 2026-08-11 — CONTRACT-01 统一负荷单位与时间输入输出
 
 ### 更改内容

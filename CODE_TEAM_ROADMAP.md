@@ -114,7 +114,8 @@ flowchart LR
   - 完成记录（2026-08-11）：新增 Asia/Shanghai 整点连续时间校验和稳定 `timestamp → hour=1...N` 双射；拒绝 0 起点、缺号、重复、倒序、浮点 hour、错误时区、非整点和跨建筑覆盖不一致。
 - [ ] **增加输入校验器**：在聚类和求解前检查文件、字段、单位、ID、时间、CRS、空值和非负性，错误时立即停止并给出可读提示。
 - [ ] **建立最小合成样例**：3～6 栋建筑、24～48 小时、1 个热源、可选 1 个储热设备；所有输入均可提交到 Git。
-- [ ] **确定可移植求解器**：当前环境已安装 `urbanheatopt_env`，`appsi_highs` 可用；配置中应写 `solver: highs`。`model.py` 只识别 `highs` 或 `gurobi`，不要在 YAML 中写 `appsi_highs`。
+- [x] **确定可移植求解器**：当前环境已安装 `urbanheatopt_env`，`appsi_highs` 可用；配置中应写 `solver: highs`。`model.py` 只识别 `highs` 或 `gurobi`，不要在 YAML 中写 `appsi_highs`。
+  - 完成记录（2026-08-11）：默认配置改为 `highs`，固定单线程、60 秒时限和随机种子；`model.py` 在求解前校验配置与可用性，显式映射内部 `appsi_highs`，只在终止状态为 `optimal` 时加载变量。非法名称、不可用 Gurobi 和不可行模型均在导出前失败，15 项求解器接口测试通过。
 - [ ] **添加自动测试**：至少覆盖读取、单位换算、建筑聚类、负荷守恒和最小模型求解。
 
 ### 3.2 P1：当前代码中的高风险逻辑
@@ -187,7 +188,8 @@ UrbanHeatOpt/
 
 - [x] 记录 Python 和主要依赖版本。
   - 完成记录（2026-08-11）：新增 `scripts/check_environment.py` 和 `docs/ENVIRONMENT_REPORT.md`；确认现有 `urbanheatopt_env` 的固定版本、conda-forge CPU PyArrow、带时区 Parquet 往返及 APPSI HiGHS 最小求解均通过。全新环境仅完成 dry-run，尚未实际重建。
-- [ ] 将默认求解器设为 `highs`，同时保留可选 Gurobi 配置。
+- [x] 将默认求解器设为 `highs`，同时保留可选 Gurobi 配置。
+  - 完成记录（2026-08-11）：`_config.yaml` 默认使用 `highs`；保留显式 `gurobi` 选择，但不可用时可读失败且不静默回退。HiGHS 一变量最优解、不可行门禁和参数传递测试通过；完整案例求解仍待最小合成案例任务。
 - [ ] 建立 `python scripts/run_case.py --case minimal --scenario smoke` 入口，避免把 Notebook 当作唯一入口。
 - [ ] 最小案例完整执行：读取 → 聚类 → 管网 → 优化 → 导出。
 - [ ] 输出求解状态、目标值、未供热量、负荷平衡误差和运行时间。
