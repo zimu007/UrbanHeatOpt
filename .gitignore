@@ -1,18 +1,34 @@
-*.csv
-*.shp
-*.geojson
+# Python、测试和 Notebook 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
 
-*.xlsx
+# 本地环境与编辑器状态
+.env
+.venv/
+.vscode/
+.idea/
 
-*.pyc
-*.osm
-
-
+# 运行日志和派生结果（均可由输入与配置重建）
+/logs/
+/results/
+**/output/
+**/expost/
+**/plots/
 *.log
 *.log~1
 
+# 正式案例的原始数据和临时工作区
+# 小型可分发样例必须放在 tests/fixtures/，不得放入这些目录。
+/IN_DATA/
+/cases/**/raw/
+/cases/**/work/
+/cases/**/generated/
 
-
-# include the default files
-!default/*
-!docs/*
+# tests/fixtures/ 下的 CSV、GeoJSON、XLSX 和 Parquet 不按扩展名忽略，
+# 以便将合成输入、数据字典和校验基准纳入版本管理。
+!tests/fixtures/**
+!cases/**/README.md

@@ -1,11 +1,33 @@
-# .gitattributes defines standard line endings for files in this repository
+# 默认自动识别文本，并统一仓库文本文件为 LF。
+* text=auto eol=lf
 
-# Auto-detect binaries (should not be modified)
-* text=auto
-*.xlsx binary
+# Windows 入口脚本保留 CRLF；其余显式文本格式使用 LF。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.csv text eol=lf
+*.geojson text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.rst text eol=lf
+*.sh text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# 表格、列式数据、文档、图片及 GIS 伴随文件必须按二进制处理。
 *.xls binary
-
-# By default, have all text files with LF line-endings
-*.* text eol=lf
-
+*.xlsx binary
+*.parquet binary
+*.pdf binary
 *.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.shp binary
+*.shx binary
+*.dbf binary
+*.woff binary
+*.woff2 binary
+*.zip binary

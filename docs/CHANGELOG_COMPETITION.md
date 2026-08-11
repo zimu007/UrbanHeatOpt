@@ -1,5 +1,43 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-11 — P0-02 修正数据文件版本管理规则
+
+### 更改内容
+
+- 将 `.gitignore` 从按 CSV、GeoJSON、XLSX 等扩展名全局排除，改为按正式案例原始数据目录、临时工作区、运行结果、日志和缓存目录排除。
+- 明确允许 `tests/fixtures/` 中的小型 CSV、GeoJSON、XLSX、Parquet、数据字典和校验基准进入版本管理。
+- 调整 `.gitattributes` 的规则顺序和类型声明，统一文本换行，并将 XLS/XLSX、Parquet、PDF、图片和 GIS 伴随文件明确作为二进制文件处理。
+- 勾选路线图中的“重写数据忽略规则”P0，并记录验收范围。
+
+### 更改目的
+
+使后续合成案例、接口样例和校验结果可被 Git 追踪，同时继续阻止正式原始数据、临时文件和可重建结果误入仓库；避免 Git 的文本换行转换损坏二进制输入或文档。
+
+### 验证方法与结果
+
+```powershell
+git check-ignore -v --no-index tests/fixtures/minimal_case/sample.csv
+git check-ignore -v --no-index tests/fixtures/minimal_case/buildings.geojson
+git check-ignore -v --no-index tests/fixtures/minimal_case/qa.xlsx
+git check-ignore -v --no-index tests/fixtures/minimal_case/loads.parquet
+git check-ignore -v --no-index cases/guanggu_software_park/raw/private.csv
+git check-ignore -v --no-index results/minimal/smoke/run_summary.json
+git check-attr -a -- tests/fixtures/minimal_case/qa.xlsx tests/fixtures/minimal_case/loads.parquet tests/fixtures/minimal_case/sample.csv
+git diff --check
+```
+
+- 四类 fixture 路径均未被忽略，可正常纳入版本管理。
+- 正式案例 `raw` 路径和根目录 `results` 路径仍被对应目录规则忽略。
+- XLSX、Parquet 的 `text` 属性为 `unset` 且 `binary` 为 `set`；CSV 为文本且使用 LF。
+- 修改前后 `default/` 中八个既有 XLSX 的 SHA-256 保持一致；未改动任何输入文件内容。
+- `git diff --check` 通过。
+
+### 已知风险与边界
+
+- Git 无法仅凭文件扩展名判断“真实数据”或“小型样例”；团队必须继续将正式原始数据放在 `cases/**/raw/` 或仓库外受控目录，将可公开的合成数据放在 `tests/fixtures/`。
+- 本次没有重新规范化历史文件，也没有移动、删除或改写原作者文件；已有历史中的文本换行状态保持不变。
+- 仓库外的 `D:\\co_WH_heatOPT\\IN_DATA` 未读取、未修改，也不受本仓库忽略规则保护。
+
 ## 2026-08-10 — P0-01 建立可回溯版本管理基线
 
 ### 更改内容
