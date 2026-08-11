@@ -1,5 +1,37 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-11 — PREP-01 建立竞赛版轻量项目框架
+
+### 更改内容
+
+- 新增 `competition/adapters`、`competition/schemas`、`competition/configs`、`competition/pipelines` 和 `competition/reports` Python 包骨架，并说明各层职责。
+- 新增 `cases/guanggu_software_park`、`cases/wuhan_new_city`、`scripts`、`tests/fixtures/minimal_case` 等目录说明。
+- 在案例和测试目录中明确真实数据、敏感数据与合成测试数据的边界；要求合成值使用 `synthetic_test` 标记。
+- 在路线图“建议的开发目录”后记录骨架建立状态，并明确骨架不代表功能已经实现。
+
+### 更改目的
+
+先建立稳定且语义明确的竞赛层承载位置，使后续数据契约、校验器、适配器、管线、报告和测试可以小步开发并独立回退，同时避免大规模搬动上游 UrbanHeatOpt 代码。
+
+### 验证方法与结果
+
+```powershell
+git diff --check
+git diff --name-only HEAD
+Get-ChildItem competition,cases,scripts,tests -Recurse -File
+```
+
+- 新增 13 个非空文件，均位于计划允许的四个顶层目录。
+- 未移动、删除或修改原作者核心代码、默认模板、历史案例、文档构建目录、Notebook 或子模块。
+- 未创建校验、适配、求解等功能代码，未读取或复制任何真实输入数据。
+- `git diff --check` 通过。
+
+### 已知风险与边界
+
+- 当前目录仅为骨架；`scripts/` 中的公共命令和 `tests/fixtures/minimal_case/` 中的合成数据将在后续 P0 阶段实现。
+- `Fehring/`、`default/`、`docs/`、`docs_src/`、Notebook 和 `Conda-Activation-Scripts` 均保留原状；是否归档历史文件不属于本次任务。
+- 真实案例目录只含边界说明，真实数据仍未收到，也不得因为目录存在而勾选任何真实案例验收项。
+
 ## 2026-08-11 — P0-02 修正数据文件版本管理规则
 
 ### 更改内容

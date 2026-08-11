@@ -171,6 +171,8 @@ UrbanHeatOpt/
 └── CODE_TEAM_ROADMAP.md
 ```
 
+前期准备记录（2026-08-11）：已建立 `competition/` 五个竞赛层子包、两个真实案例边界目录、`scripts/`、`tests/fixtures/minimal_case/` 及职责说明。当前只包含轻量骨架和数据边界，不表示校验器、适配器、CLI 或最小案例已经实现；未移动或删除任何原作者目录。
+
 要求：原作者文件的功能修改应小步进行，并在 `CHANGELOG_COMPETITION.md` 中记录“修改原因、公式影响和测试证据”。
 
 ---
