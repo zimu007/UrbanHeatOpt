@@ -1,0 +1,602 @@
+contract_version: competition_input_v1
+status: unit_and_time_enforced_other_validation_pending
+case_config_schema: case_config.schema.json
+
+p0_execution_scope:
+  supported_technology_types:
+    - fixed_heat_source
+  fixed_heat_source_semantics: purchased_or_synthetic_heat_priced_at_useful_heat_output
+  rejected_features:
+    - waste_heat
+    - thermal_storage
+  rejection_code: FEATURE_NOT_IMPLEMENTED
+  contract_upgrade_required_to_enable: true
+
+canonical_units:
+  heating_power: kW
+  heating_energy: kWh
+  currency: CNY
+  area: m2
+  length: m
+  temperature: degC
+  carbon: kgCO2e
+  timestep: 1h
+
+canonical_time:
+  timezone: Asia/Shanghai
+  timestamp_meaning: interval_start
+  interval: start_inclusive_end_exclusive
+  frequency: 1h
+  legacy_hour_start: 1
+  random_seed: 202611
+
+canonical_crs:
+  input: EPSG:4326
+  projected: EPSG:32650
+  distance_and_area_only_in_projected_crs: true
+  geojson_rfc7946_policy: case_config_input_crs_is_the_explicit_EPSG4326_declaration
+  legacy_geojson_crs_member_if_present_must_match: EPSG:4326
+
+id_policy:
+  encoding: UTF-8
+  type: string
+  case_sensitive: true
+  trim_or_coerce_automatically: false
+  require_no_leading_or_trailing_whitespace: true
+  require_nonempty: true
+
+numeric_policy:
+  allow_nan: false
+  allow_positive_infinity: false
+  allow_negative_infinity: false
+  infer_units_from_magnitude: false
+  enforcement_boundary: input_loader_before_json_schema_and_dataframe_validation
+  note: JSON Schema alone does not reject non-standard Python NaN or Infinity values.
+
+technology_support_status:
+  contract_registered_types:
+    - air_source_heat_pump
+    - water_source_heat_pump
+    - ground_source_heat_pump
+    - waste_heat_heat_pump
+    - electric_boiler
+    - gas_boiler
+    - fixed_heat_source
+    - thermal_storage
+  p0_smoke_target:
+    - fixed_heat_source
+  contract_executable_types:
+    - fixed_heat_source
+  current_pipeline_implementation_status: pending_adapter_and_model_nodes
+  note: Contract support defines the P0 target interface; it does not claim the current code pipeline already implements it.
+  execution_rule: An enabled technology must be in p0_execution_scope.supported_technology_types; run_case must also verify its implementation registry before execution.
+
+files:
+  buildings:
+    path: buildings.geojson
+    format: GeoJSON
+    required: true
+    geometry_types:
+      - Polygon
+      - MultiPolygon
+    required_columns:
+      building_id:
+        type: string
+        nullable: false
+        unique: true
+        nonempty_after_trim: true
+      use_type:
+        type: string
+        nullable: false
+        nonempty_after_trim: true
+      heated_area_m2:
+        type: float
+        nullable: false
+        exclusive_minimum: 0
+        unit: m2
+      archetype_id:
+        type: string
+        nullable: false
+        nonempty_after_trim: true
+    allow_extra_columns: true
+    extra_columns_policy: documented_traceability_only
+
+  building_hourly_loads:
+    path: building_hourly_loads.parquet
+    format: Parquet
+    required: true
+    canonical_sort:
+      - timestamp
+      - building_id
+    primary_key:
+      - timestamp
+      - building_id
+    required_columns:
+      timestamp:
+        type: datetime64_tz
+        nullable: false
+        timezone: Asia/Shanghai
+        frequency: 1h
+        meaning: interval_start
+      building_id:
+        type: string
+        nullable: false
+        nonempty_after_trim: true
+        foreign_key: buildings.building_id
+      heating_kW:
+        type: float64
+        nullable: false
+        finite: true
+        minimum: 0
+        unit: kW
+      dhw_included:
+        type: boolean
+        nullable: false
+        constant_within_case: true
+      data_version:
+        type: string
+        nullable: false
+        nonempty_after_trim: true
+        constant_within_case: true
+    optional_columns:
+      cooling_kW:
+        type: float64
+        nullable: false
+        finite: true
+        minimum: 0
+        unit: kW
+      quality_flag:
+        type: string
+        allowed:
+          - measured
+          - simulated
+          - scaled
+          - estimated
+    allow_extra_columns: true
+    extra_columns_policy: documented_and_ignored_by_p0
+
+  technologies:
+    path: technologies.csv
+    format: CSV_UTF8
+    required: true
+    primary_key:
+      - technology_id
+    required_columns:
+      technology_id:
+        type: string
+        nullable: false
+        unique: true
+        nonempty_after_trim: true
+      technology_type:
+        type: string
+        allowed:
+          - air_source_heat_pump
+          - water_source_heat_pump
+          - ground_source_heat_pump
+          - waste_heat_heat_pump
+          - electric_boiler
+          - gas_boiler
+          - fixed_heat_source
+          - thermal_storage
+      applicable_scope:
+        type: string
+        allowed:
+          - local
+          - central
+          - both
+      energy_carrier:
+        type: string
+        allowed:
+          - electricity
+          - gas
+          - waste_heat
+          - synthetic_heat
+          - none
+      cop:
+        type: float
+        nullable: true
+        finite: true
+        exclusive_minimum: 0
+      efficiency:
+        type: float
+        nullable: true
+        finite: true
+        exclusive_minimum: 0
+        maximum: 1
+      capacity_min_kW:
+        type: float
+        nullable: false
+        finite: true
+        minimum: 0
+        unit: kW
+      capacity_max_kW:
+        type: float
+        nullable: false
+        finite: true
+        exclusive_minimum: 0
+        unit: kW
+      capex_CNY_per_kW:
+        type: float
+        nullable: false
+        finite: true
+        minimum: 0
+      fixed_om_CNY_per_kW_year:
+        type: float
+        nullable: false
+        finite: true
+        minimum: 0
+      variable_om_CNY_per_kWh_heat:
+        type: float
+        nullable: false
+        finite: true
+        minimum: 0
+      lifetime_years:
+        type: integer
+        nullable: false
+        minimum: 1
+      source:
+        type: string
+        nullable: false
+        nonempty_after_trim: true
+      assumption_flag:
+        type: string
+        allowed:
+          - measured
+          - manufacturer
+          - literature
+          - project_confirmed
+          - scenario_assumption
+          - synthetic_test
+    row_rules:
+      - capacity_max_kW_gte_capacity_min_kW
+      - enabled_heat_pump_requires_cop
+      - enabled_boiler_requires_efficiency
+      - enabled_fixed_heat_source_requires_energy_carrier_synthetic_heat
+      - enabled_fixed_heat_source_requires_cop_and_efficiency_null
+      - enabled_fixed_heat_source_variable_cost_is_per_kWh_useful_heat_output
+      - synthetic_case_requires_synthetic_test
+    allow_extra_columns: true
+    extra_columns_policy: documented_performance_or_storage_extension
+
+  roads_or_feasible_space:
+    path: roads_or_feasible_space.geojson
+    format: GeoJSON
+    required: true
+    geometry_by_mode:
+      roads:
+        - LineString
+        - MultiLineString
+      feasible_space:
+        - Polygon
+        - MultiPolygon
+    required_columns:
+      feature_id:
+        type: string
+        nullable: false
+        unique: true
+        nonempty_after_trim: true
+      spatial_role:
+        type: string
+        allowed:
+          - road
+          - allowed
+          - excluded
+    mode_rules:
+      roads: all_spatial_role_road
+      feasible_space: at_least_one_allowed_and_no_road_role
+
+  resource_anchors:
+    path: resource_anchors.geojson
+    format: GeoJSON
+    required: false
+    geometry_types:
+      - Point
+    required_columns:
+      resource_id:
+        type: string
+        nullable: false
+        unique: true
+        nonempty_after_trim: true
+      resource_type:
+        type: string
+        nullable: false
+        nonempty_after_trim: true
+      technology_id:
+        type: string
+        nullable: false
+        foreign_key: technologies.technology_id
+      source:
+        type: string
+        nullable: false
+        nonempty_after_trim: true
+      assumption_flag:
+        type: string
+        allowed:
+          - measured
+          - project_confirmed
+          - scenario_assumption
+          - synthetic_test
+
+  external_timeseries:
+    path: external_timeseries.parquet
+    format: Parquet
+    required: true
+    canonical_sort:
+      - timestamp
+    primary_key:
+      - timestamp
+    required_columns:
+      timestamp:
+        type: datetime64_tz
+        nullable: false
+        timezone: Asia/Shanghai
+        frequency: 1h
+        meaning: interval_start
+      data_version:
+        type: string
+        nullable: false
+        nonempty_after_trim: true
+        constant_within_case: true
+    conditional_columns:
+      outdoor_temperature_C:
+        required_for:
+          - air_source_heat_pump
+        type: float64
+        nullable: false
+        finite: true
+        unit: degC
+      electricity_price_CNY_per_kWh:
+        required_for_energy_carrier: electricity
+        type: float64
+        nullable: false
+        finite: true
+        minimum: 0
+      gas_price_CNY_per_kWh_LHV:
+        required_for_energy_carrier: gas
+        type: float64
+        nullable: false
+        finite: true
+        minimum: 0
+      electricity_carbon_kgCO2e_per_kWh:
+        required_for_energy_carrier: electricity
+        type: float64
+        nullable: false
+        finite: true
+        minimum: 0
+      gas_carbon_kgCO2e_per_kWh_LHV:
+        required_for_energy_carrier: gas
+        type: float64
+        nullable: false
+        finite: true
+        minimum: 0
+      resource_availability:
+        naming_pattern: resource_available_kW__<resource_id>
+        required_for_each_resource_anchor: true
+        type: float64
+        nullable: false
+        finite: true
+        minimum: 0
+        unit: kW
+
+  case_config:
+    path: case_config.yaml
+    format: YAML_UTF8
+    required: true
+    json_schema: case_config.schema.json
+
+cross_file_rules:
+  - building_id_sets_equal_between_buildings_and_loads
+  - all_buildings_have_identical_timestamp_coverage
+  - load_and_external_timestamp_sets_equal
+  - load_data_version_equals_case_config_data_version
+  - external_data_version_equals_case_config_data_version
+  - dhw_included_equals_case_config_dhw_input_includes_dhw
+  - case_config_confirms_area_scaling_already_applied
+  - enabled_technology_ids_exist_in_technologies
+  - resource_anchor_technology_ids_are_enabled
+  - all_geospatial_crs_equal_case_config_input_crs
+  - all_geometry_is_nonempty_and_valid
+  - timestamps_equal_configured_half_open_time_range
+  - no_unknown_or_implicit_units
+  - no_source_file_is_modified_by_validation_or_adaptation
+  - p0_features_waste_heat_storage_and_resource_anchors_are_disabled
+  - resource_availability_column_name_is_resource_available_kW_double_underscore_resource_id
+
+intermediate_id_namespaces:
+  building_id:
+    source: buildings.building_id
+    scope: physical_buildings
+  cluster_id:
+    pattern: "^cluster_[1-9][0-9]*$"
+    scope: clustered_demand_nodes
+  site_id:
+    pattern: "^site_[1-9][0-9]*$"
+    scope: generated_heat_source_nodes
+  node_id:
+    definition: disjoint_union_of_cluster_id_and_site_id
+    unique_across_union: true
+  heat_unit_id:
+    pattern: "^unit_[1-9][0-9]*$"
+    scope: generation_units
+
+generated_intermediates:
+  frozen_scope_in_this_node:
+    - timestamp_hour_map.csv
+    - Building_TS.csv
+    - Heat_Demand.csv_hour_and_kW_only
+  other_entries_status: informational_legacy_inventory_pending_future_adapter_or_model_task
+  common_policy:
+    generated_only: true
+    source_inputs_are_read_only: true
+    metric_crs: EPSG:32650
+    numeric_values_must_be_finite: true
+    validation_failure_must_stop_before_model_creation: true
+  timestamp_hour_map.csv:
+    primary_key:
+      - timestamp
+      - hour
+    columns:
+      timestamp: timezone_aware_Asia_Shanghai_interval_start
+      hour: consecutive_integer_1_through_N
+    unique_columns:
+      - timestamp
+      - hour
+    relationship: strict_bijection
+  Building_TS.csv:
+    first_column: hour
+    dynamic_columns: one_float64_kW_column_per_building_id
+    hour_rule: consecutive_integer_1_through_N
+    source_rule: pivot_only_no_unit_conversion_or_integer_cast
+  Building_Data.geojson:
+    geometry: Polygon_or_MultiPolygon_EPSG32650
+    primary_key: building_id
+    required_columns:
+      - building_id
+      - cluster_id
+      - heated_area_m2
+      - period_energy_kWh
+      - max_demand_kW
+    foreign_keys:
+      cluster_id: intermediate_id_namespaces.cluster_id
+    annual_value_rule: short_case_period_energy_must_not_be_named_or_reported_as_annual_energy
+  candidate_sites.geojson:
+    geometry: Point_EPSG32650
+    primary_key: site_id
+    required_columns:
+      - site_id
+      - generation_rule
+      - feasibility_status
+    generation_rule: opaque_method_identifier_recorded_by_future_generator
+    coordinate_algorithm_status: not_frozen_or_implemented_by_unit_time_node
+  candidate_network.geojson:
+    geometry: LineString_EPSG32650
+    primary_key: segment_id
+    required_columns:
+      - segment_id
+      - node_from
+      - node_to
+      - length_m
+    foreign_keys:
+      node_from: intermediate_id_namespaces.node_id
+      node_to: intermediate_id_namespaces.node_id
+    row_rules:
+      - node_from_ne_node_to
+      - unordered_endpoint_pair_unique
+    detailed_network_algorithm_status: not_frozen_or_implemented_by_unit_time_node
+  Heat_Demand.csv:
+    first_column: hour
+    dynamic_columns: one_float64_kW_column_per_node_id
+    node_column_set: exactly_equal_to_Heat_Nodes_node_set
+    source_node_columns: all_zero
+    hour_rule: consecutive_integer_1_through_N
+  Heat_Nodes.geojson:
+    geometry: Point_EPSG32650
+    primary_key: node
+    node_namespace: intermediate_id_namespaces.node_id
+    required_columns:
+      node: string
+      node_type: demand_or_source
+      CostsDHconnect: legacy_cost_column_semantics_pending_model_task
+      maxDHPower: kW
+      LocalHeatProdCost: CNY_per_kWh_useful_heat
+  Heat_Generation_Units.geojson:
+    geometry: Point_EPSG32650
+    primary_key: heat_unit_id
+    required_columns:
+      unit: legacy_on_disk_generation_source_identifier_renamed_to_source_before_model
+      heat_unit_id: Heat_Nodes.node_foreign_key
+      technology_id: technologies.technology_id_foreign_key
+      technology_type: fixed_heat_source_for_P0
+      isWH: binary_zero_for_P0
+      isBoiler: binary_one_for_legacy_dispatchable_source_compatibility
+      isTES: binary_zero_for_P0
+      OMVarCost: CNY_per_kWh_useful_heat
+      PowerInvCost: legacy_cost_column_semantics_pending_model_task
+      StorageInvCost: zero_for_P0
+    foreign_keys:
+      heat_unit_id: Heat_Nodes.node
+    source_uniqueness: one_row_per_source_required_by_current_model
+    semantic_note: These columns are an inventory of the current reader and are not frozen by the unit/time task.
+  Heat_Network.geojson:
+    geometry: LineString_EPSG32650
+    primary_key: arc_id
+    required_column_order_until_legacy_reader_is_fixed:
+      - node_from
+      - node_to
+    required_columns:
+      arc_id: string_unique
+      segment_id: candidate_network.segment_id_foreign_key
+      node_from: Heat_Nodes.node_foreign_key
+      node_to: Heat_Nodes.node_foreign_key
+      distance: finite_nonnegative_m
+    row_rules:
+      - ordered_endpoint_pair_unique
+      - node_from_ne_node_to
+    semantic_note: Current rows are directed arcs; physical-segment sharing and investment accounting are deferred to the network/model task.
+  Heat_WH_Profiles.csv:
+    required_for_p0: false
+    forbidden_when_waste_heat_enabled_is_false: true
+    future_first_column: hour
+    future_dynamic_columns: resource_or_heat_unit_id_in_m3_per_h_after_one_explicit_conversion_from_kW
+  Cost_Parameter.json:
+    status: informational_legacy_inventory_not_frozen_by_unit_time_node
+    required_keys:
+      pCostHNS: CNY_per_kWh_unserved_heat
+      pCostPumping: CNY_per_m_per_m3
+      pTsupply: degC
+      pTreturn: degC
+      phWeight: one_for_each_observed_smoke_hour
+      pPipeCostIni: legacy_pipe_cost_parameter
+      pPipeCostsSlope: legacy_pipe_flow_slope_parameter
+      pMassFlowIni: m3_per_h
+      allow_double_heating: boolean
+    row_rules:
+      - pTsupply_gt_pTreturn
+      - phWeight_equals_one_in_competition_input_v1
+      - all_numeric_values_finite
+
+legacy_adapter_contract:
+  heat_demand_unit: kW
+  heat_demand_dtype: float64
+  timestamp_to_hour_mapping: stable_sorted_unique_timestamp_to_1_through_N
+  reject_legacy_hour_zero: true
+  reject_legacy_hour_gaps_duplicates_or_disorder: true
+  write_timestamp_hour_map: true
+  unit_conversion_count: 0
+  allow_implicit_divide_or_multiply_by_1000: false
+
+validation_exit_codes:
+  success: 0
+  program_error: 1
+  contract_error: 2
+
+validation_error_codes:
+  - FILE_MISSING
+  - FILE_UNREADABLE
+  - COLUMN_MISSING
+  - COLUMN_TYPE_INVALID
+  - VALUE_NULL
+  - VALUE_NOT_FINITE
+  - VALUE_OUT_OF_RANGE
+  - ID_DUPLICATE
+  - ID_MISMATCH
+  - TIMESTAMP_DUPLICATE
+  - TIMESTAMP_DISORDERED
+  - TIMESTAMP_GAP
+  - TIMESTAMP_COVERAGE_MISMATCH
+  - UNIT_UNKNOWN
+  - UNIT_MISMATCH
+  - CRS_MISSING
+  - CRS_GEOGRAPHIC_FOR_METRIC_OPERATION
+  - CRS_MISMATCH
+  - GEOMETRY_EMPTY
+  - GEOMETRY_INVALID
+  - GEOMETRY_TYPE_INVALID
+  - TECHNOLOGY_REFERENCE_MISSING
+  - DHW_POLICY_MISMATCH
+  - CONFIG_SCHEMA_INVALID
+  - FEATURE_NOT_IMPLEMENTED
+  - NODE_REFERENCE_MISSING
+  - NETWORK_LENGTH_MISMATCH
+  - ASSET_LIFETIME_TOO_SHORT
+  - ECONOMIC_SCOPE_MISMATCH

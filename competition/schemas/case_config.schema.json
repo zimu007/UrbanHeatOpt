@@ -1,0 +1,393 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://urbanheatopt.local/schemas/case_config.schema.json",
+  "title": "UrbanHeatOpt competition case configuration",
+  "description": "Schema for competition_input_v1. YAML files are validated after loading to a JSON-compatible object.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "case_id",
+    "scenario_id",
+    "data_version",
+    "data_classification",
+    "time",
+    "units",
+    "crs",
+    "files",
+    "clustering",
+    "spatial",
+    "demand",
+    "dhw",
+    "features",
+    "network",
+    "planning",
+    "enabled_technology_ids",
+    "solver",
+    "qa"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "competition_input_v1"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "data_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "data_classification": {
+      "enum": [
+        "synthetic_test",
+        "formal_project_data"
+      ]
+    },
+    "time": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "timezone",
+        "frequency",
+        "interval",
+        "complete_heating_season"
+      ],
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "timezone": {
+          "const": "Asia/Shanghai"
+        },
+        "frequency": {
+          "const": "1h"
+        },
+        "interval": {
+          "const": "start_inclusive_end_exclusive"
+        },
+        "complete_heating_season": {
+          "type": "boolean"
+        }
+      },
+      "$comment": "The validator must require timezone-aware values, start < end, and exact hourly coverage."
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "heating_power",
+        "heating_energy",
+        "currency",
+        "area",
+        "length",
+        "temperature",
+        "carbon"
+      ],
+      "properties": {
+        "heating_power": {
+          "const": "kW"
+        },
+        "heating_energy": {
+          "const": "kWh"
+        },
+        "currency": {
+          "const": "CNY"
+        },
+        "area": {
+          "const": "m2"
+        },
+        "length": {
+          "const": "m"
+        },
+        "temperature": {
+          "const": "degC"
+        },
+        "carbon": {
+          "const": "kgCO2e"
+        }
+      }
+    },
+    "crs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "projected"
+      ],
+      "properties": {
+        "input": {
+          "const": "EPSG:4326"
+        },
+        "projected": {
+          "const": "EPSG:32650"
+        }
+      }
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "buildings",
+        "building_hourly_loads",
+        "technologies",
+        "roads_or_feasible_space",
+        "resource_anchors",
+        "external_timeseries"
+      ],
+      "properties": {
+        "buildings": {
+          "const": "buildings.geojson"
+        },
+        "building_hourly_loads": {
+          "const": "building_hourly_loads.parquet"
+        },
+        "technologies": {
+          "const": "technologies.csv"
+        },
+        "roads_or_feasible_space": {
+          "const": "roads_or_feasible_space.geojson"
+        },
+        "resource_anchors": {
+          "type": "null",
+          "$comment": "P0 competition_input_v1 does not execute resource-anchor technologies. A later contract version may allow resource_anchors.geojson."
+        },
+        "external_timeseries": {
+          "const": "external_timeseries.parquet"
+        }
+      }
+    },
+    "clustering": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "cluster_count",
+        "random_seed",
+        "n_init"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "kmeans"
+        },
+        "cluster_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "random_seed": {
+          "const": 202611
+        },
+        "n_init": {
+          "const": 10
+        }
+      },
+      "$comment": "The validator must also enforce cluster_count <= the number of valid buildings."
+    },
+    "spatial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_mode",
+        "candidate_site_rule",
+        "candidate_network_rule",
+        "feasibility_tolerance_m"
+      ],
+      "properties": {
+        "input_mode": {
+          "enum": [
+            "roads",
+            "feasible_space"
+          ]
+        },
+        "candidate_site_rule": {
+          "type": "string",
+          "minLength": 1,
+          "$comment": "Opaque method identifier only. The candidate-site algorithm is not frozen by the unit/time contract node."
+        },
+        "candidate_network_rule": {
+          "type": "string",
+          "minLength": 1,
+          "$comment": "Opaque method identifier only. The candidate-network algorithm is not frozen by the unit/time contract node."
+        },
+        "feasibility_tolerance_m": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "demand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "area_scaling_already_applied"
+      ],
+      "properties": {
+        "area_scaling_already_applied": {
+          "const": true
+        }
+      },
+      "$comment": "The competition boundary accepts final building loads; the code must never scale them by area again."
+    },
+    "dhw": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_includes_dhw",
+        "add_in_adapter"
+      ],
+      "properties": {
+        "input_includes_dhw": {
+          "type": "boolean"
+        },
+        "add_in_adapter": {
+          "const": false
+        }
+      },
+      "$comment": "competition_input_v1 accepts final heating loads and never synthesizes DHW in the adapter."
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "waste_heat_enabled",
+        "storage_enabled"
+      ],
+      "properties": {
+        "waste_heat_enabled": {
+          "const": false
+        },
+        "storage_enabled": {
+          "const": false
+        }
+      },
+      "$comment": "Waste heat and storage are registered future capabilities but are rejected by the P0 v1 execution contract."
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supply_temperature_C",
+        "return_temperature_C"
+      ],
+      "properties": {
+        "supply_temperature_C": {
+          "type": "number"
+        },
+        "return_temperature_C": {
+          "type": "number"
+        }
+      },
+      "$comment": "The validator must require supply_temperature_C > return_temperature_C."
+    },
+    "planning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "horizon_years",
+        "discount_rate",
+        "price_base_year",
+        "currency"
+      ],
+      "properties": {
+        "horizon_years": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "discount_rate": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "price_base_year": {
+          "type": "integer",
+          "minimum": 1900
+        },
+        "currency": {
+          "const": "CNY"
+        }
+      }
+    },
+    "enabled_technology_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "solver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "threads",
+        "time_limit_seconds",
+        "mip_gap",
+        "load_solution_only_if_optimal"
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "highs",
+            "gurobi"
+          ]
+        },
+        "threads": {
+          "const": 1
+        },
+        "time_limit_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "mip_gap": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "load_solution_only_if_optimal": {
+          "const": true
+        }
+      }
+    },
+    "qa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cluster_energy_relative_tolerance",
+        "balance_tolerance_kW",
+        "unserved_tolerance_kWh",
+        "cost_tolerance_CNY",
+        "deterministic_tolerance"
+      ],
+      "properties": {
+        "cluster_energy_relative_tolerance": {
+          "const": 0.001
+        },
+        "balance_tolerance_kW": {
+          "const": 0.000001
+        },
+        "unserved_tolerance_kWh": {
+          "const": 0.000001
+        },
+        "cost_tolerance_CNY": {
+          "const": 0.000001
+        },
+        "deterministic_tolerance": {
+          "const": 1e-9
+        }
+      }
+    }
+  }
+}

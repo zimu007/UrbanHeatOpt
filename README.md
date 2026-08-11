@@ -69,6 +69,15 @@ Full documentation is available and includes:
 - Model formulation and equations
 - Description of modules and functions
 
+Competition-branch specifications and status records:
+
+- [Competition input data contract](docs/DATA_CONTRACT.md)
+- [Model assumptions and legacy boundaries](docs/MODEL_ASSUMPTIONS.md)
+- [Verified development environment](docs/ENVIRONMENT_REPORT.md)
+- [Deferred real-data work](docs/P0_DEFERRED_REAL_DATA.md)
+- [Questions for the load team](docs/questions_for_load_team.md)
+- [Parameters awaiting project-team confirmation](docs/questions_for_project_team.md)
+
 Visit the documentation for details:  
 **[iee-tugraz.github.io/UrbanHeatOpt/](https://iee-tugraz.github.io/UrbanHeatOpt/)**
 

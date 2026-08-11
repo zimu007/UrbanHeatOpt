@@ -1,5 +1,52 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-11 — CONTRACT-01 统一负荷单位与时间输入输出
+
+### 更改内容
+
+- 新增 `docs/DATA_CONTRACT.md`，统一七类运行输入的文件名、字段、类型、单位、ID、时间、CRS、条件列和跨文件校验，并整理负荷组九文件交接边界。
+- 新增 `competition/schemas/input_contract.yaml` 和 `case_config.schema.json`，将 kW/kWh/CNY、Asia/Shanghai、`timestamp → hour=1...N`、EPSG:4326→32650、随机种子、DHW、P0 功能边界、HiGHS 配置和 QA 容差写成机器可读规则。
+- 新增 `docs/MODEL_ASSUMPTIONS.md`，明确标准输入、适配产物和原项目模板三层边界，并记录隐式单位缩放、DHW、余热、未供热、网络和成本口径等 legacy 风险。
+- 新增 `docs/questions_for_load_team.md`、`docs/questions_for_project_team.md` 和 `docs/P0_DEFERRED_REAL_DATA.md`，逐项记录真实数据所需回答、责任方、当前阻塞和解除条件。
+- 新增契约资源测试和单位/时间回归测试，验证 Schema、固定 kW、浮点精度、聚类守恒、`timestamp → hour=1...N` 以及错误时间/数值拒绝路径。
+- 将现有 `jsonschema 4.26.0` 登记为直接环境依赖，并在 README 增加竞赛规范入口；没有执行新的依赖安装。
+- 新增 `competition/adapters/load_timeseries.py`，把标准长表稳定转换为浮点 kW 旧宽表并保存时间双射；拒绝错误时区、非整点、重复、缺口、乱序、覆盖不一致、负值和非有限值。
+- 删除热负荷生成器的隐式 `×1000` 和 `uint32` 截断、聚类的隐式 `/1000`，同步修正年度 kWh 对账；两项 P0 在代码与回归测试通过后勾选。
+
+### 更改目的
+
+先建立唯一、可机读且可测试的输入语义，使后续校验器、适配器、聚类和求解不会各自猜测单位、小时编号、生活热水、坐标系或字段名；同时把无法从现有文档确定的真实参数留给负荷组/项目组回答，不用合成值冒充武汉参数。
+
+### 验证方法与结果
+
+```powershell
+conda install -n urbanheatopt_env --override-channels -c conda-forge `
+  --freeze-installed --dry-run --json jsonschema=4.26.0 `
+  openssl=3.6.3=hf411b9b_0
+conda run --no-capture-output -n urbanheatopt_env python scripts/check_environment.py
+conda run --no-capture-output -n urbanheatopt_env python -m pytest -q `
+  tests/test_contract_schema.py tests/test_load_unit_time_contract.py
+git diff --check
+```
+
+- jsonschema 直接依赖 dry-run 为 `UNLINK=0`、`LINK=0`、`FETCH=0`，确认当前环境已具备该版本且没有包变更。
+- 环境检查确认 jsonschema 版本与 conda-forge 来源，并再次通过 CPU Arrow、带时区 Parquet 和 APPSI HiGHS `optimal` 验证。
+- 33 个契约及单位/时间测试全部通过。
+- 有效 `competition_input_v1` 合成结构通过 Draft 2020-12 Schema；标准功率单位只能为 kW，求解器配置只能写 `highs/gurobi`，固定随机种子为 202611。
+- 4 栋 × 24 小时内存合成数据在长表、旧宽表和两组聚类之间累计值严格守恒；小数 kW 未被放大、缩小或截断。
+- Asia/Shanghai 时间戳稳定映射为 `hour=1...24`；0 起点、缺号、重复、倒序、浮点 hour、错误时区、非整点和建筑覆盖不一致均被拒绝。
+- 测试只读取仓库内文档/Schema 和内存合成字典，不读取、复制或修改真实数据。
+- 未修改 `model.py`、`data.py`、`_config.yaml` 或默认 Excel。
+
+### 已知风险与边界
+
+- 本提交只执行负荷单位与时间边界检查；七类文件、CRS、几何和完整跨文件校验器未实现。
+- 候选站坐标、网络拓扑、热源主外键和经济公式未在本节点定义或实现，不作为单位/时间任务的阻塞条件。
+- 正式供暖季、供回水温度、规划期、折现率、设备参数、价格、碳因子、道路和资源数据仍待项目责任方确认；没有设置武汉默认值。
+- JSON Schema 不能单独拒绝 Python/YAML 非标准 NaN/Inf，时间先后、供回水大小、ID 空白和跨文件关系也属于下一节点校验器，不宣称已执行这些检查。
+- 契约登记的热泵、锅炉、储热和余热类型不表示比赛管线已经实现；P0 smoke 的目标仍只是合成固定热源。
+- 负荷组九文件尚未收到，正式接收、逐栋对账、光谷案例和完整供暖季保持暂缓。
+
 ## 2026-08-11 — ENV-01 记录并固定竞赛运行环境
 
 ### 更改内容

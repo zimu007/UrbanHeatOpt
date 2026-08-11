@@ -63,9 +63,12 @@ dry-run 结果为 `UNLINK=0`、`LINK=47`、`FETCH=47`。因此实际安装只新
 | libarrow | 25.0.0 | `h20c36f3_3_cpu` / conda-forge |
 | libparquet | 25.0.0 | `h7051d1f_3_cpu` / conda-forge |
 | pytest | 9.1.1 | `pyhc364b38_2` / conda-forge |
+| jsonschema | 4.26.0 | conda-forge；契约提交中登记为直接依赖 |
 | OpenSSL | 3.6.3 | `hf411b9b_0` / conda-forge |
 
 安装前后的 Python、NumPy、Pandas、GeoPandas、Fiona、GEOS、GDAL、PyProj、Shapely、Scikit-learn、SciPy、NetworkX、Pyomo、HighsPy 和 OpenSSL 版本/构建均未变化。
+
+`jsonschema 4.26.0` 在现有环境中已经由 Jupyter 依赖链安装；输入契约开始直接使用 Draft 2020-12 校验后，将其加入 `environment.yml` 只用于声明直接依赖，没有执行新的环境安装或包替换。
 
 `conda list` 在启用 pip 互操作时可能把顶层 `pyarrow` 显示为 `pypi_0`。这不是重复安装：`pyarrow` Conda 元包本身不持有文件，636 个 Python 文件由 `pyarrow-core` 的 conda-forge CPU 包持有，`pyarrow-25.0.0.dist-info/INSTALLER` 的内容也是 `conda`。
 

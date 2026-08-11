@@ -14,6 +14,7 @@ from pyproj import CRS
 from sklearn.cluster import KMeans
 import time
 import data
+from competition.adapters.load_timeseries import validate_legacy_hour_index
 
 def read_geo_data_from_disk(case_study_name: str, config: dict) -> gpd.GeoDataFrame:
     """Read the building data for a given casestudy from the disk and return a geodataframe.
@@ -250,19 +251,29 @@ def cluster_heat_demand(gdf_allheatnodes: gpd.GeoDataFrame, df_building_TS: pd.D
     :return: dataframe with heat demand time series of the clusters
     :rtype: pd.DataFrame
     """
-    # sum up the heating demand time series of the buildings by the calculated clusters
+    # The compatibility input is already floating-point kW. Validate the legacy
+    # index and aggregate only; no implicit /1000 conversion is permitted.
+    validate_legacy_hour_index(df_building_TS)
     
     df_cluster_TS = pd.DataFrame()
     df_cluster_TS['hour'] = df_building_TS['hour']
 
     for cluster_id in gdf_allheatnodes.cluster_id:
         df_cluster_TS[cluster_id] = 0  # Placeholder for actual data
-        temp_building_ids = gdf_allheatnodes[gdf_allheatnodes['cluster_id'] == cluster_id]['building_id'].values[0]
-
-        if temp_building_ids is not np.nan:
-            df_cluster_TS[cluster_id] = df_building_TS[temp_building_ids].sum(axis=1) / 1e3  # the data comes in Wh, to convert to kWh, divide by 1000
+        temp_building_ids = gdf_allheatnodes.loc[
+            gdf_allheatnodes['cluster_id'] == cluster_id, 'building_id'
+        ].iloc[0]
+        if isinstance(temp_building_ids, str):
+            temp_building_ids = [temp_building_ids]
+        if isinstance(temp_building_ids, (list, tuple, np.ndarray, pd.Series)) and len(temp_building_ids) > 0:
+            missing = [column for column in temp_building_ids if column not in df_building_TS.columns]
+            if missing:
+                raise ValueError(f"聚类负荷引用了不存在的建筑列：{', '.join(missing)}")
+            df_cluster_TS[cluster_id] = (
+                df_building_TS[list(temp_building_ids)].sum(axis=1).astype('float64')
+            )
         else:
-            df_cluster_TS[cluster_id] = 0  
+            df_cluster_TS[cluster_id] = 0.0
     
     return df_cluster_TS
 

@@ -162,8 +162,10 @@ def check_yearly_demand_deviation(gdf_buildings: gpd.GeoDataFrame, df_heat_deman
     :type df_heat_demand: pd.DataFrame
     """
     # calculate the difference on building level
-    diff_abs = 1e3* gdf_buildings['YearlyDemand'] - df_heat_demand.iloc[:, 1:].sum(axis=0).values
-    diff_percent = diff_abs / (1e3 * gdf_buildings['YearlyDemand']) * 100
+    # YearlyDemand is kWh/a and the hourly table is kW at a 1 h step, so the
+    # column sum is already kWh for the modelled year.
+    diff_abs = gdf_buildings['YearlyDemand'] - df_heat_demand.iloc[:, 1:].sum(axis=0).values
+    diff_percent = diff_abs / gdf_buildings['YearlyDemand'] * 100
     diff_percent[gdf_buildings['YearlyDemand'] == 0] = 0
 
     # calc max deviation of absolute values
@@ -171,7 +173,7 @@ def check_yearly_demand_deviation(gdf_buildings: gpd.GeoDataFrame, df_heat_deman
 
     # calc the total deviation of the absolute values
     total_diff = (diff_abs).sum()
-    total_diff_percent = total_diff / (1e3* gdf_buildings['YearlyDemand'].sum()) * 100
+    total_diff_percent = total_diff / gdf_buildings['YearlyDemand'].sum() * 100
 
     if max_diff_percent > 30:
         cprint("Warning: The yearly demand of a building deviates from the sum of the heating demand time series!", 'yellow')
@@ -261,7 +263,7 @@ def convert_buildings_to_dwellings(gdf_buildings: gpd.GeoDataFrame) -> tuple:
 
 
 def convert_dwelling_TS_to_building_TS(dwelling_HD_TS: np.ndarray, ar_building_id: np.ndarray) -> pd.DataFrame:
-    """Sum up the heating demand time series for all dwellings in a building and convert the data to a pandas dataframe.
+    """Sum dwelling heat-demand power into a floating-point building kW table.
 
     This function takes the heating demand time series for all dwellings and sums them up for each building. The resulting data is then converted to a pandas dataframe.
 
@@ -290,13 +292,12 @@ def convert_dwelling_TS_to_building_TS(dwelling_HD_TS: np.ndarray, ar_building_i
     # add a column for the hour
     df_dwelling_HD_TS.insert(0, 'hour', range(1, len(df_dwelling_HD_TS) + 1))
 
-    # Multiply all columns except the first one by 1e3 to convert to Wh
-    df_dwelling_HD_TS.iloc[:, 1:] = df_dwelling_HD_TS.iloc[:, 1:] * 1e3
+    # The generator already calculates heat-demand power in kW. Keep it as
+    # float64; converting to Wh and uint32 here caused a hidden x1000 contract
+    # and discarded fractional demand values.
+    df_dwelling_HD_TS.iloc[:, 1:] = df_dwelling_HD_TS.iloc[:, 1:].astype('float64')
 
-    # Cast the DataFrame to uint32 to save memory
-    df_dwelling_HD_TS_cast = df_dwelling_HD_TS.astype('uint32')
-
-    return df_dwelling_HD_TS_cast
+    return df_dwelling_HD_TS
 
 #@jit -> vectorized implementation instead
 def fast_generate_building_ts(ar_building_id: np.ndarray, ar_GeneralisedThermCond: np.ndarray, ar_GeneralisedThermCap: np.ndarray, ar_MaxDemand: np.ndarray, ar_temp_setpoint: np.ndarray, ar_temp_setback: np.ndarray, ar_Tout: np.ndarray, ar_WDWE: np.ndarray, ar_transition_matrix_WD: np.ndarray, ar_transition_matrix_WE: np.ndarray, ar_solar_gain_profile: np.ndarray, scalor_solar_gain: np.ndarray, scalor_internal_gain: np.ndarray) -> np.ndarray:
@@ -534,4 +535,3 @@ if __name__ == "__main__":
     case_study = "Frauental"
     fast_TS_generator(case_study)
     pass
-            

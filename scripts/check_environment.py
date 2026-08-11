@@ -22,6 +22,7 @@ EXPECTED_VERSIONS = {
     "fiona": "1.10.1",
     "geopandas": "1.0.1",
     "highspy": "1.11.0",
+    "jsonschema": "4.26.0",
     "networkx": "3.6.1",
     "numpy": "2.1.3",
     "pandas": "2.2.2",
@@ -37,6 +38,7 @@ IMPORT_NAMES = {
     "fiona": "fiona",
     "geopandas": "geopandas",
     "highspy": "highspy",
+    "jsonschema": "jsonschema",
     "networkx": "networkx",
     "numpy": "numpy",
     "pandas": "pandas",
@@ -57,6 +59,7 @@ CONDA_FORGE_PACKAGES = {
     "openssl": "3.6.3",
     "pyarrow": "25.0.0",
     "pytest": "9.1.1",
+    "jsonschema": "4.26.0",
     **CPU_CONDA_PACKAGES,
 }
 

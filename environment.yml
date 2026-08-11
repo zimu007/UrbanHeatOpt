@@ -20,6 +20,7 @@ dependencies:
   - "libarrow=25.0.0=*_cpu"
   - "libparquet=25.0.0=*_cpu"
   - pytest=9.1.1
+  - jsonschema=4.26.0
   - pyomo=6.8.2
   - ipykernel=6.29.5
   - jupyter=1.1.1
