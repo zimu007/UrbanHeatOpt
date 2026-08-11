@@ -183,7 +183,8 @@ UrbanHeatOpt/
 
 交付物：环境检查报告、最小样例、自动化运行命令。
 
-- [ ] 记录 Python 和主要依赖版本。
+- [x] 记录 Python 和主要依赖版本。
+  - 完成记录（2026-08-11）：新增 `scripts/check_environment.py` 和 `docs/ENVIRONMENT_REPORT.md`；确认现有 `urbanheatopt_env` 的固定版本、conda-forge CPU PyArrow、带时区 Parquet 往返及 APPSI HiGHS 最小求解均通过。全新环境仅完成 dry-run，尚未实际重建。
 - [ ] 将默认求解器设为 `highs`，同时保留可选 Gurobi 配置。
 - [ ] 建立 `python scripts/run_case.py --case minimal --scenario smoke` 入口，避免把 Notebook 当作唯一入口。
 - [ ] 最小案例完整执行：读取 → 聚类 → 管网 → 优化 → 导出。
@@ -502,6 +503,7 @@ pytest -q
 ### 11.3 工程层
 
 - [ ] 新环境按说明可以安装和运行。
+  - 当前状态（2026-08-11）：`environment.yml` 的 Conda 求解部分仅使用 conda-forge，另保留 4 个显式 PyPI 依赖；全新环境 dry-run 已成功，但尚未实际创建第二个隔离环境，因此保持未勾选。
 - [ ] 非 Notebook 命令行入口可用。
 - [ ] 小型测试数据随代码提供。
 - [ ] 固定随机种子后结果可重现。

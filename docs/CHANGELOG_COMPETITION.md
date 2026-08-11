@@ -1,5 +1,43 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-11 — ENV-01 记录并固定竞赛运行环境
+
+### 更改内容
+
+- 清理 `environment.yml` 中重复的 Pyomo 和 Conda/Pip 双重 Pandas 声明，改为 `conda-forge + nodefaults`，补齐原代码直接使用的依赖。
+- 固定 PyArrow 25.0.0 的 CPU 构建约束和 pytest 9.1.1；当前环境中既有 SciPy、HighsPy 的 pip 安装保持不变。全新环境清单改由 conda-forge 提供 SciPy，避免 Conda 先安装后再被 pip 覆盖。
+- 新增 `scripts/check_environment.py`，检查解释器、主要包版本、Conda 来源、CPU Arrow、GIS 激活变量、带时区 Parquet 往返和 APPSI HiGHS 最小求解。
+- 新增 `docs/ENVIRONMENT_REPORT.md`，记录零替换 dry-run、精确构建、验证证据和已知风险。
+- 修正 README 的环境使用说明：优先直接激活 Conda 环境；未激活时使用带 `--no-capture-output` 的 `conda run`，并说明原激活包装脚本依赖未初始化子模块。
+- 仅勾选工作包 A 的“记录 Python 和主要依赖版本”；默认 HiGHS、完整 CLI 和全新环境实际重建均保持未勾选。
+
+### 更改目的
+
+在数据契约和功能代码开发前建立可重复检查的运行环境门槛，确保 Parquet 标准输入和开源 HiGHS 求解能力确实可用，同时遵守“现有包零替换”和“不把尚未实现的竞赛功能视为已完成”的边界。
+
+### 验证方法与结果
+
+```powershell
+conda run --no-capture-output -n urbanheatopt_env python scripts/check_environment.py
+conda env create --name urbanheatopt_env_p0_dryrun --file environment.yml --dry-run --json
+git diff --check
+```
+
+- 依赖安装 dry-run 为 `UNLINK=0`、`LINK=47`、`FETCH=47`；实际只新增 PyArrow、pytest 及其必要依赖。
+- Python 3.12.2 以及 Pandas、GeoPandas、Pyomo、HiGHS 等既有核心版本和构建保持不变。
+- PyArrow 25.0.0、libarrow、libparquet 和 pyarrow-core 均为 conda-forge CPU 构建，没有 Arrow CUDA 包。
+- 带 `Asia/Shanghai` 时区的 Parquet 精确往返通过；APPSI HiGHS 返回 `optimal`，一变量模型目标值为 1。
+- 全新环境 dry-run 成功解析 342 个 Conda 包，Conda 求解部分的非 conda-forge 包和 Arrow CUDA 包均为 0；清单另有 4 个显式 PyPI 依赖，没有实际创建第二个环境。
+
+### 已知风险与边界
+
+- `environment.yml` 不是完整间接依赖锁文件；精确 Windows 构建记录在环境报告中。
+- 当前已安装环境的 SciPy 和 HighsPy 仍来自 pip，这是为避免替换现有核心包而保留的已知例外；全新环境清单中的 SciPy 改由 conda-forge 提供，因此实际重建后仍需回归验证。HighsPy 来源迁移需另行批准。
+- 全新隔离环境尚未实际创建，路线图相应工程验收项未勾选。
+- Conda 25.11.1 在 Windows GBK 终端默认捕获中文输出会报编码错误，已通过不改变计算的 `--no-capture-output` 参数规避。
+- 激活包装脚本依赖未初始化子模块；本节点未初始化、删除或修改该子模块。
+- 本节点未修改默认求解器、模型、输入数据或案例，也未读取仓库外真实数据。
+
 ## 2026-08-11 — PREP-01 建立竞赛版轻量项目框架
 
 ### 更改内容

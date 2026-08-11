@@ -24,13 +24,25 @@ Key functionalities include:
 Using the software does not require expert programming knowledge.
 
 1. **Clone this repository** to your working directory.
-2. **Activate the environment**:
-   - Recommended: run `activate_environment_windows.bat` (windows) or `activate_environment_unix.sh` (Unix)
-   - Alternatively (Anaconda must be installed before, using Anaconda Promt can be helpful):
-     ```bash
-     conda env create -f environment.yml
-     conda activate urbanheatopt_env
-     ```
+2. **Create and verify the environment** (Anaconda or Miniconda is required):
+   ```bash
+   conda env create -f environment.yml
+   conda activate urbanheatopt_env
+   python scripts/check_environment.py
+   ```
+   For an already-created environment, the check can also be run without shell
+   activation:
+   ```bash
+   conda run --no-capture-output -n urbanheatopt_env python scripts/check_environment.py
+   ```
+
+   `--no-capture-output` avoids a Conda 25.11 encoding error when this check
+   prints Chinese diagnostics in a Windows GBK console.
+
+   The checked-in `activate_environment_windows.bat` and
+   `activate_environment_unix.sh` wrappers depend on the
+   `Conda-Activation-Scripts` submodule. If that submodule has not been
+   initialized, use the direct Conda commands above.
 3. **Open the `main.ipynb` notebook** in a Jupyter-compatible environment.
 4. Follow the notebook instructions to:
    - Prepare or modify a case study
@@ -39,6 +51,11 @@ Using the software does not require expert programming knowledge.
    - Visualize and evaluate results
 
 > All major functionalities can also be called directly from the Python modules.
+
+> **Competition-branch status:** the environment check is available now. The
+> standardized competition input validator and the `scripts/run_case.py`
+> one-command pipeline are separate P0 tasks and are not claimed as implemented
+> by this installation section.
 
 ---
 
