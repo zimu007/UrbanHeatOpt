@@ -1,24 +1,28 @@
-"""竞赛版中央双设备最小核心模型。
+"""竞赛版三模式源—网—荷最小核心模型。
 
-本节点只建立一个汇总中央热负荷，以及独立的中央空气源热泵和中央
-燃气锅炉。三种供热模式、建筑接入、管网、分布式设备和正式年化成本
-均不属于本模块当前版本。
+本模块独立于旧 ``model.py``。当前只实现固定 COP/效率、一个中央站点、
+多个需求节点、无向候选物理管段和未供热量；正式年化成本、储热、余热、
+管网热损失与多站点均留给后续节点。
 """
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from math import isfinite
 from numbers import Integral, Real
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from pyomo.environ import (
+    Binary,
     ConcreteModel,
     Constraint,
     Expression,
     NonNegativeReals,
     Objective,
     Param,
+    Reals,
     Set,
     Var,
     minimize,
@@ -30,12 +34,14 @@ from competition.solvers import SolverSettings, solve_pyomo_model
 AIR_SOURCE_HEAT_PUMP = "air_source_heat_pump"
 GAS_BOILER = "gas_boiler"
 CENTRAL_SCOPE = "central"
+LOCAL_SCOPE = "local"
 ELECTRICITY = "electricity"
 GAS = "gas"
+SUPPORTED_MODES = ("central", "distributed", "hybrid")
 
 
 class CoreModelInputError(ValueError):
-    """中央双设备核心输入不满足物理或接口约束。"""
+    """竞赛核心输入不满足物理或接口约束。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,12 +65,42 @@ class TechnologySpec:
 
 
 @dataclass(frozen=True, slots=True)
-class CoreModelInput:
-    """一个中央负荷和两类独立中央设备的最小输入。"""
+class SegmentSpec:
+    """一条物理无向候选管段；端点顺序只定义正流方向。"""
 
+    segment_id: str
+    node_u: str
+    node_v: str
+    length_m: float
+    capacity_max_kW: float
+
+
+@dataclass(frozen=True, slots=True)
+class CoreModelInput:
+    """三模式最小核心输入。
+
+    ``heat_demand_kW`` 使用 ``(demand_node, hour)`` 作为键。技术表必须
+    恰好投影出中央空气源热泵、中央燃气锅炉和分布式空气源热泵三种角色。
+    价格、年化小时权重和完整成本边界将在后续经济节点加入；本节点不消费
+    ``TechnologySpec`` 中已经冻结的经济字段。
+    """
+
+    mode: str
     hours: tuple[int, ...]
-    heat_demand_kW: Mapping[int, float]
+    site_node: str
+    demand_nodes: tuple[str, ...]
+    heat_demand_kW: Mapping[tuple[str, int], float]
     technologies: tuple[TechnologySpec, ...]
+    segments: tuple[SegmentSpec, ...]
+
+    def __post_init__(self) -> None:
+        """复制并冻结负荷映射，阻断调用方在构模前后篡改输入。"""
+
+        if isinstance(self.heat_demand_kW, Mapping):
+            frozen_demand: Mapping[tuple[str, int], float] = MappingProxyType(
+                dict(self.heat_demand_kW)
+            )
+            object.__setattr__(self, "heat_demand_kW", frozen_demand)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +118,12 @@ def _finite_real(value: object, field: str) -> float:
     if not isfinite(normalized):
         raise CoreModelInputError(f"{field} 必须是有限数值")
     return normalized
+
+
+def _validate_plain_id(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise CoreModelInputError(f"{field} 必须是无首尾空白的非空字符串")
+    return value
 
 
 def _validate_capacity(spec: TechnologySpec, role: str) -> None:
@@ -112,10 +154,7 @@ def _validate_contract_metadata(spec: TechnologySpec, role: str) -> None:
         or int(spec.lifetime_years) < 1
     ):
         raise CoreModelInputError(f"{role}.lifetime_years 必须是大于等于 1 的整数")
-    if not isinstance(spec.source, str) or not spec.source.strip():
-        raise CoreModelInputError(f"{role}.source 必须是非空字符串")
-    if spec.source != spec.source.strip():
-        raise CoreModelInputError(f"{role}.source 不得含首尾空白")
+    _validate_plain_id(spec.source, f"{role}.source")
     allowed_flags = {
         "measured",
         "manufacturer",
@@ -125,29 +164,17 @@ def _validate_contract_metadata(spec: TechnologySpec, role: str) -> None:
         "synthetic_test",
     }
     if spec.assumption_flag not in allowed_flags:
-        raise CoreModelInputError(
-            f"{role}.assumption_flag 必须是 v2 契约允许值"
-        )
+        raise CoreModelInputError(f"{role}.assumption_flag 必须是 v2 契约允许值")
 
 
-def _validate_id(technology_id: object, role: str) -> None:
-    if (
-        not isinstance(technology_id, str)
-        or not technology_id
-        or technology_id != technology_id.strip()
-    ):
-        raise CoreModelInputError(f"{role}.technology_id 必须是无首尾空白的非空字符串")
-
-
-def _validate_ashp(spec: TechnologySpec) -> None:
-    role = "central_ashp"
-    _validate_id(spec.technology_id, role)
+def _validate_ashp(spec: TechnologySpec, role: str, scope: str) -> None:
+    _validate_plain_id(spec.technology_id, f"{role}.technology_id")
     _validate_capacity(spec, role)
     _validate_contract_metadata(spec, role)
     if spec.technology_type != AIR_SOURCE_HEAT_PUMP:
         raise CoreModelInputError(f"{role}.technology_type 必须为 {AIR_SOURCE_HEAT_PUMP}")
-    if spec.applicable_scope != CENTRAL_SCOPE:
-        raise CoreModelInputError(f"{role}.applicable_scope 必须为 central")
+    if spec.applicable_scope != scope:
+        raise CoreModelInputError(f"{role}.applicable_scope 必须为 {scope}")
     if spec.energy_carrier != ELECTRICITY:
         raise CoreModelInputError(f"{role}.energy_carrier 必须为 electricity")
     cop = _finite_real(spec.cop, f"{role}.cop")
@@ -159,7 +186,7 @@ def _validate_ashp(spec: TechnologySpec) -> None:
 
 def _validate_gas_boiler(spec: TechnologySpec) -> None:
     role = "central_gas_boiler"
-    _validate_id(spec.technology_id, role)
+    _validate_plain_id(spec.technology_id, f"{role}.technology_id")
     _validate_capacity(spec, role)
     _validate_contract_metadata(spec, role)
     if spec.technology_type != GAS_BOILER:
@@ -175,234 +202,517 @@ def _validate_gas_boiler(spec: TechnologySpec) -> None:
         raise CoreModelInputError(f"{role}.cop 必须为空")
 
 
-def _resolve_central_technologies(
+def _resolve_technology_roles(
     technologies: tuple[TechnologySpec, ...],
-) -> tuple[TechnologySpec, TechnologySpec]:
+) -> tuple[TechnologySpec, TechnologySpec, TechnologySpec]:
     if not isinstance(technologies, tuple):
         raise CoreModelInputError("technologies 必须是 TechnologySpec tuple")
     if any(not isinstance(spec, TechnologySpec) for spec in technologies):
         raise CoreModelInputError("technologies 必须全部是 TechnologySpec")
-    if len(technologies) != 2:
+    if len(technologies) != 3:
         raise CoreModelInputError(
-            "节点 2 technologies 必须且只能包含一个中央空气源热泵和一个中央燃气锅炉"
+            "technologies 必须且只能包含中央空气源热泵、中央燃气锅炉和分布式空气源热泵"
         )
 
-    # 先按设备类型识别候选行，再由各角色验证器给出精确到字段的错误；
-    # type 本身缺失或重复时才返回角色集合错误。
-    ashp_by_type = [
-        spec for spec in technologies if spec.technology_type == AIR_SOURCE_HEAT_PUMP
+    central_ashp = [
+        spec
+        for spec in technologies
+        if spec.technology_type == AIR_SOURCE_HEAT_PUMP
+        and spec.applicable_scope == CENTRAL_SCOPE
     ]
-    boiler_by_type = [
-        spec for spec in technologies if spec.technology_type == GAS_BOILER
+    central_boiler = [
+        spec
+        for spec in technologies
+        if spec.technology_type == GAS_BOILER
+        and spec.applicable_scope == CENTRAL_SCOPE
     ]
-    if len(ashp_by_type) == 1 and len(boiler_by_type) == 1:
-        _validate_ashp(ashp_by_type[0])
-        _validate_gas_boiler(boiler_by_type[0])
-        return ashp_by_type[0], boiler_by_type[0]
+    local_ashp = [
+        spec
+        for spec in technologies
+        if spec.technology_type == AIR_SOURCE_HEAT_PUMP
+        and spec.applicable_scope == LOCAL_SCOPE
+    ]
+    if len(central_ashp) != 1 or len(central_boiler) != 1 or len(local_ashp) != 1:
+        raise CoreModelInputError(
+            "technologies 必须由 technology_type + applicable_scope 唯一派生三个设备角色"
+        )
 
-    raise CoreModelInputError(
-        "technologies 必须由 type/scope/carrier 唯一派生出中央空气源热泵和中央燃气锅炉；"
-        "technology_type 必须各有一个 air_source_heat_pump 和 gas_boiler"
+    _validate_ashp(central_ashp[0], "central_ashp", CENTRAL_SCOPE)
+    _validate_gas_boiler(central_boiler[0])
+    _validate_ashp(local_ashp[0], "local_ashp", LOCAL_SCOPE)
+    technology_ids = [spec.technology_id for spec in technologies]
+    if len(set(technology_ids)) != len(technology_ids):
+        raise CoreModelInputError("三个设备角色的 technology_id 必须互不相同")
+    return central_ashp[0], central_boiler[0], local_ashp[0]
+
+
+def _validate_hours(hours: object) -> tuple[int, ...]:
+    if not isinstance(hours, tuple) or not hours:
+        raise CoreModelInputError("hours 必须是非空 tuple")
+    if any(isinstance(hour, bool) or not isinstance(hour, Integral) for hour in hours):
+        raise CoreModelInputError("hours 必须全部为整数")
+    normalized = tuple(int(hour) for hour in hours)
+    if normalized != tuple(range(1, len(normalized) + 1)):
+        raise CoreModelInputError("hours 必须严格连续为 1...N")
+    return normalized
+
+
+def _validate_nodes(data: CoreModelInput) -> tuple[str, ...]:
+    site = _validate_plain_id(data.site_node, "site_node")
+    if not isinstance(data.demand_nodes, tuple) or not data.demand_nodes:
+        raise CoreModelInputError("demand_nodes 必须是非空 tuple")
+    nodes = tuple(
+        _validate_plain_id(node, f"demand_nodes[{index}]")
+        for index, node in enumerate(data.demand_nodes)
     )
+    if len(set(nodes)) != len(nodes):
+        raise CoreModelInputError("demand_nodes 不得重复")
+    if site in set(nodes):
+        raise CoreModelInputError("site_node 不得与 demand_nodes 重复")
+    return nodes
+
+
+def _validate_segments(
+    segments: object,
+    site_node: str,
+    demand_nodes: tuple[str, ...],
+) -> tuple[SegmentSpec, ...]:
+    if not isinstance(segments, tuple):
+        raise CoreModelInputError("segments 必须是 SegmentSpec tuple")
+    universe = {site_node, *demand_nodes}
+    segment_ids: set[str] = set()
+    unordered_pairs: set[frozenset[str]] = set()
+    for index, segment in enumerate(segments):
+        if not isinstance(segment, SegmentSpec):
+            raise CoreModelInputError(f"segments[{index}] 必须是 SegmentSpec")
+        segment_id = _validate_plain_id(segment.segment_id, f"segments[{index}].segment_id")
+        node_u = _validate_plain_id(segment.node_u, f"segments[{index}].node_u")
+        node_v = _validate_plain_id(segment.node_v, f"segments[{index}].node_v")
+        if segment_id in segment_ids:
+            raise CoreModelInputError(f"segment_id 重复：{segment_id}")
+        segment_ids.add(segment_id)
+        if node_u not in universe or node_v not in universe:
+            raise CoreModelInputError(
+                f"管段 {segment_id} 端点必须引用 site_node 或 demand_nodes"
+            )
+        if node_u == node_v:
+            raise CoreModelInputError(f"管段 {segment_id} 不得为自环")
+        pair = frozenset((node_u, node_v))
+        if pair in unordered_pairs:
+            raise CoreModelInputError(f"物理无向管段端点重复：{node_u}, {node_v}")
+        unordered_pairs.add(pair)
+        length = _finite_real(segment.length_m, f"segments[{index}].length_m")
+        capacity = _finite_real(
+            segment.capacity_max_kW,
+            f"segments[{index}].capacity_max_kW",
+        )
+        if length <= 0:
+            raise CoreModelInputError(f"segments[{index}].length_m 必须大于 0")
+        if capacity <= 0:
+            raise CoreModelInputError(
+                f"segments[{index}].capacity_max_kW 必须大于 0"
+            )
+    return segments
+
+
+def _reachable_nodes(site_node: str, segments: tuple[SegmentSpec, ...]) -> set[str]:
+    adjacency: dict[str, set[str]] = {}
+    for segment in segments:
+        adjacency.setdefault(segment.node_u, set()).add(segment.node_v)
+        adjacency.setdefault(segment.node_v, set()).add(segment.node_u)
+    reached = {site_node}
+    pending: deque[str] = deque((site_node,))
+    while pending:
+        node = pending.popleft()
+        for neighbor in adjacency.get(node, set()):
+            if neighbor not in reached:
+                reached.add(neighbor)
+                pending.append(neighbor)
+    return reached
 
 
 def validate_core_input(data: CoreModelInput) -> None:
-    """验证中央双设备输入；任何错误均在构建 Pyomo 模型前失败。"""
+    """在创建 Pyomo 组件前聚合验证三模式核心输入。"""
 
     if not isinstance(data, CoreModelInput):
         raise TypeError("data 必须是 CoreModelInput")
-    if not isinstance(data.hours, tuple) or not data.hours:
-        raise CoreModelInputError("hours 必须是非空 tuple")
-    if any(isinstance(hour, bool) or not isinstance(hour, Integral) for hour in data.hours):
-        raise CoreModelInputError("hours 必须全部为整数")
-    normalized_hours = tuple(int(hour) for hour in data.hours)
-    if normalized_hours != tuple(range(1, len(normalized_hours) + 1)):
-        raise CoreModelInputError("hours 必须严格连续为 1...N")
-
-    central_ashp, central_gas_boiler = _resolve_central_technologies(
-        data.technologies
-    )
-    if central_ashp.technology_id == central_gas_boiler.technology_id:
-        raise CoreModelInputError("中央空气源热泵和燃气锅炉的 technology_id 必须不同")
+    if data.mode not in SUPPORTED_MODES:
+        raise CoreModelInputError("mode 只能是 'central'、'distributed' 或 'hybrid'")
+    hours = _validate_hours(data.hours)
+    demand_nodes = _validate_nodes(data)
+    _resolve_technology_roles(data.technologies)
+    segments = _validate_segments(data.segments, data.site_node, demand_nodes)
 
     if not isinstance(data.heat_demand_kW, Mapping):
-        raise CoreModelInputError("heat_demand_kW 必须是 hour 到 kW 的映射")
-    demand_keys = tuple(data.heat_demand_kW.keys())
-    if any(isinstance(hour, bool) or not isinstance(hour, Integral) for hour in demand_keys):
-        raise CoreModelInputError("heat_demand_kW 的键必须为整数小时")
-    if set(int(hour) for hour in demand_keys) != set(normalized_hours):
-        raise CoreModelInputError("heat_demand_kW 必须且只能覆盖 hours 中的全部小时")
-
-    demand_values: list[float] = []
-    for hour in normalized_hours:
-        demand = _finite_real(data.heat_demand_kW[hour], f"heat_demand_kW[{hour}]")
+        raise CoreModelInputError("heat_demand_kW 必须是 (demand_node, hour) 到 kW 的映射")
+    expected_keys = {(node, hour) for node in demand_nodes for hour in hours}
+    actual_keys = set(data.heat_demand_kW.keys())
+    if actual_keys != expected_keys:
+        raise CoreModelInputError(
+            "heat_demand_kW 必须且只能覆盖 demand_nodes × hours 的全部组合"
+        )
+    for node, hour in expected_keys:
+        demand = _finite_real(
+            data.heat_demand_kW[(node, hour)],
+            f"heat_demand_kW[{node!r}, {hour}]",
+        )
         if demand < 0:
-            raise CoreModelInputError(f"heat_demand_kW[{hour}] 必须大于等于 0")
-        demand_values.append(demand)
+            raise CoreModelInputError(
+                f"heat_demand_kW[{node!r}, {hour}] 必须大于等于 0"
+            )
 
-    total_maximum = (
-        float(central_ashp.capacity_max_kW)
-        + float(central_gas_boiler.capacity_max_kW)
-    )
-    if max(demand_values) > total_maximum:
-        raise CoreModelInputError("峰值热负荷超过两类中央设备容量上限之和")
+    if data.mode == "central":
+        unreachable = set(demand_nodes) - _reachable_nodes(data.site_node, segments)
+        if unreachable:
+            joined = ", ".join(sorted(unreachable))
+            raise CoreModelInputError(f"central 模式候选拓扑无法从站点到达：{joined}")
 
 
 def build_core_model(data: CoreModelInput) -> ConcreteModel:
-    """构建无管网、无成本的中央双设备容量与调度模型。"""
+    """构建固定性能、无热损失、临时非经济代理目标的三模式模型。"""
 
     validate_core_input(data)
-    ashp, boiler = _resolve_central_technologies(data.technologies)
-    technology_ids = (ashp.technology_id, boiler.technology_id)
-    specs = {ashp.technology_id: ashp, boiler.technology_id: boiler}
+    central_ashp, boiler, local_ashp = _resolve_technology_roles(data.technologies)
+    central_specs = {
+        central_ashp.technology_id: central_ashp,
+        boiler.technology_id: boiler,
+    }
+    central_ids = tuple(central_specs)
+    segment_by_id = {segment.segment_id: segment for segment in data.segments}
+    segment_ids = tuple(segment_by_id)
+    all_nodes = (data.site_node, *data.demand_nodes)
 
-    model = ConcreteModel(name="competition-central-dual-technology-core")
+    incidence = {
+        (node, segment_id): (
+            -1
+            if node == segment_by_id[segment_id].node_u
+            else 1
+            if node == segment_by_id[segment_id].node_v
+            else 0
+        )
+        for node in all_nodes
+        for segment_id in segment_ids
+    }
+
+    model = ConcreteModel(name=f"competition-{data.mode}-source-network-load-core")
+    model.mode = data.mode
+    model.site_node = data.site_node
     model.HOURS = Set(initialize=data.hours, ordered=True)
-    model.TECHNOLOGIES = Set(initialize=technology_ids, ordered=True)
-    model.AIR_SOURCE_HEAT_PUMPS = Set(
-        within=model.TECHNOLOGIES,
-        initialize=(ashp.technology_id,),
+    model.DEMAND_NODES = Set(initialize=data.demand_nodes, ordered=True)
+    model.NODES = Set(initialize=all_nodes, ordered=True)
+    model.CENTRAL_TECHNOLOGIES = Set(initialize=central_ids, ordered=True)
+    model.CENTRAL_AIR_SOURCE_HEAT_PUMPS = Set(
+        within=model.CENTRAL_TECHNOLOGIES,
+        initialize=(central_ashp.technology_id,),
         ordered=True,
     )
-    model.GAS_BOILERS = Set(
-        within=model.TECHNOLOGIES,
+    model.CENTRAL_GAS_BOILERS = Set(
+        within=model.CENTRAL_TECHNOLOGIES,
         initialize=(boiler.technology_id,),
         ordered=True,
     )
+    model.SEGMENTS = Set(initialize=segment_ids, ordered=True)
 
     model.heat_demand_kW = Param(
+        model.DEMAND_NODES,
         model.HOURS,
-        initialize={hour: float(data.heat_demand_kW[hour]) for hour in data.hours},
+        initialize={key: float(value) for key, value in data.heat_demand_kW.items()},
         within=NonNegativeReals,
     )
-    model.capacity_min_kW = Param(
-        model.TECHNOLOGIES,
-        initialize={key: float(spec.capacity_min_kW) for key, spec in specs.items()},
+    model.central_capacity_min_kW = Param(
+        model.CENTRAL_TECHNOLOGIES,
+        initialize={key: float(spec.capacity_min_kW) for key, spec in central_specs.items()},
         within=NonNegativeReals,
     )
-    model.capacity_max_kW = Param(
-        model.TECHNOLOGIES,
-        initialize={key: float(spec.capacity_max_kW) for key, spec in specs.items()},
+    model.central_capacity_max_kW = Param(
+        model.CENTRAL_TECHNOLOGIES,
+        initialize={key: float(spec.capacity_max_kW) for key, spec in central_specs.items()},
         within=NonNegativeReals,
     )
-    model.cop = Param(
-        model.AIR_SOURCE_HEAT_PUMPS,
-        initialize={ashp.technology_id: float(ashp.cop)},
+    model.central_ashp_cop = Param(
+        model.CENTRAL_AIR_SOURCE_HEAT_PUMPS,
+        initialize={central_ashp.technology_id: float(central_ashp.cop)},
         within=NonNegativeReals,
     )
-    model.efficiency = Param(
-        model.GAS_BOILERS,
+    model.central_boiler_efficiency = Param(
+        model.CENTRAL_GAS_BOILERS,
         initialize={boiler.technology_id: float(boiler.efficiency)},
         within=NonNegativeReals,
     )
+    model.local_ashp_cop = Param(initialize=float(local_ashp.cop))
+    model.local_capacity_min_kW = Param(initialize=float(local_ashp.capacity_min_kW))
+    model.local_capacity_max_kW = Param(initialize=float(local_ashp.capacity_max_kW))
+    model.segment_capacity_max_kW = Param(
+        model.SEGMENTS,
+        initialize={key: float(segment.capacity_max_kW) for key, segment in segment_by_id.items()},
+        within=NonNegativeReals,
+    )
+    model.incidence = Param(model.NODES, model.SEGMENTS, initialize=incidence)
     model.timestep_hours = Param(initialize=1.0)
 
-    model.installed_capacity_kW = Var(model.TECHNOLOGIES, domain=NonNegativeReals)
-    model.heat_output_kW = Var(model.TECHNOLOGIES, model.HOURS, domain=NonNegativeReals)
-
-    def capacity_minimum_rule(pyomo_model: ConcreteModel, technology_id: str):
-        return (
-            pyomo_model.installed_capacity_kW[technology_id]
-            >= pyomo_model.capacity_min_kW[technology_id]
-        )
-
-    model.capacity_minimum = Constraint(
-        model.TECHNOLOGIES,
-        rule=capacity_minimum_rule,
-    )
-
-    def capacity_maximum_rule(pyomo_model: ConcreteModel, technology_id: str):
-        return (
-            pyomo_model.installed_capacity_kW[technology_id]
-            <= pyomo_model.capacity_max_kW[technology_id]
-        )
-
-    model.capacity_maximum = Constraint(
-        model.TECHNOLOGIES,
-        rule=capacity_maximum_rule,
-    )
-
-    def dispatch_capacity_rule(
-        pyomo_model: ConcreteModel,
-        technology_id: str,
-        hour: int,
-    ):
-        return (
-            pyomo_model.heat_output_kW[technology_id, hour]
-            <= pyomo_model.installed_capacity_kW[technology_id]
-        )
-
-    model.dispatch_capacity = Constraint(
-        model.TECHNOLOGIES,
+    model.site_built = Var(domain=Binary)
+    model.connected = Var(model.DEMAND_NODES, domain=Binary)
+    model.central_installed = Var(model.CENTRAL_TECHNOLOGIES, domain=Binary)
+    model.central_capacity_kW = Var(model.CENTRAL_TECHNOLOGIES, domain=NonNegativeReals)
+    model.central_heat_output_kW = Var(
+        model.CENTRAL_TECHNOLOGIES,
         model.HOURS,
-        rule=dispatch_capacity_rule,
+        domain=NonNegativeReals,
     )
-
-    def central_heat_balance_rule(pyomo_model: ConcreteModel, hour: int):
-        return sum(
-            pyomo_model.heat_output_kW[technology_id, hour]
-            for technology_id in pyomo_model.TECHNOLOGIES
-        ) == pyomo_model.heat_demand_kW[hour]
-
-    model.central_heat_balance = Constraint(
+    model.local_installed = Var(model.DEMAND_NODES, domain=Binary)
+    model.local_capacity_kW = Var(model.DEMAND_NODES, domain=NonNegativeReals)
+    model.local_heat_output_kW = Var(
+        model.DEMAND_NODES,
         model.HOURS,
-        rule=central_heat_balance_rule,
+        domain=NonNegativeReals,
+    )
+    model.pipe_built = Var(model.SEGMENTS, domain=Binary)
+    model.pipe_capacity_kW = Var(model.SEGMENTS, domain=NonNegativeReals)
+    model.heat_flow_kW = Var(model.SEGMENTS, model.HOURS, domain=Reals)
+    model.network_heat_kW = Var(
+        model.DEMAND_NODES,
+        model.HOURS,
+        domain=NonNegativeReals,
+    )
+    model.topology_flow = Var(model.SEGMENTS, domain=Reals)
+    model.unserved_heat_kW = Var(
+        model.DEMAND_NODES,
+        model.HOURS,
+        domain=NonNegativeReals,
     )
 
-    def electricity_input_power_rule(
-        pyomo_model: ConcreteModel,
-        technology_id: str,
-        hour: int,
-    ):
-        return (
-            pyomo_model.heat_output_kW[technology_id, hour]
-            / pyomo_model.cop[technology_id]
+    model.central_capacity_minimum = Constraint(
+        model.CENTRAL_TECHNOLOGIES,
+        rule=lambda m, technology_id: m.central_capacity_kW[technology_id]
+        >= m.central_capacity_min_kW[technology_id]
+        * m.central_installed[technology_id],
+    )
+    model.central_capacity_maximum = Constraint(
+        model.CENTRAL_TECHNOLOGIES,
+        rule=lambda m, technology_id: m.central_capacity_kW[technology_id]
+        <= m.central_capacity_max_kW[technology_id]
+        * m.central_installed[technology_id],
+    )
+    model.central_dispatch_capacity = Constraint(
+        model.CENTRAL_TECHNOLOGIES,
+        model.HOURS,
+        rule=lambda m, technology_id, hour: m.central_heat_output_kW[
+            technology_id, hour
+        ]
+        <= m.central_capacity_kW[technology_id],
+    )
+    model.local_capacity_minimum = Constraint(
+        model.DEMAND_NODES,
+        rule=lambda m, node: m.local_capacity_kW[node]
+        >= m.local_capacity_min_kW * m.local_installed[node],
+    )
+    model.local_capacity_maximum = Constraint(
+        model.DEMAND_NODES,
+        rule=lambda m, node: m.local_capacity_kW[node]
+        <= m.local_capacity_max_kW * m.local_installed[node],
+    )
+    model.local_dispatch_capacity = Constraint(
+        model.DEMAND_NODES,
+        model.HOURS,
+        rule=lambda m, node, hour: m.local_heat_output_kW[node, hour]
+        <= m.local_capacity_kW[node],
+    )
+    model.service_exclusive = Constraint(
+        model.DEMAND_NODES,
+        rule=lambda m, node: m.local_installed[node] + m.connected[node] == 1,
+    )
+
+    model.connection_requires_site = Constraint(
+        model.DEMAND_NODES,
+        rule=lambda m, node: m.connected[node] <= m.site_built,
+    )
+    model.central_technology_requires_site = Constraint(
+        model.CENTRAL_TECHNOLOGIES,
+        rule=lambda m, technology_id: m.central_installed[technology_id]
+        <= m.site_built,
+    )
+    model.site_requires_central_technology = Constraint(
+        expr=model.site_built
+        <= sum(model.central_installed[technology_id] for technology_id in central_ids)
+    )
+    model.site_requires_connection = Constraint(
+        expr=model.site_built
+        <= sum(model.connected[node] for node in data.demand_nodes)
+    )
+    model.pipe_requires_site = Constraint(
+        model.SEGMENTS,
+        rule=lambda m, segment_id: m.pipe_built[segment_id] <= m.site_built,
+    )
+
+    model.pipe_capacity_limit = Constraint(
+        model.SEGMENTS,
+        rule=lambda m, segment_id: m.pipe_capacity_kW[segment_id]
+        <= m.segment_capacity_max_kW[segment_id] * m.pipe_built[segment_id],
+    )
+    model.heat_flow_upper = Constraint(
+        model.SEGMENTS,
+        model.HOURS,
+        rule=lambda m, segment_id, hour: m.heat_flow_kW[segment_id, hour]
+        <= m.pipe_capacity_kW[segment_id],
+    )
+    model.heat_flow_lower = Constraint(
+        model.SEGMENTS,
+        model.HOURS,
+        rule=lambda m, segment_id, hour: m.heat_flow_kW[segment_id, hour]
+        >= -m.pipe_capacity_kW[segment_id],
+    )
+
+    commodity_big_m = len(data.demand_nodes)
+    model.topology_flow_upper = Constraint(
+        model.SEGMENTS,
+        rule=lambda m, segment_id: m.topology_flow[segment_id]
+        <= commodity_big_m * m.pipe_built[segment_id],
+    )
+    model.topology_flow_lower = Constraint(
+        model.SEGMENTS,
+        rule=lambda m, segment_id: m.topology_flow[segment_id]
+        >= -commodity_big_m * m.pipe_built[segment_id],
+    )
+    model.topology_demand_balance = Constraint(
+        model.DEMAND_NODES,
+        rule=lambda m, node: sum(
+            m.incidence[node, segment_id] * m.topology_flow[segment_id]
+            for segment_id in m.SEGMENTS
+        )
+        == m.connected[node],
+    )
+    model.topology_site_balance = Constraint(
+        expr=sum(
+            model.incidence[data.site_node, segment_id]
+            * model.topology_flow[segment_id]
+            for segment_id in segment_ids
+        )
+        == -sum(model.connected[node] for node in data.demand_nodes)
+    )
+
+    model.central_site_heat_balance = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: sum(
+            m.central_heat_output_kW[technology_id, hour]
+            for technology_id in m.CENTRAL_TECHNOLOGIES
+        )
+        + sum(
+            m.incidence[data.site_node, segment_id] * m.heat_flow_kW[segment_id, hour]
+            for segment_id in m.SEGMENTS
+        )
+        == 0,
+    )
+    model.network_node_heat_balance = Constraint(
+        model.DEMAND_NODES,
+        model.HOURS,
+        rule=lambda m, node, hour: sum(
+            m.incidence[node, segment_id] * m.heat_flow_kW[segment_id, hour]
+            for segment_id in m.SEGMENTS
+        )
+        == m.network_heat_kW[node, hour],
+    )
+    model.network_heat_connection_limit = Constraint(
+        model.DEMAND_NODES,
+        model.HOURS,
+        rule=lambda m, node, hour: m.network_heat_kW[node, hour]
+        <= m.heat_demand_kW[node, hour] * m.connected[node],
+    )
+
+    reachable = _reachable_nodes(data.site_node, data.segments)
+    unreachable_demands = tuple(
+        node for node in data.demand_nodes if node not in reachable
+    )
+    model.UNREACHABLE_DEMAND_NODES = Set(
+        within=model.DEMAND_NODES,
+        initialize=unreachable_demands,
+        ordered=True,
+    )
+    model.unreachable_cannot_connect = Constraint(
+        model.UNREACHABLE_DEMAND_NODES,
+        rule=lambda m, node: m.connected[node] == 0,
+    )
+    model.demand_heat_balance = Constraint(
+        model.DEMAND_NODES,
+        model.HOURS,
+        rule=lambda m, node, hour: m.network_heat_kW[node, hour]
+        + m.local_heat_output_kW[node, hour]
+        + m.unserved_heat_kW[node, hour]
+        == m.heat_demand_kW[node, hour],
+    )
+
+    if data.mode == "central":
+        model.mode_site = Constraint(expr=model.site_built == 1)
+        model.mode_connections = Constraint(
+            model.DEMAND_NODES,
+            rule=lambda m, node: m.connected[node] == 1,
+        )
+    elif data.mode == "distributed":
+        model.mode_site = Constraint(expr=model.site_built == 0)
+        model.mode_connections = Constraint(
+            model.DEMAND_NODES,
+            rule=lambda m, node: m.connected[node] == 0,
+        )
+        model.mode_pipes = Constraint(
+            model.SEGMENTS,
+            rule=lambda m, segment_id: m.pipe_built[segment_id] == 0,
+        )
+        model.mode_central_technologies = Constraint(
+            model.CENTRAL_TECHNOLOGIES,
+            rule=lambda m, technology_id: m.central_installed[technology_id] == 0,
         )
 
-    model.electricity_input_kW_e = Expression(
-        model.AIR_SOURCE_HEAT_PUMPS,
+    model.central_electricity_input_kW_e = Expression(
+        model.CENTRAL_AIR_SOURCE_HEAT_PUMPS,
         model.HOURS,
-        rule=electricity_input_power_rule,
+        rule=lambda m, technology_id, hour: m.central_heat_output_kW[
+            technology_id, hour
+        ]
+        / m.central_ashp_cop[technology_id],
     )
-    model.electricity_input_kWh_e = Expression(
-        model.AIR_SOURCE_HEAT_PUMPS,
+    model.central_electricity_input_kWh_e = Expression(
+        model.CENTRAL_AIR_SOURCE_HEAT_PUMPS,
         model.HOURS,
-        rule=lambda pyomo_model, technology_id, hour: (
-            pyomo_model.electricity_input_kW_e[technology_id, hour]
-            * pyomo_model.timestep_hours
-        ),
+        rule=lambda m, technology_id, hour: m.central_electricity_input_kW_e[
+            technology_id, hour
+        ]
+        * m.timestep_hours,
     )
-
-    def gas_input_power_rule(
-        pyomo_model: ConcreteModel,
-        technology_id: str,
-        hour: int,
-    ):
-        return (
-            pyomo_model.heat_output_kW[technology_id, hour]
-            / pyomo_model.efficiency[technology_id]
-        )
-
     model.gas_input_kW_LHV = Expression(
-        model.GAS_BOILERS,
+        model.CENTRAL_GAS_BOILERS,
         model.HOURS,
-        rule=gas_input_power_rule,
+        rule=lambda m, technology_id, hour: m.central_heat_output_kW[
+            technology_id, hour
+        ]
+        / m.central_boiler_efficiency[technology_id],
     )
     model.gas_input_kWh_LHV = Expression(
-        model.GAS_BOILERS,
+        model.CENTRAL_GAS_BOILERS,
         model.HOURS,
-        rule=lambda pyomo_model, technology_id, hour: (
-            pyomo_model.gas_input_kW_LHV[technology_id, hour]
-            * pyomo_model.timestep_hours
-        ),
+        rule=lambda m, technology_id, hour: m.gas_input_kW_LHV[
+            technology_id, hour
+        ]
+        * m.timestep_hours,
+    )
+    model.local_electricity_input_kW_e = Expression(
+        model.DEMAND_NODES,
+        model.HOURS,
+        rule=lambda m, node, hour: m.local_heat_output_kW[node, hour]
+        / m.local_ashp_cop,
+    )
+    model.local_electricity_input_kWh_e = Expression(
+        model.DEMAND_NODES,
+        model.HOURS,
+        rule=lambda m, node, hour: m.local_electricity_input_kW_e[node, hour]
+        * m.timestep_hours,
     )
 
-    # 这是节点 2 的非经济代理目标，只选择满足峰值所需的最小总容量。
-    # 正式年化总成本将在后续经济节点替换它。
-    model.temporary_capacity_proxy_objective = Objective(
+    # 节点 3 只以未供热量为临时单目标，不使用混合量纲 epsilon/tie-breaker。
+    # 容量、拓扑和技术选择不应在正式年化成本加入前被解释为经济最优。
+    model.temporary_non_economic_proxy = Objective(
         expr=sum(
-            model.installed_capacity_kW[technology_id]
-            for technology_id in model.TECHNOLOGIES
+            model.unserved_heat_kW[node, hour]
+            for node in data.demand_nodes
+            for hour in data.hours
         ),
         sense=minimize,
     )
@@ -413,7 +723,7 @@ def solve_core_model(
     data: CoreModelInput,
     settings: SolverSettings | None = None,
 ) -> CoreSolveResult:
-    """构建并通过竞赛层安全求解接口求解中央双设备模型。"""
+    """构建并通过竞赛层安全求解接口求解三模式核心。"""
 
     model = build_core_model(data)
     solver_results = solve_pyomo_model(model, settings)
