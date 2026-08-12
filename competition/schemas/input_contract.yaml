@@ -1,11 +1,25 @@
-contract_version: competition_input_v1
-status: unit_and_time_enforced_other_validation_pending
+contract_version: competition_input_v2
+status: unit_time_enforced_device_price_contract_frozen_validator_and_model_pending
 case_config_schema: case_config.schema.json
 
 p0_execution_scope:
+  required_enabled_technology_roles:
+    central_air_source_heat_pump:
+      technology_type: air_source_heat_pump
+      applicable_scope: central
+      energy_carrier: electricity
+    central_gas_boiler:
+      technology_type: gas_boiler
+      applicable_scope: central
+      energy_carrier: gas
+    local_air_source_heat_pump:
+      technology_type: air_source_heat_pump
+      applicable_scope: local
+      energy_carrier: electricity
   supported_technology_types:
-    - fixed_heat_source
-  fixed_heat_source_semantics: purchased_or_synthetic_heat_priced_at_useful_heat_output
+    - air_source_heat_pump
+    - gas_boiler
+  fixed_heat_source_v1_status: removed_from_executable_contract
   rejected_features:
     - waste_heat
     - thermal_storage
@@ -15,12 +29,20 @@ p0_execution_scope:
 canonical_units:
   heating_power: kW
   heating_energy: kWh
+  electricity_energy: kWh_e
+  gas_energy: kWh_LHV
   currency: CNY
+  electricity_price: CNY_per_kWh_e
+  gas_price: CNY_per_kWh_LHV
+  electricity_carbon_intensity: kgCO2e_per_kWh_e
+  gas_carbon_intensity: kgCO2e_per_kWh_LHV
   area: m2
   length: m
   temperature: degC
   carbon: kgCO2e
   timestep: 1h
+  time_weight: h_per_year
+  cop_and_efficiency: dimensionless
 
 canonical_time:
   timezone: Asia/Shanghai
@@ -61,15 +83,17 @@ technology_support_status:
     - waste_heat_heat_pump
     - electric_boiler
     - gas_boiler
-    - fixed_heat_source
     - thermal_storage
   p0_smoke_target:
-    - fixed_heat_source
+    - central_air_source_heat_pump
+    - central_gas_boiler
+    - local_air_source_heat_pump
   contract_executable_types:
-    - fixed_heat_source
+    - air_source_heat_pump
+    - gas_boiler
   current_pipeline_implementation_status: pending_adapter_and_model_nodes
-  note: Contract support defines the P0 target interface; it does not claim the current code pipeline already implements it.
-  execution_rule: An enabled technology must be in p0_execution_scope.supported_technology_types; run_case must also verify its implementation registry before execution.
+  note: Contract support defines the P0 target interface; it does not claim the current code pipeline already implements independent heat-pump and boiler dispatch.
+  execution_rule: A v2 case must enable at least one independent technology_id for each required role; the input validator and run_case must also verify their implementation registry before execution.
 
 files:
   buildings:
@@ -176,7 +200,6 @@ files:
           - waste_heat_heat_pump
           - electric_boiler
           - gas_boiler
-          - fixed_heat_source
           - thermal_storage
       applicable_scope:
         type: string
@@ -190,7 +213,6 @@ files:
           - electricity
           - gas
           - waste_heat
-          - synthetic_heat
           - none
       cop:
         type: float
@@ -249,11 +271,17 @@ files:
           - synthetic_test
     row_rules:
       - capacity_max_kW_gte_capacity_min_kW
-      - enabled_heat_pump_requires_cop
-      - enabled_boiler_requires_efficiency
-      - enabled_fixed_heat_source_requires_energy_carrier_synthetic_heat
-      - enabled_fixed_heat_source_requires_cop_and_efficiency_null
-      - enabled_fixed_heat_source_variable_cost_is_per_kWh_useful_heat_output
+      - air_source_heat_pump_requires_energy_carrier_electricity
+      - air_source_heat_pump_applicable_scope_must_be_central_or_local_not_both
+      - air_source_heat_pump_requires_finite_cop_gt_zero_and_efficiency_null
+      - gas_boiler_requires_energy_carrier_gas
+      - gas_boiler_applicable_scope_must_be_central
+      - gas_boiler_requires_finite_efficiency_gt_zero_lte_one_and_cop_null
+      - v2_enabled_roles_require_distinct_technology_ids
+      - v2_requires_enabled_central_air_source_heat_pump
+      - v2_requires_enabled_central_gas_boiler
+      - v2_requires_enabled_local_air_source_heat_pump
+      - fixed_heat_source_and_synthetic_heat_are_not_valid_v2_rows
       - synthetic_case_requires_synthetic_test
     allow_extra_columns: true
     extra_columns_policy: documented_performance_or_storage_extension
@@ -337,6 +365,13 @@ files:
         nullable: false
         nonempty_after_trim: true
         constant_within_case: true
+      time_weight_h_per_year:
+        type: float64
+        nullable: false
+        finite: true
+        exclusive_minimum: 0
+        unit: h_per_year
+        semantics: public_hour_weight_shared_by_all_technologies
     conditional_columns:
       outdoor_temperature_C:
         required_for:
@@ -345,30 +380,38 @@ files:
         nullable: false
         finite: true
         unit: degC
-      electricity_price_CNY_per_kWh:
+      electricity_price_CNY_per_kWh_e:
         required_for_energy_carrier: electricity
         type: float64
         nullable: false
         finite: true
         minimum: 0
+        unit: CNY_per_kWh_e
+        semantics: absolute_tariff_not_multiplier_or_index
       gas_price_CNY_per_kWh_LHV:
         required_for_energy_carrier: gas
         type: float64
         nullable: false
         finite: true
         minimum: 0
-      electricity_carbon_kgCO2e_per_kWh:
+        unit: CNY_per_kWh_LHV
+        semantics: absolute_tariff_not_multiplier_or_index
+      electricity_carbon_kgCO2e_per_kWh_e:
         required_for_energy_carrier: electricity
         type: float64
         nullable: false
         finite: true
         minimum: 0
+        unit: kgCO2e_per_kWh_e
+        current_use: input_traceability_only_not_consumed_by_core_cost_objective
       gas_carbon_kgCO2e_per_kWh_LHV:
         required_for_energy_carrier: gas
         type: float64
         nullable: false
         finite: true
         minimum: 0
+        unit: kgCO2e_per_kWh_LHV
+        current_use: input_traceability_only_not_consumed_by_core_cost_objective
       resource_availability:
         naming_pattern: resource_available_kW__<resource_id>
         required_for_each_resource_anchor: true
@@ -377,6 +420,13 @@ files:
         finite: true
         minimum: 0
         unit: kW
+    forbidden_price_fields:
+      - electricity_price_CNY_per_kWh
+      - electricity_price_multiplier
+      - electricity_price_index
+      - gas_price_multiplier
+      - gas_price_index
+    price_rule: enabled_energy_carriers_use_only_absolute_timestamp_level_prices
 
   case_config:
     path: case_config.yaml
@@ -393,6 +443,10 @@ cross_file_rules:
   - dhw_included_equals_case_config_dhw_input_includes_dhw
   - case_config_confirms_area_scaling_already_applied
   - enabled_technology_ids_exist_in_technologies
+  - enabled_technologies_include_distinct_central_air_source_heat_pump_central_gas_boiler_and_local_air_source_heat_pump
+  - fixed_heat_source_and_synthetic_heat_are_rejected_in_v2
+  - electricity_and_gas_prices_are_absolute_not_multiplier_or_index
+  - all_technologies_share_external_timeseries_time_weight_h_per_year
   - resource_anchor_technology_ids_are_enabled
   - all_geospatial_crs_equal_case_config_input_crs
   - all_geometry_is_nonempty_and_valid
@@ -506,12 +560,12 @@ generated_intermediates:
       unit: legacy_on_disk_generation_source_identifier_renamed_to_source_before_model
       heat_unit_id: Heat_Nodes.node_foreign_key
       technology_id: technologies.technology_id_foreign_key
-      technology_type: fixed_heat_source_for_P0
+      technology_type: legacy_reader_does_not_preserve_v2_technology_type
       isWH: binary_zero_for_P0
-      isBoiler: binary_one_for_legacy_dispatchable_source_compatibility
+      isBoiler: legacy_dispatchable_flag_not_a_v2_business_technology_type
       isTES: binary_zero_for_P0
-      OMVarCost: CNY_per_kWh_useful_heat
-      PowerInvCost: legacy_cost_column_semantics_pending_model_task
+      OMVarCost: legacy_combined_cost_column_not_valid_for_v2_energy_carrier_accounting
+      PowerInvCost: legacy_cost_column_semantics_pending_v2_model_adapter
       StorageInvCost: zero_for_P0
     foreign_keys:
       heat_unit_id: Heat_Nodes.node
@@ -545,14 +599,14 @@ generated_intermediates:
       pCostPumping: CNY_per_m_per_m3
       pTsupply: degC
       pTreturn: degC
-      phWeight: one_for_each_observed_smoke_hour
+      phWeight: legacy_scalar_not_authoritative_for_v2_time_weight_h_per_year
       pPipeCostIni: legacy_pipe_cost_parameter
       pPipeCostsSlope: legacy_pipe_flow_slope_parameter
       pMassFlowIni: m3_per_h
       allow_double_heating: boolean
     row_rules:
       - pTsupply_gt_pTreturn
-      - phWeight_equals_one_in_competition_input_v1
+      - v2_adapter_must_not_replace_time_weight_h_per_year_with_an_unrecorded_scalar
       - all_numeric_values_finite
 
 legacy_adapter_contract:

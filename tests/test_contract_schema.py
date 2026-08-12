@@ -53,7 +53,7 @@ def valid_config() -> dict[str, object]:
     """A schema example only; all numerical values are synthetic test values."""
 
     return {
-        "contract_version": "competition_input_v1",
+        "contract_version": "competition_input_v2",
         "case_id": "minimal",
         "scenario_id": "smoke",
         "data_version": "synthetic-v1",
@@ -69,11 +69,19 @@ def valid_config() -> dict[str, object]:
         "units": {
             "heating_power": "kW",
             "heating_energy": "kWh",
+            "electricity_energy": "kWh_e",
+            "gas_energy": "kWh_LHV",
             "currency": "CNY",
+            "electricity_price": "CNY_per_kWh_e",
+            "gas_price": "CNY_per_kWh_LHV",
+            "electricity_carbon_intensity": "kgCO2e_per_kWh_e",
+            "gas_carbon_intensity": "kgCO2e_per_kWh_LHV",
             "area": "m2",
             "length": "m",
             "temperature": "degC",
             "carbon": "kgCO2e",
+            "time_weight": "h_per_year",
+            "cop_and_efficiency": "dimensionless",
         },
         "crs": {"input": "EPSG:4326", "projected": "EPSG:32650"},
         "files": {
@@ -106,7 +114,11 @@ def valid_config() -> dict[str, object]:
             "price_base_year": 2026,
             "currency": "CNY",
         },
-        "enabled_technology_ids": ["synthetic_fixed_source"],
+        "enabled_technology_ids": [
+            "central_ashp",
+            "central_gas_boiler",
+            "local_ashp",
+        ],
         "solver": {
             "name": "highs",
             "threads": 1,
@@ -132,15 +144,26 @@ def test_machine_contract_is_parseable_and_has_no_duplicate_keys() -> None:
     _assert_unique_yaml_keys(syntax_tree)
     contract = yaml.safe_load(raw)
 
-    assert contract["contract_version"] == "competition_input_v1"
+    assert contract["contract_version"] == "competition_input_v2"
     assert contract["canonical_units"]["heating_power"] == "kW"
     external_columns = contract["files"]["external_timeseries"]["required_columns"]
     assert "timestamp" in external_columns
     assert "data_version" in external_columns
     assert contract["legacy_adapter_contract"]["unit_conversion_count"] == 0
     assert contract["technology_support_status"]["contract_executable_types"] == [
-        "fixed_heat_source"
+        "air_source_heat_pump",
+        "gas_boiler",
     ]
+    required_roles = contract["p0_execution_scope"]["required_enabled_technology_roles"]
+    assert set(required_roles) == {
+        "central_air_source_heat_pump",
+        "central_gas_boiler",
+        "local_air_source_heat_pump",
+    }
+    external = contract["files"]["external_timeseries"]
+    assert "time_weight_h_per_year" in external["required_columns"]
+    assert "electricity_price_CNY_per_kWh_e" in external["conditional_columns"]
+    assert "electricity_price_CNY_per_kWh" in external["forbidden_price_fields"]
     assert "Heat_Demand.csv" in contract["generated_intermediates"]
     assert "Heat_Network.geojson" in contract["generated_intermediates"]
     assert "NODE_REFERENCE_MISSING" in contract["validation_error_codes"]
@@ -181,6 +204,88 @@ def test_unknown_case_config_key_is_rejected(
     invalid["undocumented_switch"] = True
     validator = Draft202012Validator(case_schema, format_checker=FormatChecker())
     assert list(validator.iter_errors(invalid))
+
+
+def test_v1_contract_version_is_rejected(
+    case_schema: dict[str, object], valid_config: dict[str, object]
+) -> None:
+    invalid = copy.deepcopy(valid_config)
+    invalid["contract_version"] = "competition_input_v1"
+    validator = Draft202012Validator(case_schema, format_checker=FormatChecker())
+    assert list(validator.iter_errors(invalid))
+
+
+@pytest.mark.parametrize(
+    "enabled_ids",
+    [
+        ["central_ashp"],
+        ["central_ashp", "central_gas_boiler"],
+        ["central_ashp", "central_ashp", "local_ashp"],
+    ],
+)
+def test_v2_schema_requires_three_unique_enabled_technology_ids(
+    case_schema: dict[str, object],
+    valid_config: dict[str, object],
+    enabled_ids: list[str],
+) -> None:
+    invalid = copy.deepcopy(valid_config)
+    invalid["enabled_technology_ids"] = enabled_ids
+    validator = Draft202012Validator(case_schema, format_checker=FormatChecker())
+    assert list(validator.iter_errors(invalid))
+
+
+def test_v2_machine_contract_freezes_independent_device_rows() -> None:
+    contract = yaml.safe_load(
+        (SCHEMA_DIRECTORY / "input_contract.yaml").read_text(encoding="utf-8")
+    )
+    technologies = contract["files"]["technologies"]
+    row_rules = set(technologies["row_rules"])
+
+    assert "fixed_heat_source" not in technologies["required_columns"][
+        "technology_type"
+    ]["allowed"]
+    assert "synthetic_heat" not in technologies["required_columns"][
+        "energy_carrier"
+    ]["allowed"]
+    assert {
+        "air_source_heat_pump_requires_energy_carrier_electricity",
+        "air_source_heat_pump_applicable_scope_must_be_central_or_local_not_both",
+        "air_source_heat_pump_requires_finite_cop_gt_zero_and_efficiency_null",
+        "gas_boiler_requires_energy_carrier_gas",
+        "gas_boiler_applicable_scope_must_be_central",
+        "gas_boiler_requires_finite_efficiency_gt_zero_lte_one_and_cop_null",
+        "v2_enabled_roles_require_distinct_technology_ids",
+    } <= row_rules
+
+
+def test_v2_machine_contract_uses_absolute_prices_and_public_time_weight() -> None:
+    contract = yaml.safe_load(
+        (SCHEMA_DIRECTORY / "input_contract.yaml").read_text(encoding="utf-8")
+    )
+    external = contract["files"]["external_timeseries"]
+    conditional = external["conditional_columns"]
+
+    assert external["required_columns"]["time_weight_h_per_year"] == {
+        "type": "float64",
+        "nullable": False,
+        "finite": True,
+        "exclusive_minimum": 0,
+        "unit": "h_per_year",
+        "semantics": "public_hour_weight_shared_by_all_technologies",
+    }
+    assert conditional["electricity_price_CNY_per_kWh_e"]["semantics"] == (
+        "absolute_tariff_not_multiplier_or_index"
+    )
+    assert conditional["gas_price_CNY_per_kWh_LHV"]["semantics"] == (
+        "absolute_tariff_not_multiplier_or_index"
+    )
+    assert conditional["electricity_carbon_kgCO2e_per_kWh_e"]["current_use"] == (
+        "input_traceability_only_not_consumed_by_core_cost_objective"
+    )
+    assert all(
+        "multiplier" in field or "index" in field or field.endswith("per_kWh")
+        for field in external["forbidden_price_fields"]
+    )
 
 
 @pytest.mark.parametrize(

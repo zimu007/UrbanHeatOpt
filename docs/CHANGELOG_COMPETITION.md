@@ -1,5 +1,36 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-12 — CONTRACT-02 发布独立设备与能源价格输入契约 v2
+
+### 更改内容
+
+- 将比赛运行入口升级为 `competition_input_v2`，废止 v1 以 `fixed_heat_source/synthetic_heat` 代表所有设备的可执行口径。
+- 冻结三个必需且 ID 相互独立的设备角色：中央空气源热泵、中央燃气锅炉和分布式空气源热泵；使用 `technology_type` 与 `applicable_scope` 表达，不新增含糊的“区域热泵”类型。
+- 空气源热泵必须使用电力载体、固定 `COP>0` 且效率为空；燃气锅炉必须使用燃气载体、固定 LHV 效率 `0<efficiency<=1` 且 COP 为空。
+- 统一电力输入 `kWh_e`、燃气输入 `kWh_LHV`、绝对电价 `CNY/kWh_e`、绝对 LHV 气价 `CNY/kWh_LHV` 和公共年化权重 `time_weight_h_per_year`；禁止价格 multiplier/index 和旧电价列名。
+- 电力碳因子同步改为 `electricity_carbon_kgCO2e_per_kWh_e`，与 LHV 气侧因子共同保留输入追溯；当前成本目标不消费碳因子。
+- 更新机器契约、案例 Schema、数据契约、模型假设和资源测试；路线图只勾选本输入契约节点，未勾选输入校验器、最小样例、独立设备模型、年化成本或碳排能力。
+
+### 更改目的
+
+纠正把区域热泵和燃气锅炉预先折算为一个合成有用热源的错误边界，使 COP、效率、能源输入和逐时价格成为后续模型可验证的独立输入，同时避免设备专属时间权重和相对价格指数造成无法追溯的年化成本。
+
+### 验证方法与结果
+
+```powershell
+conda run --no-capture-output -n urbanheatopt_env python -m pytest -q tests/test_contract_schema.py
+git diff --check
+```
+
+- 契约测试覆盖 v2 Schema、v1 拒绝、至少三个唯一启用 ID、三种设备角色、COP/效率与载体规则、绝对电气价格、公共正权重及碳因子单位命名。
+- 本节点不读取真实数据，不修改 `model.py`、`_config.yaml`、默认 Excel 或仓库外 `IN_DATA`。
+
+### 已知风险与边界
+
+- JSON Schema 只能约束 `enabled_technology_ids` 至少三个且唯一；三个 ID 是否分别解析为中央热泵、中央燃气锅炉和本地热泵，必须由后续跨文件校验器执行。
+- 当前旧模型仍将可调热源归入 `isBoiler` 集合，并使用合并的 `OMVarCost`；它尚未按 technology_id 独立建立容量、出力、电耗、燃气耗和成本分项。
+- 正式 COP、效率、投资、运维、寿命、电气价格和 `time_weight_h_per_year` 数值仍需项目责任方提供；本节点只冻结格式和公式边界，没有编造武汉参数。
+
 ## 2026-08-11 — SOLVER-01 确定可移植求解器
 
 ### 更改内容

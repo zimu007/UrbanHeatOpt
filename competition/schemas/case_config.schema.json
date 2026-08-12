@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://urbanheatopt.local/schemas/case_config.schema.json",
   "title": "UrbanHeatOpt competition case configuration",
-  "description": "Schema for competition_input_v1. YAML files are validated after loading to a JSON-compatible object.",
+  "description": "Schema for competition_input_v2. YAML files are validated after loading to a JSON-compatible object.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -28,7 +28,7 @@
   ],
   "properties": {
     "contract_version": {
-      "const": "competition_input_v1"
+      "const": "competition_input_v2"
     },
     "case_id": {
       "type": "string",
@@ -89,11 +89,19 @@
       "required": [
         "heating_power",
         "heating_energy",
+        "electricity_energy",
+        "gas_energy",
         "currency",
+        "electricity_price",
+        "gas_price",
+        "electricity_carbon_intensity",
+        "gas_carbon_intensity",
         "area",
         "length",
         "temperature",
-        "carbon"
+        "carbon",
+        "time_weight",
+        "cop_and_efficiency"
       ],
       "properties": {
         "heating_power": {
@@ -102,8 +110,26 @@
         "heating_energy": {
           "const": "kWh"
         },
+        "electricity_energy": {
+          "const": "kWh_e"
+        },
+        "gas_energy": {
+          "const": "kWh_LHV"
+        },
         "currency": {
           "const": "CNY"
+        },
+        "electricity_price": {
+          "const": "CNY_per_kWh_e"
+        },
+        "gas_price": {
+          "const": "CNY_per_kWh_LHV"
+        },
+        "electricity_carbon_intensity": {
+          "const": "kgCO2e_per_kWh_e"
+        },
+        "gas_carbon_intensity": {
+          "const": "kgCO2e_per_kWh_LHV"
         },
         "area": {
           "const": "m2"
@@ -116,6 +142,12 @@
         },
         "carbon": {
           "const": "kgCO2e"
+        },
+        "time_weight": {
+          "const": "h_per_year"
+        },
+        "cop_and_efficiency": {
+          "const": "dimensionless"
         }
       }
     },
@@ -161,7 +193,7 @@
         },
         "resource_anchors": {
           "type": "null",
-          "$comment": "P0 competition_input_v1 does not execute resource-anchor technologies. A later contract version may allow resource_anchors.geojson."
+          "$comment": "P0 competition_input_v2 does not execute resource-anchor technologies. A later contract version may allow resource_anchors.geojson."
         },
         "external_timeseries": {
           "const": "external_timeseries.parquet"
@@ -254,7 +286,7 @@
           "const": false
         }
       },
-      "$comment": "competition_input_v1 accepts final heating loads and never synthesizes DHW in the adapter."
+      "$comment": "competition_input_v2 accepts final heating loads and never synthesizes DHW in the adapter."
     },
     "features": {
       "type": "object",
@@ -271,7 +303,7 @@
           "const": false
         }
       },
-      "$comment": "Waste heat and storage are registered future capabilities but are rejected by the P0 v1 execution contract."
+      "$comment": "Waste heat and storage are registered future capabilities but are rejected by the P0 v2 execution contract."
     },
     "network": {
       "type": "object",
@@ -320,12 +352,13 @@
     },
     "enabled_technology_ids": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 3,
       "uniqueItems": true,
       "items": {
         "type": "string",
         "minLength": 1
-      }
+      },
+      "$comment": "The cross-file validator must resolve at least one distinct enabled ID for each required role: central ASHP, central gas boiler, and local ASHP. IDs are project data and are not hard-coded in this schema."
     },
     "solver": {
       "type": "object",
