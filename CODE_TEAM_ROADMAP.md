@@ -223,8 +223,10 @@ UrbanHeatOpt/
 
 交付物：设备技术表、碳排模块、柔性模块、单元测试和公式说明。
 
-- [ ] 将设备参数从散落的列升级为明确的 `technology_id` 数据结构。
-- [ ] 先实现固定 COP 热泵，再实现二维/三维性能曲线插值或分段线性化。
+- [x] 将设备参数从散落的列升级为明确的 `technology_id` 数据结构。
+  - 完成记录（2026-08-12）：新增独立于旧 `model.py` 的竞赛中央双设备核心；`TechnologySpec` 逐列对应 v2 `technologies.csv`，中央空气源热泵和中央燃气锅炉由 `technology_type + applicable_scope + energy_carrier` 派生，分别建立装机容量与逐时热出力。当前只覆盖两种中央技术；分布式热泵、三模式、管网与接入仍未实现。
+- [x] 先实现固定 COP 热泵，再实现二维/三维性能曲线插值或分段线性化。
+  - 完成记录（2026-08-12）：中央空气源热泵显式使用 `electricity_input = heat_output / COP`，中央燃气锅炉显式使用 `gas_input_LHV = heat_output / efficiency`；100 kW 单时段容量强制拆分测试得到 60 kW 热泵、40 kW 锅炉、15 kWh_e 与 44.444... kWh_LHV。这里只完成固定 COP/效率中央模型，温度、供水温度和 PLR 曲线仍未实现。
 - [ ] 加入电、气和余热的逐时成本与碳排。
 - [ ] 用 epsilon-constraint 或权重扫描生成 Pareto 点，不只给一个加权结果。
 - [ ] 先接入负荷组给出的柔性上下界；如建立 RC 模型，必须用 DeST 扰动工况校准。
