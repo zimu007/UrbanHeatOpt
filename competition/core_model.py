@@ -1,8 +1,8 @@
-"""竞赛版三模式源—网—荷最小核心模型。
+"""竞赛版三模式源—网—荷与年化经济最小核心模型。
 
 本模块独立于旧 ``model.py``。当前只实现固定 COP/效率、一个中央站点、
-多个需求节点、无向候选物理管段和未供热量；正式年化成本、储热、余热、
-管网热损失与多站点均留给后续节点。
+多个需求节点、无向候选物理管段、未供热量和附件口径的简单年化成本；
+储热、余热、管网热损失与多站点均留给后续节点。
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class CoreModelInputError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class TechnologySpec:
-    """逐列对应 competition_input_v2 ``technologies.csv``。"""
+    """逐列对应 competition_input_v2_1 ``technologies.csv``。"""
 
     technology_id: str
     technology_type: str
@@ -57,8 +57,8 @@ class TechnologySpec:
     capacity_min_kW: float
     capacity_max_kW: float
     capex_CNY_per_kW: float
-    fixed_om_CNY_per_kW_year: float
-    variable_om_CNY_per_kWh_heat: float
+    fixed_maintenance_fraction_per_year: float
+    variable_om_CNY_per_kWh_th: float
     lifetime_years: int
     source: str
     assumption_flag: str
@@ -73,6 +73,39 @@ class SegmentSpec:
     node_v: str
     length_m: float
     capacity_max_kW: float
+    pipe_capex_CNY_per_m: float
+    lifetime_years: int
+
+
+@dataclass(frozen=True, slots=True)
+class EconomicInput:
+    """竞赛核心使用的年度成本边界。
+
+    逐时映射的键必须与 ``CoreModelInput.hours`` 完全一致。燃气价格已经是
+    ``CNY/kWh_LHV``；本核心不接收或换算来源未确认的体积燃气价格。
+    """
+
+    time_weight_h_per_year: Mapping[int, float]
+    electricity_price_CNY_per_kWh_e: Mapping[int, float]
+    gas_price_CNY_per_kWh_LHV: Mapping[int, float]
+    expected_weight_sum_h_per_year: float
+    connection_capex_CNY: Mapping[str, float]
+    connection_lifetime_years: Mapping[str, int]
+    hns_penalty_CNY_per_kWh: float
+
+    def __post_init__(self) -> None:
+        """复制并冻结所有映射，阻断调用方在构模前后篡改经济输入。"""
+
+        for field in (
+            "time_weight_h_per_year",
+            "electricity_price_CNY_per_kWh_e",
+            "gas_price_CNY_per_kWh_LHV",
+            "connection_capex_CNY",
+            "connection_lifetime_years",
+        ):
+            source = getattr(self, field)
+            if isinstance(source, Mapping):
+                object.__setattr__(self, field, MappingProxyType(dict(source)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,8 +114,7 @@ class CoreModelInput:
 
     ``heat_demand_kW`` 使用 ``(demand_node, hour)`` 作为键。技术表必须
     恰好投影出中央空气源热泵、中央燃气锅炉和分布式空气源热泵三种角色。
-    价格、年化小时权重和完整成本边界将在后续经济节点加入；本节点不消费
-    ``TechnologySpec`` 中已经冻结的经济字段。
+    价格、年化小时权重、接入成本和未供热罚值由 ``economics`` 显式给出。
     """
 
     mode: str
@@ -92,6 +124,7 @@ class CoreModelInput:
     heat_demand_kW: Mapping[tuple[str, int], float]
     technologies: tuple[TechnologySpec, ...]
     segments: tuple[SegmentSpec, ...]
+    economics: EconomicInput
 
     def __post_init__(self) -> None:
         """复制并冻结负荷映射，阻断调用方在构模前后篡改输入。"""
@@ -142,12 +175,16 @@ def _validate_capacity(spec: TechnologySpec, role: str) -> None:
 def _validate_contract_metadata(spec: TechnologySpec, role: str) -> None:
     for field in (
         "capex_CNY_per_kW",
-        "fixed_om_CNY_per_kW_year",
-        "variable_om_CNY_per_kWh_heat",
+        "fixed_maintenance_fraction_per_year",
+        "variable_om_CNY_per_kWh_th",
     ):
         value = _finite_real(getattr(spec, field), f"{role}.{field}")
         if value < 0:
             raise CoreModelInputError(f"{role}.{field} 必须大于等于 0")
+        if field == "fixed_maintenance_fraction_per_year" and value > 1:
+            raise CoreModelInputError(
+                f"{role}.{field} 必须小于等于 1"
+            )
     if (
         isinstance(spec.lifetime_years, bool)
         or not isinstance(spec.lifetime_years, Integral)
@@ -306,13 +343,128 @@ def _validate_segments(
             segment.capacity_max_kW,
             f"segments[{index}].capacity_max_kW",
         )
+        pipe_capex = _finite_real(
+            segment.pipe_capex_CNY_per_m,
+            f"segments[{index}].pipe_capex_CNY_per_m",
+        )
         if length <= 0:
             raise CoreModelInputError(f"segments[{index}].length_m 必须大于 0")
         if capacity <= 0:
             raise CoreModelInputError(
                 f"segments[{index}].capacity_max_kW 必须大于 0"
             )
+        if pipe_capex < 0:
+            raise CoreModelInputError(
+                f"segments[{index}].pipe_capex_CNY_per_m 必须大于等于 0"
+            )
+        if (
+            isinstance(segment.lifetime_years, bool)
+            or not isinstance(segment.lifetime_years, Integral)
+            or int(segment.lifetime_years) < 1
+        ):
+            raise CoreModelInputError(
+                f"segments[{index}].lifetime_years 必须是大于等于 1 的整数"
+            )
     return segments
+
+
+def _validate_hourly_mapping(
+    values: object,
+    hours: tuple[int, ...],
+    field: str,
+    *,
+    strictly_positive: bool,
+) -> dict[int, float]:
+    if not isinstance(values, Mapping):
+        raise CoreModelInputError(f"{field} 必须是 hour 到数值的映射")
+    if any(
+        isinstance(hour, bool) or not isinstance(hour, Integral)
+        for hour in values.keys()
+    ):
+        raise CoreModelInputError(f"{field} 的 hour 键必须全部为整数")
+    if set(values.keys()) != set(hours):
+        raise CoreModelInputError(f"{field} 必须且只能覆盖 hours 中的全部小时")
+    normalized: dict[int, float] = {}
+    for hour in hours:
+        value = _finite_real(values[hour], f"{field}[{hour}]")
+        if strictly_positive and value <= 0:
+            raise CoreModelInputError(f"{field}[{hour}] 必须大于 0")
+        if not strictly_positive and value < 0:
+            raise CoreModelInputError(f"{field}[{hour}] 必须大于等于 0")
+        normalized[hour] = value
+    return normalized
+
+
+def _validate_economics(
+    economics: object,
+    hours: tuple[int, ...],
+    demand_nodes: tuple[str, ...],
+) -> None:
+    if not isinstance(economics, EconomicInput):
+        raise CoreModelInputError("economics 必须是 EconomicInput")
+
+    weights = _validate_hourly_mapping(
+        economics.time_weight_h_per_year,
+        hours,
+        "economics.time_weight_h_per_year",
+        strictly_positive=True,
+    )
+    _validate_hourly_mapping(
+        economics.electricity_price_CNY_per_kWh_e,
+        hours,
+        "economics.electricity_price_CNY_per_kWh_e",
+        strictly_positive=False,
+    )
+    _validate_hourly_mapping(
+        economics.gas_price_CNY_per_kWh_LHV,
+        hours,
+        "economics.gas_price_CNY_per_kWh_LHV",
+        strictly_positive=False,
+    )
+    expected_weight = _finite_real(
+        economics.expected_weight_sum_h_per_year,
+        "economics.expected_weight_sum_h_per_year",
+    )
+    if expected_weight <= 0:
+        raise CoreModelInputError(
+            "economics.expected_weight_sum_h_per_year 必须大于 0"
+        )
+    if abs(sum(weights.values()) - expected_weight) > 1e-9:
+        raise CoreModelInputError(
+            "time_weight_h_per_year 之和必须与 expected_weight_sum_h_per_year 一致"
+        )
+
+    for field in ("connection_capex_CNY", "connection_lifetime_years"):
+        values = getattr(economics, field)
+        if not isinstance(values, Mapping) or set(values.keys()) != set(demand_nodes):
+            raise CoreModelInputError(f"economics.{field} 必须且只能覆盖 demand_nodes")
+    for node in demand_nodes:
+        capex = _finite_real(
+            economics.connection_capex_CNY[node],
+            f"economics.connection_capex_CNY[{node!r}]",
+        )
+        if capex < 0:
+            raise CoreModelInputError(
+                f"economics.connection_capex_CNY[{node!r}] 必须大于等于 0"
+            )
+        lifetime = economics.connection_lifetime_years[node]
+        if (
+            isinstance(lifetime, bool)
+            or not isinstance(lifetime, Integral)
+            or int(lifetime) < 1
+        ):
+            raise CoreModelInputError(
+                f"economics.connection_lifetime_years[{node!r}] 必须是大于等于 1 的整数"
+            )
+
+    penalty = _finite_real(
+        economics.hns_penalty_CNY_per_kWh,
+        "economics.hns_penalty_CNY_per_kWh",
+    )
+    if penalty < 0:
+        raise CoreModelInputError(
+            "economics.hns_penalty_CNY_per_kWh 必须大于等于 0"
+        )
 
 
 def _reachable_nodes(site_node: str, segments: tuple[SegmentSpec, ...]) -> set[str]:
@@ -342,10 +494,19 @@ def validate_core_input(data: CoreModelInput) -> None:
     demand_nodes = _validate_nodes(data)
     _resolve_technology_roles(data.technologies)
     segments = _validate_segments(data.segments, data.site_node, demand_nodes)
+    _validate_economics(data.economics, hours, demand_nodes)
 
     if not isinstance(data.heat_demand_kW, Mapping):
         raise CoreModelInputError("heat_demand_kW 必须是 (demand_node, hour) 到 kW 的映射")
     expected_keys = {(node, hour) for node in demand_nodes for hour in hours}
+    if any(
+        not isinstance(key, tuple)
+        or len(key) != 2
+        or isinstance(key[1], bool)
+        or not isinstance(key[1], Integral)
+        for key in data.heat_demand_kW.keys()
+    ):
+        raise CoreModelInputError("heat_demand_kW 的 hour 键必须全部为整数")
     actual_keys = set(data.heat_demand_kW.keys())
     if actual_keys != expected_keys:
         raise CoreModelInputError(
@@ -369,7 +530,7 @@ def validate_core_input(data: CoreModelInput) -> None:
 
 
 def build_core_model(data: CoreModelInput) -> ConcreteModel:
-    """构建固定性能、无热损失、临时非经济代理目标的三模式模型。"""
+    """构建固定性能、无热损失和简单年化经济目标的三模式模型。"""
 
     validate_core_input(data)
     central_ashp, boiler, local_ashp = _resolve_technology_roles(data.technologies)
@@ -397,6 +558,7 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     model = ConcreteModel(name=f"competition-{data.mode}-source-network-load-core")
     model.mode = data.mode
     model.site_node = data.site_node
+    model.local_technology_id = local_ashp.technology_id
     model.HOURS = Set(initialize=data.hours, ordered=True)
     model.DEMAND_NODES = Set(initialize=data.demand_nodes, ordered=True)
     model.NODES = Set(initialize=all_nodes, ordered=True)
@@ -445,6 +607,102 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     model.segment_capacity_max_kW = Param(
         model.SEGMENTS,
         initialize={key: float(segment.capacity_max_kW) for key, segment in segment_by_id.items()},
+        within=NonNegativeReals,
+    )
+    model.segment_length_m = Param(
+        model.SEGMENTS,
+        initialize={key: float(segment.length_m) for key, segment in segment_by_id.items()},
+        within=NonNegativeReals,
+    )
+    model.pipe_capex_CNY_per_m = Param(
+        model.SEGMENTS,
+        initialize={
+            key: float(segment.pipe_capex_CNY_per_m)
+            for key, segment in segment_by_id.items()
+        },
+        within=NonNegativeReals,
+    )
+    model.pipe_lifetime_years = Param(
+        model.SEGMENTS,
+        initialize={key: int(segment.lifetime_years) for key, segment in segment_by_id.items()},
+        within=NonNegativeReals,
+    )
+    model.time_weight_h_per_year = Param(
+        model.HOURS,
+        initialize={
+            hour: float(data.economics.time_weight_h_per_year[hour])
+            for hour in data.hours
+        },
+        within=NonNegativeReals,
+    )
+    model.electricity_price_CNY_per_kWh_e = Param(
+        model.HOURS,
+        initialize={
+            hour: float(data.economics.electricity_price_CNY_per_kWh_e[hour])
+            for hour in data.hours
+        },
+        within=NonNegativeReals,
+    )
+    model.gas_price_CNY_per_kWh_LHV = Param(
+        model.HOURS,
+        initialize={
+            hour: float(data.economics.gas_price_CNY_per_kWh_LHV[hour])
+            for hour in data.hours
+        },
+        within=NonNegativeReals,
+    )
+    model.central_capex_CNY_per_kW = Param(
+        model.CENTRAL_TECHNOLOGIES,
+        initialize={key: float(spec.capex_CNY_per_kW) for key, spec in central_specs.items()},
+        within=NonNegativeReals,
+    )
+    model.central_fixed_maintenance_fraction_per_year = Param(
+        model.CENTRAL_TECHNOLOGIES,
+        initialize={
+            key: float(spec.fixed_maintenance_fraction_per_year)
+            for key, spec in central_specs.items()
+        },
+        within=NonNegativeReals,
+    )
+    model.central_variable_om_CNY_per_kWh_th = Param(
+        model.CENTRAL_TECHNOLOGIES,
+        initialize={
+            key: float(spec.variable_om_CNY_per_kWh_th)
+            for key, spec in central_specs.items()
+        },
+        within=NonNegativeReals,
+    )
+    model.central_lifetime_years = Param(
+        model.CENTRAL_TECHNOLOGIES,
+        initialize={key: int(spec.lifetime_years) for key, spec in central_specs.items()},
+        within=NonNegativeReals,
+    )
+    model.local_capex_CNY_per_kW = Param(initialize=float(local_ashp.capex_CNY_per_kW))
+    model.local_fixed_maintenance_fraction_per_year = Param(
+        initialize=float(local_ashp.fixed_maintenance_fraction_per_year)
+    )
+    model.local_variable_om_CNY_per_kWh_th = Param(
+        initialize=float(local_ashp.variable_om_CNY_per_kWh_th)
+    )
+    model.local_lifetime_years = Param(initialize=int(local_ashp.lifetime_years))
+    model.connection_capex_CNY = Param(
+        model.DEMAND_NODES,
+        initialize={
+            node: float(data.economics.connection_capex_CNY[node])
+            for node in data.demand_nodes
+        },
+        within=NonNegativeReals,
+    )
+    model.connection_lifetime_years = Param(
+        model.DEMAND_NODES,
+        initialize={
+            node: int(data.economics.connection_lifetime_years[node])
+            for node in data.demand_nodes
+        },
+        within=NonNegativeReals,
+    )
+    model.hns_penalty_CNY_per_kWh = Param(
+        initialize=float(data.economics.hns_penalty_CNY_per_kWh),
         within=NonNegativeReals,
     )
     model.incidence = Param(model.NODES, model.SEGMENTS, initialize=incidence)
@@ -706,16 +964,125 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         * m.timestep_hours,
     )
 
-    # 节点 3 只以未供热量为临时单目标，不使用混合量纲 epsilon/tie-breaker。
-    # 容量、拓扑和技术选择不应在正式年化成本加入前被解释为经济最优。
-    model.temporary_non_economic_proxy = Objective(
+    # 附件口径：所有投资均采用“原始投资 / 寿命”的简单年化，不使用折现率、
+    # CRF、规划期、残值或更换投资。固定运维采用附件批准口径：装机容量
+    # 乘单位投资，再乘无量纲年度固定维护比例。
+    model.annual_device_capex_CNY_per_year = Expression(
+        expr=sum(
+            model.central_capacity_kW[technology_id]
+            * model.central_capex_CNY_per_kW[technology_id]
+            / model.central_lifetime_years[technology_id]
+            for technology_id in model.CENTRAL_TECHNOLOGIES
+        )
+        + sum(
+            model.local_capacity_kW[node]
+            * model.local_capex_CNY_per_kW
+            / model.local_lifetime_years
+            for node in model.DEMAND_NODES
+        )
+    )
+    model.annual_network_capex_CNY_per_year = Expression(
+        expr=sum(
+            model.pipe_built[segment_id]
+            * model.segment_length_m[segment_id]
+            * model.pipe_capex_CNY_per_m[segment_id]
+            / model.pipe_lifetime_years[segment_id]
+            for segment_id in model.SEGMENTS
+        )
+    )
+    model.annual_connection_capex_CNY_per_year = Expression(
+        expr=sum(
+            model.connected[node]
+            * model.connection_capex_CNY[node]
+            / model.connection_lifetime_years[node]
+            for node in model.DEMAND_NODES
+        )
+    )
+    model.annual_fixed_om_CNY_per_year = Expression(
+        expr=sum(
+            model.central_capacity_kW[technology_id]
+            * model.central_capex_CNY_per_kW[technology_id]
+            * model.central_fixed_maintenance_fraction_per_year[technology_id]
+            for technology_id in model.CENTRAL_TECHNOLOGIES
+        )
+        + sum(
+            model.local_capacity_kW[node]
+            * model.local_capex_CNY_per_kW
+            * model.local_fixed_maintenance_fraction_per_year
+            for node in model.DEMAND_NODES
+        )
+    )
+    model.annual_variable_om_CNY_per_year = Expression(
+        expr=sum(
+            model.central_heat_output_kW[technology_id, hour]
+            * model.time_weight_h_per_year[hour]
+            * model.central_variable_om_CNY_per_kWh_th[technology_id]
+            for technology_id in model.CENTRAL_TECHNOLOGIES
+            for hour in model.HOURS
+        )
+        + sum(
+            model.local_heat_output_kW[node, hour]
+            * model.time_weight_h_per_year[hour]
+            * model.local_variable_om_CNY_per_kWh_th
+            for node in model.DEMAND_NODES
+            for hour in model.HOURS
+        )
+    )
+    model.annual_electricity_cost_CNY_per_year = Expression(
+        expr=sum(
+            model.central_electricity_input_kW_e[technology_id, hour]
+            * model.time_weight_h_per_year[hour]
+            * model.electricity_price_CNY_per_kWh_e[hour]
+            for technology_id in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS
+            for hour in model.HOURS
+        )
+        + sum(
+            model.local_electricity_input_kW_e[node, hour]
+            * model.time_weight_h_per_year[hour]
+            * model.electricity_price_CNY_per_kWh_e[hour]
+            for node in model.DEMAND_NODES
+            for hour in model.HOURS
+        )
+    )
+    model.annual_gas_cost_CNY_per_year = Expression(
+        expr=sum(
+            model.gas_input_kW_LHV[technology_id, hour]
+            * model.time_weight_h_per_year[hour]
+            * model.gas_price_CNY_per_kWh_LHV[hour]
+            for technology_id in model.CENTRAL_GAS_BOILERS
+            for hour in model.HOURS
+        )
+    )
+    model.annual_real_cost_CNY_per_year = Expression(
+        expr=model.annual_device_capex_CNY_per_year
+        + model.annual_network_capex_CNY_per_year
+        + model.annual_connection_capex_CNY_per_year
+        + model.annual_fixed_om_CNY_per_year
+        + model.annual_variable_om_CNY_per_year
+        + model.annual_electricity_cost_CNY_per_year
+        + model.annual_gas_cost_CNY_per_year
+    )
+    model.annual_hns_penalty_CNY_per_year = Expression(
         expr=sum(
             model.unserved_heat_kW[node, hour]
-            for node in data.demand_nodes
-            for hour in data.hours
-        ),
+            * model.time_weight_h_per_year[hour]
+            * model.hns_penalty_CNY_per_kWh
+            for node in model.DEMAND_NODES
+            for hour in model.HOURS
+        )
+    )
+    model.optimization_objective_CNY_per_year = Expression(
+        expr=model.annual_real_cost_CNY_per_year
+        + model.annual_hns_penalty_CNY_per_year
+    )
+    model.annual_cost_objective = Objective(
+        expr=model.optimization_objective_CNY_per_year,
         sense=minimize,
     )
+
+    active_objectives = list(model.component_data_objects(Objective, active=True))
+    if active_objectives != [model.annual_cost_objective]:
+        raise RuntimeError("竞赛经济模型必须且只能有一个活动的正式年化成本目标")
     return model
 
 

@@ -2,7 +2,7 @@
 
 ## 1. 适用范围与权威来源
 
-本契约定义比赛运行入口 `competition_input_v2`。它统一七类运行输入、跨文件关系、单位、时间、ID、坐标系和校验行为，供后续校验器、适配器和最小合成案例共同使用。v2 取代了曾以 `fixed_heat_source` 代表所有供热设备的 v1 可执行口径。
+本契约定义比赛运行入口 `competition_input_v2_1`。它统一七类运行输入、跨文件关系、单位、时间、ID、坐标系和校验行为，供后续校验器、适配器和最小合成案例共同使用。v2.1 在 v2 的独立设备/绝对价格口径上增加简单年化经济字段，并统一维护费与热量单位；原 v2 已标记为不可执行的弃用契约，禁止自动迁移。
 
 权威顺序如下：
 
@@ -11,7 +11,7 @@
 3. 人类可读解释和交接边界：本文档；
 4. 原作者 `_config.yaml`、`Building_TS.csv` 等只属于兼容层，不得反向改变标准输入语义。
 
-机器契约当前状态为 `unit_time_enforced_device_price_contract_frozen_validator_and_model_pending`：负荷单位、时间映射及旧流程中的隐式千倍换算已经由代码和测试执行；v2 又冻结三种设备角色、性能参数、逐时绝对电气价格和公共年化小时权重。完整七类输入校验、设备适配和独立调度模型仍留给后续节点，契约发布不等于运行能力已经实现。
+机器契约当前状态为 `unit_time_device_price_and_simple_annual_cost_core_implemented_validator_adapter_pending`：负荷单位、时间映射、三种独立设备角色、逐时绝对电气价格、公共年化小时权重和附件口径的简单年化成本已由竞赛内存核心及测试执行。完整七类输入校验、文件适配、CLI 和正式数据运行仍留给后续节点，核心实现不等于端到端比赛程序已经完成。
 
 ## 2. 案例目录、编码和只读边界
 
@@ -57,6 +57,7 @@
 | 时间步 | `1h` | 每个功率值表示以 `timestamp` 开始的一小时平均功率 |
 | 年化小时权重 | `h/year` | `time_weight_h_per_year`；同一小时对所有技术共用且必须 `>0` |
 | COP、效率 | 无量纲 | 不得附带百分数单位；效率输入使用 0～1 小数 |
+| 固定维护比例 | `fraction/year` | `fixed_maintenance_fraction_per_year`；无量纲年度比例，不是 CNY/kW-year |
 
 强制规则：
 
@@ -115,7 +116,7 @@
 - 几何必须非空、有效，并符合各文件允许的几何类型；
 - 投影失败、地理 CRS 被用于米制运算或多个空间文件 CRS 不一致时立即失败。
 
-`EPSG:32650` 是 `competition_input_v2` 的冻结内部投影。正式项目若批准其他工程坐标系，必须升级契约版本并重新做空间与长度回归，不能只改一个案例值。
+`EPSG:32650` 是 `competition_input_v2_1` 的冻结内部投影。正式项目若批准其他工程坐标系，必须升级契约版本并重新做空间与长度回归，不能只改一个案例值。
 
 ## 6. 七类运行输入
 
@@ -142,14 +143,14 @@
 | `timestamp` | timezone-aware timestamp | 是 | Asia/Shanghai、整小时、连续、规范排序 |
 | `building_id` | string | 是 | 与建筑文件集合完全一致 |
 | `heating_kW` | float64 | 是 | 有限、`>=0`、单位严格为 kW |
-| `dhw_included` | boolean | 是 | 当前 v2 要求案例内为同一个布尔值 |
+| `dhw_included` | boolean | 是 | 当前 v2.1 要求案例内为同一个布尔值 |
 | `data_version` | string | 是 | 非空且案例内唯一，与配置一致 |
 | `cooling_kW` | float64 | 否 | 若存在则有限、非负；P0 不进入供热模型 |
 | `quality_flag` | string | 否 | `measured/simulated/scaled/estimated` |
 
 主键为 `(timestamp, building_id)`。不允许空值、重复主键、建筑间小时覆盖不同或时间轴与配置不一致。
 
-`dhw_included` 描述文件中的负荷事实，不能从曲线数值推断。它必须与 `case_config.dhw.input_includes_dhw` 一致；`competition_input_v2` 固定 `add_in_adapter: false`，因此适配器永远不额外合成生活热水。合成 smoke 允许 `false`，但所有结果和摘要必须标记 `space_heating_only`；正式全服务案例在 DHW 合成功能实现前必须为 `true`。若真实交付存在逐栋混合状态，需要负荷组先澄清并升级契约。
+`dhw_included` 描述文件中的负荷事实，不能从曲线数值推断。它必须与 `case_config.dhw.input_includes_dhw` 一致；`competition_input_v2_1` 固定 `add_in_adapter: false`，因此适配器永远不额外合成生活热水。合成 smoke 允许 `false`，但所有结果和摘要必须标记 `space_heating_only`；正式全服务案例在 DHW 合成功能实现前必须为 `true`。若真实交付存在逐栋混合状态，需要负荷组先澄清并升级契约。
 
 ### 6.3 `technologies.csv`
 
@@ -160,14 +161,14 @@ CSV 使用以下公共列：
 | `technology_id` | string | 唯一、非空 |
 | `technology_type` | enum | 见机器契约登记类型 |
 | `applicable_scope` | `local/central/both` | 技术可安装范围 |
-| `energy_carrier` | enum | `electricity/gas/waste_heat/none`；v2 不接受 `synthetic_heat` |
+| `energy_carrier` | enum | `electricity/gas/waste_heat/none`；v2.1 不接受 `synthetic_heat` |
 | `cop` | float or empty | 热泵条件必填且 `>0` |
 | `efficiency` | float or empty | 锅炉条件必填，范围 `(0,1]` |
 | `capacity_min_kW` | float kW | `>=0` |
 | `capacity_max_kW` | float kW | `>0` 且不小于下限 |
 | `capex_CNY_per_kW` | float | `>=0` |
-| `fixed_om_CNY_per_kW_year` | float | `>=0` |
-| `variable_om_CNY_per_kWh_heat` | float | `>=0` |
+| `fixed_maintenance_fraction_per_year` | float fraction/year | 有限、`0<=value<=1`；用于 `capacity × capex × fraction` |
+| `variable_om_CNY_per_kWh_th` | float CNY/kWh_th | 有限、`>=0`；只按有用热输出计 |
 | `lifetime_years` | integer | `>=1` |
 | `source` | string | 非空引用、文件或可追溯说明 |
 | `assumption_flag` | enum | `measured/manufacturer/literature/project_confirmed/scenario_assumption/synthetic_test` |
@@ -179,13 +180,16 @@ CSV 使用以下公共列：
 - 分布式空气源热泵：`technology_type=air_source_heat_pump`、`applicable_scope=local`、`energy_carrier=electricity`、`cop>0` 且 `efficiency` 为空；
 - 三种角色必须分别拥有并启用独立 `technology_id`，具体 ID 不写死；同一站内热泵和锅炉不能合并成一行或一个合成热源；
 - 合成案例所有参数必须标记 `synthetic_test`；
-- `fixed_heat_source` 和 `synthetic_heat` 已从 v2 可执行契约中删除；v1 数据不能只改版本号后继续运行，必须拆分为上述真实设备角色；
-- `variable_om_CNY_per_kWh_heat` 只表示按有用热输出计的可变运维，不得包含购电或燃气费用；能源费用必须由逐时载体输入量与绝对价格计算；
+- `fixed_heat_source` 和 `synthetic_heat` 已从 v2.1 可执行契约中删除；v1 数据不能只改版本号后继续运行，必须拆分为上述真实设备角色；
+- 固定维护费唯一按 `capacity_kW × capex_CNY_per_kW × fixed_maintenance_fraction_per_year` 计算；旧 v2 字段 `fixed_om_CNY_per_kW_year` 的单位与公式不同，v2.1 不接收；
+- 用户提供的附件只列出 `fixed_maintenance_coefficient` 字段名，未提供可直接采用的数值、适用设备和完整单位，因此代码不填默认比例；正式值必须由项目责任方给出来源；
+- `variable_om_CNY_per_kWh_th` 只表示按有用热输出计的可变运维，不得包含购电或燃气费用；能源费用必须由逐时载体输入量与绝对价格计算；
+- 可变运维来源值只有在明确标准化为 `CNY/kWh_th` 后才能进入正式案例；含义或分母不明确时，正式运行必须停止；
 - 曲线型热泵、储热和余热类型可以登记字段，但在对应实现和测试完成前不得声称比赛管线支持；
 - `06_equipment_performance.csv` 是上游性能曲线交接，不等同于本文件。容量、投资、运维、寿命和来源仍必须由有依据的数据补齐；
 - 设备价格、COP、效率或寿命缺失时不得由代码自行编造。
 
-储热扩展列将在储热正式实现时升级契约。`competition_input_v2` 的目标可执行范围只允许固定 COP 的空气源热泵和固定效率的燃气锅炉，并继续强制 `waste_heat_enabled=false`、`storage_enabled=false`、`resource_anchors=null`。当前代码尚未实现三设备独立调度，不能因契约已发布就声称可运行；未实现功能必须以 `FEATURE_NOT_IMPLEMENTED` 失败。
+储热扩展列将在储热正式实现时升级契约。`competition_input_v2_1` 的目标可执行范围只允许固定 COP 的空气源热泵和固定效率的燃气锅炉，并继续强制 `waste_heat_enabled=false`、`storage_enabled=false`、`resource_anchors=null`。竞赛内存 Core 已实现三设备独立调度与三种供热模式；七文件运行校验器、文件适配器、CLI 和旧 `model.py` 仍未实现这一接口，未实现入口必须以 `FEATURE_NOT_IMPLEMENTED` 失败。
 
 ### 6.4 `roads_or_feasible_space.geojson`
 
@@ -239,7 +243,7 @@ CSV 使用以下公共列：
 | `gas_carbon_kgCO2e_per_kWh_LHV` | 存在燃气技术 | 非负、有限，低位热值口径 |
 | `resource_available_kW__<resource_id>` | 每个资源锚点 | 非负、有限、kW |
 
-v2 启用电力和燃气设备，因此两列逐时绝对价格均为必需。禁止旧名 `electricity_price_CNY_per_kWh`，也禁止任何 `*_price_multiplier` 或 `*_price_index` 字段。两列碳因子当前仅保留输入追溯，成本最小化核心目标暂不消费，不能据此声称碳模型已经完成。室外温度在固定 COP 首版中只保留为可追溯输入，不改变 COP，也不能再次修正已经包含天气作用的 DeST 负荷；曲线性能需未来升级后才能使用。
+v2 启用电力和燃气设备，因此两列逐时绝对价格均为必需。禁止旧名 `electricity_price_CNY_per_kWh`，也禁止任何 `*_price_multiplier` 或 `*_price_index` 字段。`time_weight_h_per_year` 全部值之和必须与配置的 `economics.expected_weight_sum_h_per_year` 在绝对容差 `1e-9 h/year` 内一致。两列碳因子当前仅保留输入追溯，成本最小化核心目标暂不消费，不能据此声称碳模型已经完成。室外温度在固定 COP 首版中只保留为可追溯输入，不改变 COP，也不能再次修正已经包含天气作用的 DeST 负荷；曲线性能需未来升级后才能使用。
 
 ### 6.7 `case_config.yaml`
 
@@ -256,14 +260,39 @@ YAML 载入后必须通过 Draft 2020-12 JSON Schema，未知键失败。所有�
 | `spatial` | 输入模式、候选点/管网规则、米制可行性容差 |
 | `demand` | `area_scaling_already_applied: true` |
 | `dhw` | 输入是否含 DHW；`add_in_adapter: false` |
-| `features` | P0 v2 固定余热、储热均为 `false` |
+| `features` | P0 v2.1 固定余热、储热均为 `false` |
 | `network` | 供回水温度；供水必须高于回水 |
-| `planning` | 规划年限、折现率、价格基年、CNY；具体经济公式属于后续模型任务 |
+| `planning` | 规划年限、折现率、价格基年、CNY；当前只追溯，折现率和规划期不进入已批准的简单年化公式 |
+| `economics` | `simple_capex_divided_by_lifetime_years`、预期年度权重和可变运维的有用热口径；站点固定 CAPEX 明确不纳入 |
+| `network_economics` | 管道单位长度投资 `CNY/m` 和管道寿命；适配后逐物理段计费一次 |
+| `connection_economics` | 每个需求节点的接入投资和寿命；节点集合必须与生成的需求节点完全一致 |
+| `reliability` | 未供热惩罚 `hns_penalty_CNY_per_kWh`，有限且非负 |
 | `enabled_technology_ids` | 至少三个不同 ID，并分别解析为中央 ASHP、中央燃气锅炉和分布式 ASHP |
 | `solver` | `highs/gurobi`、单线程、时限、`0<=gap<1`、只在 optimal 后加载解 |
 | `qa` | 守恒、平衡、未供热、成本和确定性容差 |
 
-合成 fixture 固定 `solver.name: highs`、`threads: 1`、`time_limit_seconds: 60`、`random_seed: 202611`。正式供回水温度、规划期、折现率、价格基年和 gap 必须由项目输入明确给出，契约不提供武汉默认值；责任方与关闭条件见 `questions_for_project_team.md`。
+合成 fixture 固定 `solver.name: highs`、`threads: 1`、`time_limit_seconds: 60`、`random_seed: 202611`。正式供回水温度、规划期、折现率、价格基年和 gap 必须由项目输入明确给出，契约不提供武汉默认值；但在当前附件口径中，规划期和折现率只作追溯，不能暗中改成 CRF、折现、更换或残值公式。责任方与关闭条件见 `questions_for_project_team.md`。
+
+### 6.8 年化成本公式
+
+令 `w_t=time_weight_h_per_year[t]`，其单位为 h/year。当前唯一正式目标按下式建立：
+
+```text
+设备年化投资 = Σ(装机容量_kW × 单位投资_CNY/kW ÷ 寿命_year)
+管网年化投资 = Σ(是否建设 × 长度_m × 单位投资_CNY/m ÷ 寿命_year)
+接入年化投资 = Σ(是否接入 × 接入投资_CNY ÷ 寿命_year)
+固定维护费 = Σ(装机容量_kW × 单位投资_CNY/kW × 年度维护比例_1/year)
+可变运维费 = Σ(有用热输出_kW × w_t_h/year × 费率_CNY/kWh_th)
+电费 = Σ(热泵热输出_kW ÷ COP × w_t_h/year × 电价_CNY/kWh_e)
+燃气费 = Σ(锅炉热输出_kW ÷ LHV效率 × w_t_h/year × 气价_CNY/kWh_LHV)
+真实成本 = 上述七项之和
+未供热惩罚 = Σ(未供热_kW × w_t_h/year × 罚值_CNY/kWh)
+优化目标 = 真实成本 + 未供热惩罚
+```
+
+所有逐时功率与小时权重相乘后得到年度能量，因此运行项单位闭合为 CNY/year；简单年化投资和固定维护同样为 CNY/year。未供热惩罚单独保留，不能混入 `annual_real_cost_CNY`，从而可以同时报告真实经济成本和可靠性罚项。
+
+设备与管网的 `CAPEX/lifetime`、逐时电/气费用和维护费分类采用用户批准的附件口径；接入年化与 HNS 罚值是本项目经批准的扩展项，并非附件原文公式，正式参数仍保持阻塞。模型不使用折现率、资本回收因子、规划期、更换投资或残值；附件没有给出独立站点固定 CAPEX 公式，因此当前明确排除该项。`competition/economics.py` 提供一次性的体积气价标准化函数：只有体积气价与 LHV 使用完全相同体积基准且 LHV 有可追溯来源时，才能转换为 `CNY/kWh_LHV`；模型核心只接收转换后的绝对能量气价，不再重复换算。附件原始文件为 `年化总成本.docx`，SHA-256 为 `E01E902AADD3B550A64366C35213F5B221AE10F5E049364AB9D2D447D2DEFD72`。
 
 ## 7. 跨文件自动校验
 
@@ -281,6 +310,7 @@ YAML 载入后必须通过 Draft 2020-12 JSON Schema，未知键失败。所有�
 | DHW/缩放 | 布尔值与配置一致、禁止二次 DHW、禁止二次面积缩放 |
 | 版本 | 两个 Parquet 的 `data_version` 与配置一致 |
 | 技术 | 三个设备角色各有独立启用 ID；COP/效率、scope、载体及逐时绝对价格均匹配 |
+| 经济 | 权重和与配置一致；固定维护是比例；可变运维已标准化为 CNY/kWh_th；管网、接入寿命和投资完整；体积气价未被直接消费 |
 | 功能边界 | `fixed_heat_source`、合成热、余热、储热、资源锚点和未实现的模型入口以稳定错误码拒绝 |
 
 退出码：
@@ -301,9 +331,9 @@ YAML 载入后必须通过 Draft 2020-12 JSON Schema，未知键失败。所有�
 | `Building_TS.csv` | 第一列 hour，其余列为 building_id；浮点 kW，无 `/1000` |
 | `Heat_Demand.csv` | 第一列 hour；其余负荷列为浮点 kW，无隐式换算 |
 | `candidate_sites.geojson` | 后续生成器至少输出 `site_id`、方法标识和 Point；本节点不规定坐标计算算法 |
-| 其他模型中间文件 | 当前只登记 legacy 文件名；不得用 `isBoiler` 或合并成本列覆盖 v2 的 technology_id、COP/效率和能源载体语义 |
+| 其他模型中间文件 | 当前只登记 legacy 文件名；不得用 `isBoiler` 或合并成本列覆盖 v2.1 的 technology_id、COP/效率和能源载体语义 |
 
-当前契约冻结单位、时间、三种设备角色及能源价格接口。适配器必须保存 `timestamp ↔ hour` 双射，并保持每个 `technology_id` 独立；旧模型仍然只按 `isBoiler` 和合并运行成本处理，本节点不修改它，也不把 v2 标记为模型已实现。候选站坐标、网络拓扑和经济公式分别留给后续对应任务。
+当前契约冻结单位、时间、三种设备角色、能源价格和简单年化成本接口。竞赛内存核心已按三个独立设备角色及上述经济公式求解，但文件适配器仍须保存 `timestamp ↔ hour` 双射、保持每个 `technology_id` 独立，并把配置中的管网/接入经济边界显式映射到物理段和需求节点。旧 `model.py` 仍只按 `isBoiler` 和合并运行成本处理，不得作为 v2.1 经济核心。候选站坐标和真实道路拓扑仍留给后续任务。
 
 ## 9. 负荷组九文件交接边界
 
@@ -326,7 +356,7 @@ YAML 载入后必须通过 Draft 2020-12 JSON Schema，未知键失败。所有�
 ## 10. 版本变更规则
 
 - 兼容性补充只更新文档修订号；
-- 新增可选追溯列可以保持 `competition_input_v2`，但必须登记；
+- 新增可选追溯列可以保持 `competition_input_v2_1`，但必须登记；
 - 改字段名、单位、时间含义、CRS、DHW 或缩放语义属于破坏性变化，必须发布新契约版本；
 - 校验器必须记录其支持的契约版本并拒绝未知版本；
 - 任何真实文件更新必须有新 `data_version` 和源日志，不得无说明覆盖旧版。

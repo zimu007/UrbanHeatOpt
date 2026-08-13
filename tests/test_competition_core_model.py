@@ -1,4 +1,4 @@
-"""竞赛层三模式源—网—荷核心模型测试。"""
+﻿"""竞赛层三模式源—网—荷核心模型测试。"""
 
 from __future__ import annotations
 
@@ -13,17 +13,31 @@ import competition.solvers as solver_module
 from competition.core_model import (
     CoreModelInput,
     CoreModelInputError,
+    EconomicInput,
     SegmentSpec,
     TechnologySpec,
     build_core_model,
     solve_core_model,
     validate_core_input,
 )
+from competition.economics import (
+    EconomicStandardizationError,
+    standardize_gas_price_CNY_per_kWh_LHV,
+)
 from competition.solvers import (
     SolverSettings,
     solve_pyomo_model,
     validate_solver_settings,
 )
+
+
+COST_ABS_TOL_CNY_PER_YEAR = 1e-6
+
+
+def _cost_approx(expected: float) -> object:
+    """年度成本验收只使用绝对误差，不随金额大小放宽。"""
+
+    return pytest.approx(expected, rel=0, abs=COST_ABS_TOL_CNY_PER_YEAR)
 
 
 def _technology(role: str, **overrides: object) -> TechnologySpec:
@@ -63,8 +77,8 @@ def _technology(role: str, **overrides: object) -> TechnologySpec:
     values.update(
         {
             "capex_CNY_per_kW": 0.0,
-            "fixed_om_CNY_per_kW_year": 0.0,
-            "variable_om_CNY_per_kWh_heat": 0.0,
+            "fixed_maintenance_fraction_per_year": 0.0,
+            "variable_om_CNY_per_kWh_th": 0.0,
             "lifetime_years": 20,
             "source": "synthetic_test",
             "assumption_flag": "synthetic_test",
@@ -87,13 +101,54 @@ def _segment(
     node_v: str,
     *,
     capacity_max_kW: float = 100.0,
+    length_m: float = 10.0,
+    pipe_capex_CNY_per_m: float = 0.0,
+    lifetime_years: int = 25,
 ) -> SegmentSpec:
     return SegmentSpec(
         segment_id=segment_id,
         node_u=node_u,
         node_v=node_v,
-        length_m=10.0,
+        length_m=length_m,
         capacity_max_kW=capacity_max_kW,
+        pipe_capex_CNY_per_m=pipe_capex_CNY_per_m,
+        lifetime_years=lifetime_years,
+    )
+
+
+def _economics(
+    *,
+    hours: tuple[int, ...] = (1,),
+    demand_nodes: tuple[str, ...] = ("demand_1",),
+    weights: dict[int, float] | None = None,
+    electricity_prices: dict[int, float] | None = None,
+    gas_prices: dict[int, float] | None = None,
+    connection_capex: dict[str, float] | None = None,
+    connection_lifetimes: dict[str, int] | None = None,
+    hns_penalty: float = 1_000_000.0,
+    expected_weight_sum: float | None = None,
+) -> EconomicInput:
+    weight_values = weights or {hour: 1.0 for hour in hours}
+    return EconomicInput(
+        time_weight_h_per_year=weight_values,
+        electricity_price_CNY_per_kWh_e=(
+            electricity_prices or {hour: 0.0 for hour in hours}
+        ),
+        gas_price_CNY_per_kWh_LHV=(
+            gas_prices or {hour: 0.0 for hour in hours}
+        ),
+        expected_weight_sum_h_per_year=(
+            sum(weight_values.values())
+            if expected_weight_sum is None
+            else expected_weight_sum
+        ),
+        connection_capex_CNY=(
+            connection_capex or {node: 0.0 for node in demand_nodes}
+        ),
+        connection_lifetime_years=(
+            connection_lifetimes or {node: 20 for node in demand_nodes}
+        ),
+        hns_penalty_CNY_per_kWh=hns_penalty,
     )
 
 
@@ -111,6 +166,13 @@ def _core_input(**overrides: object) -> CoreModelInput:
         "segments": (_segment("segment_1", "site_1", "demand_1"),),
     }
     values.update(overrides)
+    values.setdefault(
+        "economics",
+        _economics(
+            hours=values["hours"],
+            demand_nodes=values["demand_nodes"],
+        ),
+    )
     return CoreModelInput(**values)
 
 
@@ -139,58 +201,55 @@ def test_core_input_copies_and_freezes_heat_demand_mapping() -> None:
         data.heat_demand_kW[("demand_1", 1)] = 50.0
 
 
-def test_only_active_objective_is_total_unserved_heat_proxy() -> None:
-    model = build_core_model(_core_input())
-    for node in model.DEMAND_NODES:
-        for hour in model.HOURS:
-            model.unserved_heat_kW[node, hour].set_value(7.5)
+def test_only_active_objective_is_formal_annual_cost_objective() -> None:
+    model = solve_core_model(_core_input()).model
 
     active_objectives = list(
         model.component_data_objects(ObjectiveComponent, active=True)
     )
 
-    assert active_objectives == [model.temporary_non_economic_proxy]
-    assert value(model.temporary_non_economic_proxy) == pytest.approx(
-        sum(
-            value(model.unserved_heat_kW[node, hour])
-            for node in model.DEMAND_NODES
-            for hour in model.HOURS
-        )
+    assert active_objectives == [model.annual_cost_objective]
+    assert value(model.annual_cost_objective) == _cost_approx(
+        value(model.annual_real_cost_CNY_per_year)
+        + value(model.annual_hns_penalty_CNY_per_year)
+    )
+    assert value(model.optimization_objective_CNY_per_year) == _cost_approx(
+        value(model.annual_cost_objective)
     )
 
 
-def test_nonzero_economic_fields_are_not_consumed_before_economic_node() -> None:
+def test_nonzero_economic_fields_are_consumed_by_named_cost_components() -> None:
     technologies = _technologies(
         central_ashp={
             "capex_CNY_per_kW": 111.0,
-            "fixed_om_CNY_per_kW_year": 22.0,
-            "variable_om_CNY_per_kWh_heat": 3.0,
+            "fixed_maintenance_fraction_per_year": 0.22,
+            "variable_om_CNY_per_kWh_th": 3.0,
         },
         central_gas_boiler={
             "capex_CNY_per_kW": 444.0,
-            "fixed_om_CNY_per_kW_year": 55.0,
-            "variable_om_CNY_per_kWh_heat": 6.0,
+            "fixed_maintenance_fraction_per_year": 0.55,
+            "variable_om_CNY_per_kWh_th": 6.0,
         },
         local_ashp={
             "capex_CNY_per_kW": 777.0,
-            "fixed_om_CNY_per_kW_year": 88.0,
-            "variable_om_CNY_per_kWh_heat": 9.0,
+            "fixed_maintenance_fraction_per_year": 0.88,
+            "variable_om_CNY_per_kWh_th": 9.0,
         },
     )
     model = build_core_model(_core_input(technologies=technologies))
     component_names = set(model.component_map())
 
-    assert not any(
-        token in component_name.lower()
-        for component_name in component_names
-        for token in ("capex", "fixed_om", "variable_om", "cost", "price")
-    )
+    assert "annual_device_capex_CNY_per_year" in component_names
+    assert "annual_fixed_om_CNY_per_year" in component_names
+    assert "annual_variable_om_CNY_per_year" in component_names
+    assert "annual_real_cost_CNY_per_year" in component_names
+    assert "optimization_objective_CNY_per_year" in component_names
     assert list(model.component_data_objects(ObjectiveComponent, active=True)) == [
-        model.temporary_non_economic_proxy
+        model.annual_cost_objective
     ]
 
 
-def test_two_hours_convert_power_to_energy_once_without_annual_weight() -> None:
+def test_two_hours_keep_interval_energy_separate_from_annual_weight() -> None:
     data = _core_input(
         mode="distributed",
         hours=(1, 2),
@@ -208,7 +267,8 @@ def test_two_hours_convert_power_to_energy_once_without_annual_weight() -> None:
     assert value(model.local_electricity_input_kWh_e["demand_1", 1]) == pytest.approx(10.0)
     assert value(model.local_electricity_input_kW_e["demand_1", 2]) == pytest.approx(20.0)
     assert value(model.local_electricity_input_kWh_e["demand_1", 2]) == pytest.approx(20.0)
-    assert not any("weight" in name.lower() for name in model.component_map())
+    assert value(model.time_weight_h_per_year[1]) == pytest.approx(1.0)
+    assert value(model.time_weight_h_per_year[2]) == pytest.approx(1.0)
 
 
 def test_distributed_mode_has_no_site_network_or_central_supply() -> None:
@@ -321,6 +381,474 @@ def test_forced_capacity_shortage_appears_as_nonzero_unserved_heat() -> None:
     model = solve_core_model(data).model
 
     assert value(model.unserved_heat_kW["demand_1", 1]) == pytest.approx(60)
+
+
+def test_annual_cost_breakdown_matches_two_hour_hand_calculation() -> None:
+    """覆盖简单年化、固定/可变维护、峰谷电价和 LHV 燃气价。"""
+
+    technologies = _technologies(
+        central_ashp={
+            "capacity_min_kW": 50.0,
+            "capacity_max_kW": 50.0,
+            "cop": 4.0,
+            "capex_CNY_per_kW": 2000.0,
+            "fixed_maintenance_fraction_per_year": 0.015,
+            "variable_om_CNY_per_kWh_th": 0.02,
+            "lifetime_years": 20,
+        },
+        central_gas_boiler={
+            "capacity_min_kW": 30.0,
+            "capacity_max_kW": 30.0,
+            "efficiency": 0.9,
+            "capex_CNY_per_kW": 800.0,
+            "fixed_maintenance_fraction_per_year": 0.01875,
+            "variable_om_CNY_per_kWh_th": 0.03,
+            "lifetime_years": 15,
+        },
+    )
+    economics = _economics(
+        hours=(1, 2),
+        weights={1: 4000.0, 2: 4760.0},
+        electricity_prices={1: 0.48, 2: 2.0},
+        gas_prices={1: 0.354, 2: 0.354},
+        connection_capex={"demand_1": 20_000.0},
+        connection_lifetimes={"demand_1": 20},
+        hns_penalty=100.0,
+    )
+    data = _core_input(
+        hours=(1, 2),
+        heat_demand_kW={
+            ("demand_1", 1): 58.0,
+            ("demand_1", 2): 29.0,
+        },
+        technologies=technologies,
+        segments=(
+            _segment(
+                "segment_1",
+                "site_1",
+                "demand_1",
+                capacity_max_kW=58.0,
+                length_m=100.0,
+                pipe_capex_CNY_per_m=500.0,
+                lifetime_years=25,
+            ),
+        ),
+        economics=economics,
+    )
+    model = build_core_model(data)
+    model.central_installed["central_ashp"].fix(1)
+    model.central_installed["central_gas_boiler"].fix(1)
+    model.central_capacity_kW["central_ashp"].fix(50)
+    model.central_capacity_kW["central_gas_boiler"].fix(30)
+    model.central_heat_output_kW["central_ashp", 1].fix(40)
+    model.central_heat_output_kW["central_ashp", 2].fix(20)
+    model.central_heat_output_kW["central_gas_boiler", 1].fix(18)
+    model.central_heat_output_kW["central_gas_boiler", 2].fix(9)
+    solve_pyomo_model(model, SolverSettings(mip_gap=0.0))
+
+    # 在该组价格下，HP 两时段分别出 40/20，GB 分别出 18/9。
+    assert value(model.central_heat_output_kW["central_ashp", 1]) == pytest.approx(40)
+    assert value(model.central_heat_output_kW["central_ashp", 2]) == pytest.approx(20)
+    assert value(model.central_heat_output_kW["central_gas_boiler", 1]) == pytest.approx(18)
+    assert value(model.central_heat_output_kW["central_gas_boiler", 2]) == pytest.approx(9)
+    components = (
+        (model.annual_device_capex_CNY_per_year, 6600.0),
+        (model.annual_network_capex_CNY_per_year, 2000.0),
+        (model.annual_connection_capex_CNY_per_year, 1000.0),
+        (model.annual_fixed_om_CNY_per_year, 1950.0),
+        (model.annual_variable_om_CNY_per_year, 8549.2),
+        (model.annual_electricity_cost_CNY_per_year, 66800.0),
+        (model.annual_gas_cost_CNY_per_year, 45170.4),
+    )
+    for expression, expected in components:
+        assert value(expression) == _cost_approx(expected)
+
+    recomputed_real_cost = sum(value(expression) for expression, _ in components)
+    assert recomputed_real_cost == _cost_approx(132069.6)
+    assert value(model.annual_real_cost_CNY_per_year) == _cost_approx(
+        recomputed_real_cost
+    )
+    assert value(model.annual_hns_penalty_CNY_per_year) == _cost_approx(0.0)
+    recomputed_objective = (
+        recomputed_real_cost + value(model.annual_hns_penalty_CNY_per_year)
+    )
+    assert value(model.optimization_objective_CNY_per_year) == _cost_approx(
+        recomputed_objective
+    )
+    assert value(model.annual_cost_objective) == _cost_approx(recomputed_objective)
+
+
+def test_hns_penalty_is_separate_from_real_cost() -> None:
+    data = _core_input(
+        technologies=_technologies(
+            central_ashp={"capacity_max_kW": 20.0},
+            central_gas_boiler={"capacity_max_kW": 20.0},
+        ),
+        economics=_economics(
+            weights={1: 4760.0},
+            hns_penalty=100.0,
+        ),
+    )
+    model = solve_core_model(data).model
+
+    assert value(model.unserved_heat_kW["demand_1", 1]) == pytest.approx(60.0)
+    assert value(model.annual_hns_penalty_CNY_per_year) == _cost_approx(28_560_000.0)
+    assert value(model.annual_cost_objective) == _cost_approx(
+        value(model.annual_real_cost_CNY_per_year)
+        + value(model.annual_hns_penalty_CNY_per_year)
+    )
+
+
+def test_energy_prices_switch_central_dispatch() -> None:
+    common = dict(
+        heat_demand_kW={("demand_1", 1): 20.0},
+        technologies=_technologies(
+            central_ashp={"capacity_max_kW": 20.0, "cop": 4.0},
+            central_gas_boiler={"capacity_max_kW": 20.0, "efficiency": 1.0},
+        ),
+    )
+    electric_model = solve_core_model(
+        _core_input(
+            **common,
+            economics=_economics(
+                electricity_prices={1: 0.48},
+                gas_prices={1: 2.0},
+            ),
+        )
+    ).model
+    gas_model = solve_core_model(
+        _core_input(
+            **common,
+            economics=_economics(
+                electricity_prices={1: 2.0},
+                gas_prices={1: 0.1},
+            ),
+        )
+    ).model
+
+    assert value(electric_model.central_heat_output_kW["central_ashp", 1]) == pytest.approx(20)
+    assert value(gas_model.central_heat_output_kW["central_gas_boiler", 1]) == pytest.approx(20)
+
+
+def test_user_peak_valley_example_uses_absolute_prices_and_one_public_weight() -> None:
+    """0.6/1.0 电价与 0.8/1.0 气价不得伪装成技术专属权重。"""
+
+    data = _core_input(
+        hours=(1, 2),
+        heat_demand_kW={
+            ("demand_1", 1): 20.0,
+            ("demand_1", 2): 20.0,
+        },
+        technologies=_technologies(
+            central_ashp={"cop": 2.0, "capacity_max_kW": 10.0},
+            central_gas_boiler={"efficiency": 1.0, "capacity_max_kW": 10.0},
+        ),
+        economics=_economics(
+            hours=(1, 2),
+            weights={1: 1.0, 2: 1.0},
+            electricity_prices={1: 0.6, 2: 1.0},
+            gas_prices={1: 0.8, 2: 1.0},
+        ),
+    )
+    model = solve_core_model(data, SolverSettings(mip_gap=0.0)).model
+
+    assert [value(model.time_weight_h_per_year[h]) for h in model.HOURS] == [1.0, 1.0]
+    assert [value(model.electricity_price_CNY_per_kWh_e[h]) for h in model.HOURS] == [0.6, 1.0]
+    assert [value(model.gas_price_CNY_per_kWh_LHV[h]) for h in model.HOURS] == [0.8, 1.0]
+    assert value(model.annual_electricity_cost_CNY_per_year) == _cost_approx(8.0)
+    assert value(model.annual_gas_cost_CNY_per_year) == _cost_approx(18.0)
+
+
+def test_volume_gas_price_is_standardized_once_at_input_boundary() -> None:
+    standardized = standardize_gas_price_CNY_per_kWh_LHV(3.54, 35.588)
+
+    assert standardized == pytest.approx(
+        0.3580982353602338,
+        rel=0,
+        abs=1e-12,
+    )
+    economics = _economics(gas_prices={1: standardized})
+    assert economics.gas_price_CNY_per_kWh_LHV[1] == standardized
+
+
+@pytest.mark.parametrize(
+    ("price", "lhv", "message"),
+    [
+        (-1.0, 35.588, "gas_price"),
+        (float("nan"), 35.588, "gas_price"),
+        (True, 35.588, "gas_price"),
+        (3.54, 0.0, "gas_lhv"),
+        (3.54, float("inf"), "gas_lhv"),
+        (3.54, True, "gas_lhv"),
+    ],
+)
+def test_invalid_volume_gas_price_standardization_is_rejected(
+    price: object,
+    lhv: object,
+    message: str,
+) -> None:
+    with pytest.raises(EconomicStandardizationError, match=message):
+        standardize_gas_price_CNY_per_kWh_LHV(price, lhv)
+
+
+def test_distributed_mode_annual_cost_has_only_local_device_and_operation() -> None:
+    data = _core_input(
+        mode="distributed",
+        heat_demand_kW={("demand_1", 1): 20.0},
+        segments=(),
+        technologies=_technologies(
+            local_ashp={
+                "cop": 4.0,
+                "capacity_max_kW": 20.0,
+                "capex_CNY_per_kW": 1000.0,
+                "fixed_maintenance_fraction_per_year": 0.1,
+                "variable_om_CNY_per_kWh_th": 0.02,
+                "lifetime_years": 10,
+            },
+        ),
+        economics=_economics(
+            weights={1: 100.0},
+            electricity_prices={1: 0.5},
+        ),
+    )
+    model = solve_core_model(data).model
+
+    assert value(model.local_heat_output_kW["demand_1", 1]) == pytest.approx(20.0)
+    assert value(model.annual_device_capex_CNY_per_year) == _cost_approx(2000.0)
+    assert value(model.annual_fixed_om_CNY_per_year) == _cost_approx(2000.0)
+    assert value(model.annual_variable_om_CNY_per_year) == _cost_approx(40.0)
+    assert value(model.annual_electricity_cost_CNY_per_year) == _cost_approx(250.0)
+    assert value(model.annual_network_capex_CNY_per_year) == _cost_approx(0.0)
+    assert value(model.annual_connection_capex_CNY_per_year) == _cost_approx(0.0)
+    assert value(model.annual_real_cost_CNY_per_year) == _cost_approx(4290.0)
+
+
+def test_hybrid_mode_costs_connected_and_local_supply_without_double_counting() -> None:
+    data = _core_input(
+        mode="hybrid",
+        demand_nodes=("demand_1", "demand_2"),
+        heat_demand_kW={
+            ("demand_1", 1): 40.0,
+            ("demand_2", 1): 30.0,
+        },
+        segments=(
+            _segment(
+                "segment_1",
+                "site_1",
+                "demand_1",
+                length_m=10.0,
+                pipe_capex_CNY_per_m=100.0,
+                lifetime_years=20,
+            ),
+        ),
+        technologies=_technologies(
+            central_ashp={
+                "capacity_max_kW": 40.0,
+                "capex_CNY_per_kW": 1000.0,
+                "lifetime_years": 10,
+            },
+            central_gas_boiler={
+                "capacity_max_kW": 1.0,
+                "capex_CNY_per_kW": 100_000.0,
+                "lifetime_years": 1,
+            },
+            local_ashp={
+                "capacity_max_kW": 30.0,
+                "capex_CNY_per_kW": 500.0,
+                "lifetime_years": 10,
+            },
+        ),
+        economics=_economics(
+            demand_nodes=("demand_1", "demand_2"),
+            connection_capex={"demand_1": 1000.0, "demand_2": 0.0},
+            connection_lifetimes={"demand_1": 10, "demand_2": 10},
+        ),
+    )
+    model = solve_core_model(data).model
+
+    assert value(model.connected["demand_1"]) == pytest.approx(1.0)
+    assert value(model.local_installed["demand_2"]) == pytest.approx(1.0)
+    assert value(model.annual_device_capex_CNY_per_year) == _cost_approx(5500.0)
+    assert value(model.annual_network_capex_CNY_per_year) == _cost_approx(50.0)
+    assert value(model.annual_connection_capex_CNY_per_year) == _cost_approx(100.0)
+    assert value(model.annual_real_cost_CNY_per_year) == _cost_approx(5650.0)
+
+
+def test_physical_segment_capex_is_counted_once_when_endpoint_order_reverses() -> None:
+    costs = []
+    for node_u, node_v in (("site_1", "demand_1"), ("demand_1", "site_1")):
+        model = solve_core_model(
+            _core_input(
+                segments=(
+                    _segment(
+                        "segment_1",
+                        node_u,
+                        node_v,
+                        length_m=100.0,
+                        pipe_capex_CNY_per_m=500.0,
+                        lifetime_years=25,
+                    ),
+                )
+            )
+        ).model
+        costs.append(value(model.annual_network_capex_CNY_per_year))
+    assert costs == pytest.approx(
+        [2000.0, 2000.0],
+        rel=0,
+        abs=COST_ABS_TOL_CNY_PER_YEAR,
+    )
+
+
+@pytest.mark.parametrize(
+    ("economic_override", "message"),
+    [
+        ({"weights": {1: 0.0}}, "time_weight.*大于 0"),
+        ({"weights": {1: float("nan")}}, "time_weight.*有限"),
+        ({"weights": {2: 1.0}}, "time_weight.*全部小时"),
+        ({"electricity_prices": {1: -0.1}}, "electricity_price.*大于等于 0"),
+        ({"electricity_prices": {1: float("nan")}}, "electricity_price.*有限"),
+        ({"electricity_prices": {2: 0.1}}, "electricity_price.*全部小时"),
+        ({"gas_prices": {1: -0.1}}, "gas_price.*大于等于 0"),
+        ({"gas_prices": {1: float("nan")}}, "gas_price.*有限"),
+        ({"gas_prices": {2: 0.1}}, "gas_price.*全部小时"),
+        ({"expected_weight_sum": 0.0}, "expected_weight_sum.*大于 0"),
+        ({"expected_weight_sum": float("nan")}, "expected_weight_sum.*有限"),
+        ({"expected_weight_sum": 2.0}, "之和.*expected_weight"),
+        ({"expected_weight_sum": 1.0 + 2e-9}, "之和.*expected_weight"),
+        ({"hns_penalty": -1.0}, "hns_penalty.*大于等于 0"),
+        ({"hns_penalty": float("nan")}, "hns_penalty.*有限"),
+        ({"connection_capex": {"demand_1": -1.0}}, "connection_capex.*大于等于 0"),
+        ({"connection_capex": {"demand_1": float("nan")}}, "connection_capex.*有限"),
+        ({"connection_capex": {"other": 0.0}}, "connection_capex.*demand_nodes"),
+        ({"connection_lifetimes": {"demand_1": 0}}, "connection_lifetime.*整数"),
+        ({"connection_lifetimes": {"demand_1": True}}, "connection_lifetime.*整数"),
+        ({"connection_lifetimes": {"other": 20}}, "connection_lifetime.*demand_nodes"),
+    ],
+)
+def test_invalid_economic_input_is_rejected_before_model_build(
+    economic_override: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(CoreModelInputError, match=message):
+        build_core_model(_core_input(economics=_economics(**economic_override)))
+
+
+@pytest.mark.parametrize(
+    ("field", "mapping"),
+    [
+        ("weights", {True: 1.0}),
+        ("weights", {1.0: 1.0}),
+        ("electricity_prices", {True: 0.5}),
+        ("electricity_prices", {1.0: 0.5}),
+        ("gas_prices", {True: 0.5}),
+        ("gas_prices", {1.0: 0.5}),
+    ],
+)
+def test_economic_hour_keys_must_be_real_integers(
+    field: str,
+    mapping: dict[object, float],
+) -> None:
+    with pytest.raises(CoreModelInputError, match="hour 键必须全部为整数"):
+        build_core_model(_core_input(economics=_economics(**{field: mapping})))
+
+
+@pytest.mark.parametrize("invalid_hour", [True, 1.0])
+def test_heat_demand_hour_keys_must_be_real_integers(invalid_hour: object) -> None:
+    with pytest.raises(CoreModelInputError, match="hour 键必须全部为整数"):
+        build_core_model(
+            _core_input(
+                heat_demand_kW={("demand_1", invalid_hour): 100.0},
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("segment_override", "message"),
+    [
+        ({"pipe_capex_CNY_per_m": -1.0}, "pipe_capex.*大于等于 0"),
+        ({"pipe_capex_CNY_per_m": float("nan")}, "pipe_capex.*有限"),
+        ({"lifetime_years": 0}, "lifetime_years.*整数"),
+        ({"lifetime_years": True}, "lifetime_years.*整数"),
+    ],
+)
+def test_invalid_network_economics_is_rejected(
+    segment_override: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(CoreModelInputError, match=message):
+        build_core_model(
+            _core_input(
+                segments=(
+                    _segment(
+                        "segment_1",
+                        "site_1",
+                        "demand_1",
+                        **segment_override,
+                    ),
+                )
+            )
+        )
+
+
+def test_economic_input_mappings_are_copied_and_frozen() -> None:
+    weights = {1: 1.0}
+    economics = _economics(weights=weights)
+    weights[1] = 99.0
+
+    assert economics.time_weight_h_per_year[1] == pytest.approx(1.0)
+    with pytest.raises(TypeError):
+        economics.time_weight_h_per_year[1] = 2.0
+
+
+def test_weight_sum_tolerance_accepts_difference_not_exceeding_1e_minus_9() -> None:
+    data = _core_input(
+        economics=_economics(expected_weight_sum=1.0 + 0.5e-9),
+    )
+
+    validate_core_input(data)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value", "message"),
+    [
+        ("capex_CNY_per_kW", -1.0, "capex_CNY_per_kW.*大于等于 0"),
+        (
+            "fixed_maintenance_fraction_per_year",
+            -0.01,
+            "fixed_maintenance_fraction_per_year.*大于等于 0",
+        ),
+        (
+            "fixed_maintenance_fraction_per_year",
+            float("nan"),
+            "fixed_maintenance_fraction_per_year.*有限",
+        ),
+        (
+            "fixed_maintenance_fraction_per_year",
+            1.01,
+            "fixed_maintenance_fraction_per_year.*小于等于 1",
+        ),
+        (
+            "variable_om_CNY_per_kWh_th",
+            -0.01,
+            "variable_om_CNY_per_kWh_th.*大于等于 0",
+        ),
+        ("lifetime_years", 0, "lifetime_years.*整数"),
+        ("lifetime_years", True, "lifetime_years.*整数"),
+    ],
+)
+def test_invalid_technology_economics_is_rejected(
+    field: str,
+    invalid_value: object,
+    message: str,
+) -> None:
+    data = _core_input(
+        technologies=_technologies(
+            central_ashp={field: invalid_value},
+        )
+    )
+
+    with pytest.raises(CoreModelInputError, match=message):
+        validate_core_input(data)
 
 
 @pytest.mark.parametrize("mode", ["centralized", "distributed_only", "S0", ""])

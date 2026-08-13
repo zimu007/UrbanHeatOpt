@@ -7,11 +7,16 @@ from competition.core_model import (
     CoreModelInput,
     CoreModelInputError,
     CoreSolveResult,
+    EconomicInput,
     SegmentSpec,
     TechnologySpec,
     build_core_model,
     solve_core_model,
     validate_core_input,
+)
+from competition.economics import (
+    EconomicStandardizationError,
+    standardize_gas_price_CNY_per_kWh_LHV,
 )
 from competition.solvers import (
     SolverSettings,
@@ -23,12 +28,15 @@ __all__ = [
     "CoreModelInput",
     "CoreModelInputError",
     "CoreSolveResult",
+    "EconomicInput",
+    "EconomicStandardizationError",
     "SegmentSpec",
     "SolverSettings",
     "TechnologySpec",
     "build_core_model",
     "solve_core_model",
     "solve_pyomo_model",
+    "standardize_gas_price_CNY_per_kWh_LHV",
     "validate_core_input",
     "validate_solver_settings",
 ]

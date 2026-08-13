@@ -1,6 +1,14 @@
-contract_version: competition_input_v2
-status: unit_time_enforced_device_price_contract_frozen_validator_and_model_pending
+contract_version: competition_input_v2_1
+status: unit_time_device_price_and_simple_annual_cost_core_implemented_validator_adapter_pending
 case_config_schema: case_config.schema.json
+predecessor_contract:
+  version: competition_input_v2
+  status: deprecated_non_executable_requires_explicit_migration
+  breaking_changes:
+    - fixed_om_CNY_per_kW_year_replaced_by_fixed_maintenance_fraction_per_year
+    - variable_om_CNY_per_kWh_heat_replaced_by_variable_om_CNY_per_kWh_th
+    - simple_annual_cost_sections_added_to_case_config
+  automatic_migration_allowed: false
 
 p0_execution_scope:
   required_enabled_technology_roles:
@@ -28,7 +36,7 @@ p0_execution_scope:
 
 canonical_units:
   heating_power: kW
-  heating_energy: kWh
+  heating_energy: kWh_th
   electricity_energy: kWh_e
   gas_energy: kWh_LHV
   currency: CNY
@@ -43,6 +51,7 @@ canonical_units:
   timestep: 1h
   time_weight: h_per_year
   cop_and_efficiency: dimensionless
+  fixed_maintenance_fraction: fraction_per_year
 
 canonical_time:
   timezone: Asia/Shanghai
@@ -91,9 +100,9 @@ technology_support_status:
   contract_executable_types:
     - air_source_heat_pump
     - gas_boiler
-  current_pipeline_implementation_status: pending_adapter_and_model_nodes
-  note: Contract support defines the P0 target interface; it does not claim the current code pipeline already implements independent heat-pump and boiler dispatch.
-  execution_rule: A v2 case must enable at least one independent technology_id for each required role; the input validator and run_case must also verify their implementation registry before execution.
+  current_pipeline_implementation_status: independent_three_mode_economic_core_implemented_adapter_pending
+  note: Contract support and the in-memory Pyomo core are implemented; this does not claim that the seven-file validator, adapter, CLI, or formal project data are ready.
+  execution_rule: A v2_1 case must enable at least one independent technology_id for each required role; the input validator and run_case must also verify their implementation registry before execution.
 
 files:
   buildings:
@@ -242,16 +251,21 @@ files:
         nullable: false
         finite: true
         minimum: 0
-      fixed_om_CNY_per_kW_year:
+      fixed_maintenance_fraction_per_year:
         type: float
         nullable: false
         finite: true
         minimum: 0
-      variable_om_CNY_per_kWh_heat:
+        maximum: 1
+        unit: fraction_per_year
+        semantics: annual_maintenance_fraction_applied_to_installed_device_capex
+      variable_om_CNY_per_kWh_th:
         type: float
         nullable: false
         finite: true
         minimum: 0
+        unit: CNY_per_kWh_th
+        semantics: standardized_variable_om_per_useful_heat_output_excluding_energy_cost
       lifetime_years:
         type: integer
         nullable: false
@@ -447,6 +461,9 @@ cross_file_rules:
   - fixed_heat_source_and_synthetic_heat_are_rejected_in_v2
   - electricity_and_gas_prices_are_absolute_not_multiplier_or_index
   - all_technologies_share_external_timeseries_time_weight_h_per_year
+  - sum_time_weight_h_per_year_equals_case_config_economics_expected_weight_sum_h_per_year_with_absolute_tolerance_1e_minus_9
+  - formal_run_rejects_unstandardized_or_ambiguous_variable_om_basis
+  - gas_volume_price_is_not_converted_without_explicit_matching_LHV_basis
   - resource_anchor_technology_ids_are_enabled
   - all_geospatial_crs_equal_case_config_input_crs
   - all_geometry_is_nonempty_and_valid
@@ -508,7 +525,7 @@ generated_intermediates:
       - building_id
       - cluster_id
       - heated_area_m2
-      - period_energy_kWh
+      - period_energy_kWh_th
       - max_demand_kW
     foreign_keys:
       cluster_id: intermediate_id_namespaces.cluster_id
@@ -618,6 +635,26 @@ legacy_adapter_contract:
   write_timestamp_hour_map: true
   unit_conversion_count: 0
   allow_implicit_divide_or_multiply_by_1000: false
+
+economic_adapter_contract:
+  case_config_to_core:
+    expected_weight_sum_h_per_year: economics.expected_weight_sum_h_per_year
+    hns_penalty_CNY_per_kWh: reliability.hns_penalty_CNY_per_kWh
+    connection_capex_CNY_by_node: connection_economics.by_demand_node.*.connection_capex_CNY
+    connection_lifetime_years_by_node: connection_economics.by_demand_node.*.lifetime_years
+    segment_pipe_capex_CNY_per_m: network_economics.pipe_capex_CNY_per_m
+    segment_pipe_lifetime_years: network_economics.pipe_lifetime_years
+  mapping_rules:
+    - copy_global_pipe_capex_and_lifetime_to_each_generated_physical_segment_once
+    - split_connection_economics_by_demand_node_into_complete_parallel_core_mappings
+    - connection_node_keys_must_equal_generated_demand_node_ids
+    - external_timeseries_hour_rows_map_one_to_one_to_core_hour_keys
+  gas_price_standardization:
+    canonical_core_unit: CNY_per_kWh_LHV
+    formula: gas_price_CNY_per_volume_unit_divided_by_LHV_kWh_LHV_per_same_volume_unit
+    require_matching_volume_basis: true
+    conversion_count: 1
+    formal_default_value: null
 
 validation_exit_codes:
   success: 0

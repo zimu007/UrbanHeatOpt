@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://urbanheatopt.local/schemas/case_config.schema.json",
   "title": "UrbanHeatOpt competition case configuration",
-  "description": "Schema for competition_input_v2. YAML files are validated after loading to a JSON-compatible object.",
+  "description": "Schema for competition_input_v2_1. YAML files are validated after loading to a JSON-compatible object.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -22,13 +22,17 @@
     "features",
     "network",
     "planning",
+    "economics",
+    "network_economics",
+    "connection_economics",
+    "reliability",
     "enabled_technology_ids",
     "solver",
     "qa"
   ],
   "properties": {
     "contract_version": {
-      "const": "competition_input_v2"
+      "const": "competition_input_v2_1"
     },
     "case_id": {
       "type": "string",
@@ -101,14 +105,15 @@
         "temperature",
         "carbon",
         "time_weight",
-        "cop_and_efficiency"
+        "cop_and_efficiency",
+        "fixed_maintenance_fraction"
       ],
       "properties": {
         "heating_power": {
           "const": "kW"
         },
         "heating_energy": {
-          "const": "kWh"
+          "const": "kWh_th"
         },
         "electricity_energy": {
           "const": "kWh_e"
@@ -148,6 +153,9 @@
         },
         "cop_and_efficiency": {
           "const": "dimensionless"
+        },
+        "fixed_maintenance_fraction": {
+          "const": "fraction_per_year"
         }
       }
     },
@@ -193,7 +201,7 @@
         },
         "resource_anchors": {
           "type": "null",
-          "$comment": "P0 competition_input_v2 does not execute resource-anchor technologies. A later contract version may allow resource_anchors.geojson."
+      "$comment": "P0 competition_input_v2_1 does not execute resource-anchor technologies. A later contract version may allow resource_anchors.geojson."
         },
         "external_timeseries": {
           "const": "external_timeseries.parquet"
@@ -286,7 +294,7 @@
           "const": false
         }
       },
-      "$comment": "competition_input_v2 accepts final heating loads and never synthesizes DHW in the adapter."
+      "$comment": "competition_input_v2_1 accepts final heating loads and never synthesizes DHW in the adapter."
     },
     "features": {
       "type": "object",
@@ -347,6 +355,100 @@
         },
         "currency": {
           "const": "CNY"
+        }
+      },
+      "$comment": "horizon_years and discount_rate are traceability metadata only in the approved simple annualization core; they must not alter CAPEX/lifetime formulas."
+    },
+    "economics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "annualization_method",
+        "expected_weight_sum_h_per_year",
+        "variable_om_basis",
+        "site_capex_policy"
+      ],
+      "properties": {
+        "annualization_method": {
+          "const": "simple_capex_divided_by_lifetime_years"
+        },
+        "expected_weight_sum_h_per_year": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "variable_om_basis": {
+          "const": "useful_heat_output_kWh_th"
+        },
+        "site_capex_policy": {
+          "const": "excluded_not_defined_by_approved_formula"
+        }
+      },
+      "$comment": "The validator must require the external_timeseries time weights to sum to expected_weight_sum_h_per_year within absolute tolerance 1e-9. Discounting, CRF, replacement, and residual value are not part of this formula."
+    },
+    "network_economics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipe_capex_CNY_per_m",
+        "pipe_lifetime_years"
+      ],
+      "properties": {
+        "pipe_capex_CNY_per_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "pipe_lifetime_years": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "connection_economics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by_demand_node"
+      ],
+      "properties": {
+        "by_demand_node": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "connection_capex_CNY",
+              "lifetime_years"
+            ],
+            "properties": {
+              "connection_capex_CNY": {
+                "type": "number",
+                "minimum": 0
+              },
+              "lifetime_years": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      },
+      "$comment": "The cross-file validator must require keys to equal the generated demand-node set exactly."
+    },
+    "reliability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hns_penalty_CNY_per_kWh"
+      ],
+      "properties": {
+        "hns_penalty_CNY_per_kWh": {
+          "type": "number",
+          "minimum": 0
         }
       }
     },

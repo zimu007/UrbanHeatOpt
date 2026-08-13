@@ -53,7 +53,7 @@ def valid_config() -> dict[str, object]:
     """A schema example only; all numerical values are synthetic test values."""
 
     return {
-        "contract_version": "competition_input_v2",
+        "contract_version": "competition_input_v2_1",
         "case_id": "minimal",
         "scenario_id": "smoke",
         "data_version": "synthetic-v1",
@@ -68,7 +68,7 @@ def valid_config() -> dict[str, object]:
         },
         "units": {
             "heating_power": "kW",
-            "heating_energy": "kWh",
+            "heating_energy": "kWh_th",
             "electricity_energy": "kWh_e",
             "gas_energy": "kWh_LHV",
             "currency": "CNY",
@@ -82,6 +82,7 @@ def valid_config() -> dict[str, object]:
             "carbon": "kgCO2e",
             "time_weight": "h_per_year",
             "cop_and_efficiency": "dimensionless",
+            "fixed_maintenance_fraction": "fraction_per_year",
         },
         "crs": {"input": "EPSG:4326", "projected": "EPSG:32650"},
         "files": {
@@ -114,6 +115,29 @@ def valid_config() -> dict[str, object]:
             "price_base_year": 2026,
             "currency": "CNY",
         },
+        "economics": {
+            "annualization_method": "simple_capex_divided_by_lifetime_years",
+            "expected_weight_sum_h_per_year": 24.0,
+            "variable_om_basis": "useful_heat_output_kWh_th",
+            "site_capex_policy": "excluded_not_defined_by_approved_formula",
+        },
+        "network_economics": {
+            "pipe_capex_CNY_per_m": 0.0,
+            "pipe_lifetime_years": 20,
+        },
+        "connection_economics": {
+            "by_demand_node": {
+                "cluster_1": {
+                    "connection_capex_CNY": 0.0,
+                    "lifetime_years": 20,
+                },
+                "cluster_2": {
+                    "connection_capex_CNY": 0.0,
+                    "lifetime_years": 20,
+                },
+            }
+        },
+        "reliability": {"hns_penalty_CNY_per_kWh": 1_000_000.0},
         "enabled_technology_ids": [
             "central_ashp",
             "central_gas_boiler",
@@ -144,7 +168,17 @@ def test_machine_contract_is_parseable_and_has_no_duplicate_keys() -> None:
     _assert_unique_yaml_keys(syntax_tree)
     contract = yaml.safe_load(raw)
 
-    assert contract["contract_version"] == "competition_input_v2"
+    assert contract["contract_version"] == "competition_input_v2_1"
+    assert contract["predecessor_contract"] == {
+        "version": "competition_input_v2",
+        "status": "deprecated_non_executable_requires_explicit_migration",
+        "breaking_changes": [
+            "fixed_om_CNY_per_kW_year_replaced_by_fixed_maintenance_fraction_per_year",
+            "variable_om_CNY_per_kWh_heat_replaced_by_variable_om_CNY_per_kWh_th",
+            "simple_annual_cost_sections_added_to_case_config",
+        ],
+        "automatic_migration_allowed": False,
+    }
     assert contract["canonical_units"]["heating_power"] == "kW"
     external_columns = contract["files"]["external_timeseries"]["required_columns"]
     assert "timestamp" in external_columns
@@ -206,11 +240,14 @@ def test_unknown_case_config_key_is_rejected(
     assert list(validator.iter_errors(invalid))
 
 
-def test_v1_contract_version_is_rejected(
-    case_schema: dict[str, object], valid_config: dict[str, object]
+@pytest.mark.parametrize("old_version", ["competition_input_v1", "competition_input_v2"])
+def test_old_contract_version_is_rejected(
+    case_schema: dict[str, object],
+    valid_config: dict[str, object],
+    old_version: str,
 ) -> None:
     invalid = copy.deepcopy(valid_config)
-    invalid["contract_version"] = "competition_input_v1"
+    invalid["contract_version"] = old_version
     validator = Draft202012Validator(case_schema, format_checker=FormatChecker())
     assert list(validator.iter_errors(invalid))
 
@@ -286,6 +323,65 @@ def test_v2_machine_contract_uses_absolute_prices_and_public_time_weight() -> No
         "multiplier" in field or "index" in field or field.endswith("per_kWh")
         for field in external["forbidden_price_fields"]
     )
+
+
+def test_v2_machine_contract_freezes_simple_annual_cost_inputs() -> None:
+    contract = yaml.safe_load(
+        (SCHEMA_DIRECTORY / "input_contract.yaml").read_text(encoding="utf-8")
+    )
+    columns = contract["files"]["technologies"]["required_columns"]
+
+    assert "fixed_om_CNY_per_kW_year" not in columns
+    assert columns["fixed_maintenance_fraction_per_year"] == {
+        "type": "float",
+        "nullable": False,
+        "finite": True,
+        "minimum": 0,
+        "maximum": 1,
+        "unit": "fraction_per_year",
+        "semantics": (
+            "annual_maintenance_fraction_applied_to_installed_device_capex"
+        ),
+    }
+    assert "variable_om_CNY_per_kWh_heat" not in columns
+    assert columns["variable_om_CNY_per_kWh_th"]["unit"] == "CNY_per_kWh_th"
+
+
+def test_machine_contract_freezes_case_to_core_economic_mapping() -> None:
+    contract = yaml.safe_load(
+        (SCHEMA_DIRECTORY / "input_contract.yaml").read_text(encoding="utf-8")
+    )
+    mapping = contract["economic_adapter_contract"]
+    assert mapping["case_config_to_core"]["segment_pipe_capex_CNY_per_m"] == (
+        "network_economics.pipe_capex_CNY_per_m"
+    )
+    assert mapping["case_config_to_core"]["connection_capex_CNY_by_node"] == (
+        "connection_economics.by_demand_node.*.connection_capex_CNY"
+    )
+    assert mapping["gas_price_standardization"]["conversion_count"] == 1
+    assert mapping["gas_price_standardization"]["formal_default_value"] is None
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "invalid_value"),
+    [
+        ("economics", "expected_weight_sum_h_per_year", 0.0),
+        ("network_economics", "pipe_capex_CNY_per_m", -1.0),
+        ("network_economics", "pipe_lifetime_years", 0),
+        ("reliability", "hns_penalty_CNY_per_kWh", -1.0),
+    ],
+)
+def test_invalid_simple_annual_cost_config_is_rejected(
+    case_schema: dict[str, object],
+    valid_config: dict[str, object],
+    section: str,
+    field: str,
+    invalid_value: object,
+) -> None:
+    invalid = copy.deepcopy(valid_config)
+    invalid[section][field] = invalid_value
+    validator = Draft202012Validator(case_schema, format_checker=FormatChecker())
+    assert list(validator.iter_errors(invalid))
 
 
 @pytest.mark.parametrize(
