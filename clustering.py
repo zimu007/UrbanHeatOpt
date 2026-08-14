@@ -162,9 +162,17 @@ def cluster_buildings(gdf_building_data: gpd.GeoDataFrame, cost_parameter: dict)
 
     cprint("Start: cluster buildings into " + str(parm_cluster_size) + " clusters")
 
-    # calculate the kmeans clustering
-    kmeans = KMeans(n_clusters=parm_cluster_size)
-    gdf_building_data['cluster'] = kmeans.fit_predict(gdf_building_data['centroid'].apply(lambda x: [x.x, x.y]).tolist())
+    if parm_cluster_size > len(gdf_building_data):
+        raise ValueError("param_cluster_size cannot exceed the number of buildings")
+
+    # Deterministic spatial clustering avoids Windows crashes observed with
+    # sklearn KMeans in the packaged student environment and keeps P0 stable.
+    coords = np.array(gdf_building_data['centroid'].apply(lambda x: [x.x, x.y]).tolist())
+    order = np.lexsort((coords[:, 1], coords[:, 0]))
+    labels = np.empty(len(coords), dtype=int)
+    for cluster_id, indices in enumerate(np.array_split(order, parm_cluster_size)):
+        labels[indices] = cluster_id
+    gdf_building_data['cluster'] = labels
 
     # calculate the yearly heating costs per building
     gdf_building_data['YearlyHeatingCosts'] = gdf_building_data['YearlyDemand'] * gdf_building_data['LocalHeatProdCosts'] 
@@ -388,6 +396,8 @@ def save_data(gdf_heat_nodes: gpd.GeoDataFrame, df_cluster_TS:pd.DataFrame, gdf_
     gdf_heat_network.to_file(os.path.join(model_data_path,config['model_data']['heat_network']), driver='GeoJSON')
     gdf_heat_gen.rename(columns={'cluster_id':'heat_unit_id'}, inplace=True) # rename the column to unit_id for more clearity in the optimization model
     gdf_heat_gen.to_file(os.path.join(model_data_path,config['model_data']['heat_gen_units']), driver='GeoJSON')
+    if df_waste_heat_profiles is None:
+        df_waste_heat_profiles = pd.DataFrame({"hour": df_cluster_TS["hour"].to_numpy()})
     df_waste_heat_profiles.to_csv(os.path.join(model_data_path,config['model_data']['wh_profiles']), index=False)
 
     cprint("Done: save data for the optimisation model", 'green')
@@ -409,6 +419,10 @@ def add_hot_water_demand(building_cluster: gpd.GeoDataFrame, cluster_TS: pd.Data
     :return: dataframe with heat demand time serieswith added hot water demand in the same  time series
     :rtype: pd.DataFrame
     """
+    if int(cost_parameter.get('include_dhw', 1)) == 0:
+        cprint("Skip: domestic hot water demand is disabled", 'yellow')
+        return cluster_TS
+
     # add a simplified hot water demand to the heat demand time series
     # input: building_cluster: geodataframe with data for each cluster
     #        cluster_TS: dataframe with the heat demand time series
@@ -420,7 +434,7 @@ def add_hot_water_demand(building_cluster: gpd.GeoDataFrame, cluster_TS: pd.Data
     cprint("Start: add hot water demand to the heat demand time series")
 
     # calculate the hot water demand for each cluster
-    building_cluster['YearlyHWD'] = hot_water_demand * building_cluster['number_of_dwellings'] * 356
+    building_cluster['YearlyHWD'] = hot_water_demand * building_cluster['number_of_dwellings'] * 365
 
     # distribute the yearlyHWD to the hourly demand and add it to the existing heat demand
     for cluster_id in cluster_TS.columns[1:]:

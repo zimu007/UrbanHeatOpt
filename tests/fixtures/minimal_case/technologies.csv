@@ -1,0 +1,2 @@
+﻿technology_id,technology_type,applicable_scope,energy_carrier,cop,efficiency,capacity_min_kW,capacity_max_kW,capex_CNY_per_kW,capex_basis,fixed_om_CNY_per_kW_year,variable_om_CNY_per_kWh_heat,lifetime_years,source,assumption_flag
+synthetic_fixed_source,fixed_heat_source,central,synthetic_heat,,,0.0,100.0,10.0,one_time_capex,0.0,0.2,20,synthetic fixture,synthetic_test

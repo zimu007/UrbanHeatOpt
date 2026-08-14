@@ -1,0 +1,11 @@
+{
+"type": "FeatureCollection",
+"name": "buildings",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "building_id": "building_0", "use_type": "office", "heated_area_m2": 100.0, "archetype_id": "synthetic_office" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 114.0, 30.0 ], [ 114.001, 30.0 ], [ 114.001, 30.001 ], [ 114.0, 30.001 ], [ 114.0, 30.0 ] ] ] } },
+{ "type": "Feature", "properties": { "building_id": "building_1", "use_type": "office", "heated_area_m2": 120.0, "archetype_id": "synthetic_office" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 114.002, 30.0 ], [ 114.003, 30.0 ], [ 114.003, 30.001 ], [ 114.002, 30.001 ], [ 114.002, 30.0 ] ] ] } },
+{ "type": "Feature", "properties": { "building_id": "building_2", "use_type": "school", "heated_area_m2": 140.0, "archetype_id": "synthetic_school" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 114.0, 30.002 ], [ 114.001, 30.002 ], [ 114.001, 30.003 ], [ 114.0, 30.003 ], [ 114.0, 30.002 ] ] ] } },
+{ "type": "Feature", "properties": { "building_id": "building_3", "use_type": "retail", "heated_area_m2": 160.0, "archetype_id": "synthetic_retail" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 114.002, 30.002 ], [ 114.003, 30.002 ], [ 114.003, 30.003 ], [ 114.002, 30.003 ], [ 114.002, 30.002 ] ] ] } }
+]
+}

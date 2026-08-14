@@ -112,8 +112,10 @@ flowchart LR
   - 完成记录（2026-08-11）：标准负荷、兼容宽表和聚类结果统一为浮点 kW；删除生成器 `×1000/uint32`、聚类 `/1000` 及年度对账中的千倍假设。4 栋 × 24 小时内存合成数据经长表、宽表和聚类累计守恒测试通过。
 - [x] **冻结时间索引**：标准数据使用 `timestamp`；当前 UrbanHeatOpt 兼容文件使用 `hour=1...N`。不得混用 `0...8759` 和 `1...8760`。
   - 完成记录（2026-08-11）：新增 Asia/Shanghai 整点连续时间校验和稳定 `timestamp → hour=1...N` 双射；拒绝 0 起点、缺号、重复、倒序、浮点 hour、错误时区、非整点和跨建筑覆盖不一致。
-- [ ] **增加输入校验器**：在聚类和求解前检查文件、字段、单位、ID、时间、CRS、空值和非负性，错误时立即停止并给出可读提示。
-- [ ] **建立最小合成样例**：3～6 栋建筑、24～48 小时、1 个热源、可选 1 个储热设备；所有输入均可提交到 Git。
+- [x] **增加输入校验器**：在聚类和求解前检查文件、字段、单位、ID、时间、CRS、空值和非负性，错误时立即停止并给出可读提示。
+  - 完成记录（2026-08-14）：新增 `competition/validation/inputs.py` 与 `scripts/validate_inputs.py`，在适配、聚类和求解前校验 `case_config.yaml`、建筑 GeoJSON、逐时负荷 Parquet、设备表、道路/可建设空间和外部时序；覆盖字段缺失、ID 不一致、时间范围、小时连续性、单位契约、CRS、几何有效性、空值、非负性、P0 技术类型和跨文件 `data_version`/DHW 一致性。验证命令：`python scripts/validate_inputs.py --case tests/fixtures/minimal_case` 与 `python -m pytest -q tests/test_validate_and_adapt_case.py tests/test_contract_schema.py tests/test_load_unit_time_contract.py`。
+- [x] **建立最小合成样例**：3～6 栋建筑、24～48 小时、1 个热源、可选 1 个储热设备；所有输入均可提交到 Git。
+  - 完成记录（2026-08-14）：确认并补正文档化的 `tests/fixtures/minimal_case/`，数据版本为 `synthetic-v1`，包含 4 栋建筑、24 个逐小时步长、1 个 `synthetic_fixed_source` 合成固定热源、无储热、无余热；输入文件包括 `case_config.yaml`、`buildings.geojson`、`building_hourly_loads.parquet`、`technologies.csv`、`roads_or_feasible_space.geojson`、`external_timeseries.parquet` 和 README，均位于可提交的测试夹具目录。验证命令：`python scripts/validate_inputs.py --case tests/fixtures/minimal_case` 通过，报告 `buildings=4`、`hours=24`、`technologies=1`；`python -m pytest -q tests/test_validate_and_adapt_case.py` 通过，结果为 6 passed、11 warnings。该样例仅为 `synthetic_test`，不使用、不修改、不替代负荷组真实数据。
 - [x] **确定可移植求解器**：当前环境已安装 `urbanheatopt_env`，`appsi_highs` 可用；配置中应写 `solver: highs`。`model.py` 只识别 `highs` 或 `gurobi`，不要在 YAML 中写 `appsi_highs`。
   - 完成记录（2026-08-11）：默认配置改为 `highs`，固定单线程、60 秒时限和随机种子；`model.py` 在求解前校验配置与可用性，显式映射内部 `appsi_highs`，只在终止状态为 `optimal` 时加载变量。非法名称、不可用 Gurobi 和不可行模型均在导出前失败，15 项求解器接口测试通过。
 - [ ] **添加自动测试**：至少覆盖读取、单位换算、建筑聚类、负荷守恒和最小模型求解。

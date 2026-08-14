@@ -1,5 +1,15 @@
-# 最小合成案例
+# Minimal synthetic case
 
-本目录预留给 4 栋建筑、24 小时、2 个聚类的 P0 最小案例。当前仅建立目录边界，后续数据必须标记为 `synthetic_test`，不得称为武汉或光谷真实参数。
+This directory contains the checked-in P0 smoke-test case for the competition
+branch.
 
-样例只用于输入契约、校验、适配和闭环测试；严禁混入真实数据或从真实数据可逆推的敏感信息。
+- Data class: `synthetic_test`
+- Data version: `synthetic-v1`
+- Scale: 4 buildings, 24 hourly timesteps
+- Technologies: 1 synthetic fixed heat source
+- Storage: disabled
+- Waste heat: disabled
+
+The files are intentionally small enough to commit to Git. They are only for
+input-contract validation, adapter checks, and minimal end-to-end smoke tests.
+They are not Wuhan, Guanggu, or Fehring real-data inputs.

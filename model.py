@@ -1,5 +1,6 @@
 # import libraries to work with Pyomo models
 from data import *
+import json
 import logging
 import os
 
@@ -831,7 +832,9 @@ def run_model(case_study_name: str, model_name: str):
     dh_model.fill_model_data(input_dict)
     dh_model.initialize_variables()
     dh_model.initialize_constraints()
+    solve_started = time.time()
     slvr_res = dh_model.model_run(config)
+    solve_elapsed_seconds = time.time() - solve_started
 
     logger.info("MODEL SOLUTION")
     logger.info("==============")
@@ -847,6 +850,22 @@ def run_model(case_study_name: str, model_name: str):
         print("Exported: ", k)
 
     dh_model.export_results(case_study_name, model_name, config)
+
+    solver_report = {
+        "solver": config.get("solver"),
+        "termination_condition": str(slvr_res.solver.termination_condition),
+        "status": str(slvr_res.solver.status),
+        "acceptable": slvr_res.solver.termination_condition == TerminationCondition.optimal,
+        "configured_mip_gap": float(config.get("mip_gap", 0.015)),
+        "actual_mip_gap": None,
+        "runtime_seconds": round(solve_elapsed_seconds, 6),
+        "solver_threads": int(config.get("solver_threads", 1)),
+        "solver_time_limit_seconds": float(config.get("solver_time_limit_seconds", 60)),
+        "solver_random_seed": int(config.get("solver_random_seed", 202611)),
+    }
+    report_path = os.path.join(case_study_name, config['scenario_dir'], model_name, config['expost_dir'], "solver_report.json")
+    with open(report_path, "w", encoding="utf-8") as report_file:
+        json.dump(solver_report, report_file, ensure_ascii=False, indent=2)
 
     logging.shutdown()
     
