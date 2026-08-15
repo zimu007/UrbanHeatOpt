@@ -114,11 +114,13 @@ flowchart LR
   - 完成记录（2026-08-11）：新增 Asia/Shanghai 整点连续时间校验和稳定 `timestamp → hour=1...N` 双射；拒绝 0 起点、缺号、重复、倒序、浮点 hour、错误时区、非整点和跨建筑覆盖不一致。
 - [x] **增加输入校验器**：在聚类和求解前检查文件、字段、单位、ID、时间、CRS、空值和非负性，错误时立即停止并给出可读提示。
   - 完成记录（2026-08-14）：新增 `competition/validation/inputs.py` 与 `scripts/validate_inputs.py`，在适配、聚类和求解前校验 `case_config.yaml`、建筑 GeoJSON、逐时负荷 Parquet、设备表、道路/可建设空间和外部时序；覆盖字段缺失、ID 不一致、时间范围、小时连续性、单位契约、CRS、几何有效性、空值、非负性、P0 技术类型和跨文件 `data_version`/DHW 一致性。验证命令：`python scripts/validate_inputs.py --case tests/fixtures/minimal_case` 与 `python -m pytest -q tests/test_validate_and_adapt_case.py tests/test_contract_schema.py tests/test_load_unit_time_contract.py`。
+  - 合并增强（2026-08-15）：保持 `CaseInputs` 和 `validate_case_inputs()` API 不变，增加 YAML 重复键拒绝、稳定错误码、契约输入 SHA-256、校验前后全文件快照只读检查，以及 ID/单位/字段不自动修正测试；CLI 输出 JSON 摘要并以退出码 2 表示契约失败。
 - [x] **建立最小合成样例**：3～6 栋建筑、24～48 小时、1 个热源、可选 1 个储热设备；所有输入均可提交到 Git。
   - 完成记录（2026-08-14）：确认并补正文档化的 `tests/fixtures/minimal_case/`，数据版本为 `synthetic-v1`，包含 4 栋建筑、24 个逐小时步长、1 个 `synthetic_fixed_source` 合成固定热源、无储热、无余热；输入文件包括 `case_config.yaml`、`buildings.geojson`、`building_hourly_loads.parquet`、`technologies.csv`、`roads_or_feasible_space.geojson`、`external_timeseries.parquet` 和 README，均位于可提交的测试夹具目录。验证命令：`python scripts/validate_inputs.py --case tests/fixtures/minimal_case` 通过，报告 `buildings=4`、`hours=24`、`technologies=1`；`python -m pytest -q tests/test_validate_and_adapt_case.py` 通过，结果为 6 passed、11 warnings。该样例仅为 `synthetic_test`，不使用、不修改、不替代负荷组真实数据。
 - [x] **确定可移植求解器**：当前环境已安装 `urbanheatopt_env`，`appsi_highs` 可用；配置中应写 `solver: highs`。`model.py` 只识别 `highs` 或 `gurobi`，不要在 YAML 中写 `appsi_highs`。
   - 完成记录（2026-08-11）：默认配置改为 `highs`，固定单线程、60 秒时限和随机种子；`model.py` 在求解前校验配置与可用性，显式映射内部 `appsi_highs`，只在终止状态为 `optimal` 时加载变量。非法名称、不可用 Gurobi 和不可行模型均在导出前失败，15 项求解器接口测试通过。
-- [ ] **添加自动测试**：至少覆盖读取、单位换算、建筑聚类、负荷守恒和最小模型求解。
+- [x] **添加自动测试**：至少覆盖读取、单位换算、建筑聚类、负荷守恒和最小模型求解。
+  - 完成记录（2026-08-15）：现有测试覆盖标准案例读取、kW 浮点保持与禁止隐式千倍换算、聚类严格求和守恒、`timestamp→hour=1...N`、HiGHS 最小模型最优/不可行门禁；新增重复 YAML 键、SHA-256、源文件只读、错误 ID/单位/字段不自动修正和 `FEATURE_NOT_IMPLEMENTED` 稳定错误码测试。完整测试套件共65项通过。
 
 ### 3.2 P1：当前代码中的高风险逻辑
 
@@ -176,7 +178,7 @@ UrbanHeatOpt/
 └── CODE_TEAM_ROADMAP.md
 ```
 
-前期准备记录（2026-08-11）：已建立 `competition/` 五个竞赛层子包、两个真实案例边界目录、`scripts/`、`tests/fixtures/minimal_case/` 及职责说明；随后新增 `DATA_CONTRACT.md`、`MODEL_ASSUMPTIONS.md`、负荷组/项目组问题和真实数据暂缓清单，并以 YAML/JSON Schema 冻结比赛输入格式和 P0 功能边界。当前仅实现负荷单位/时间适配，尚未实现完整输入校验器、完整适配闭环、CLI 或最小案例；未移动或删除任何原作者目录。
+前期准备记录（2026-08-11，状态更新至2026-08-15）：已建立 `competition/` 五个竞赛层子包、两个真实案例边界目录、`scripts/`、`tests/fixtures/minimal_case/` 及职责说明；随后新增 `DATA_CONTRACT.md`、`MODEL_ASSUMPTIONS.md`、问题清单和真实数据暂缓清单。当前已实现运行层完整输入校验、最小合成案例、旧模型适配、路径式 CLI、标准结果结构和成本年化基础；负荷组9文件正式接收、真实案例对账与完整优化闭环仍未完成。未移动或删除任何原作者目录。
 
 要求：原作者文件的功能修改应小步进行，并在 `CHANGELOG_COMPETITION.md` 中记录“修改原因、公式影响和测试证据”。
 
@@ -193,6 +195,7 @@ UrbanHeatOpt/
 - [x] 将默认求解器设为 `highs`，同时保留可选 Gurobi 配置。
   - 完成记录（2026-08-11）：`_config.yaml` 默认使用 `highs`；保留显式 `gurobi` 选择，但不可用时可读失败且不静默回退。HiGHS 一变量最优解、不可行门禁和参数传递测试通过；完整案例求解仍待最小合成案例任务。
 - [ ] 建立 `python scripts/run_case.py --case minimal --scenario smoke` 入口，避免把 Notebook 当作唯一入口。
+  - 当前状态（2026-08-15）：已存在基于案例目录的 `scripts/run_case.py --case tests/fixtures/minimal_case`，并有测试验证可经过校验、适配进入聚类；尚未兼容本条约定的 `--case minimal --scenario smoke` 简写，故保持未勾选。
 - [ ] 最小案例完整执行：读取 → 聚类 → 管网 → 优化 → 导出。
 - [ ] 输出求解状态、目标值、未供热量、负荷平衡误差和运行时间。
 - [ ] 在 CI 或本机测试命令中重复运行两次，确认结果一致。

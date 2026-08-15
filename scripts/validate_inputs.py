@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -11,23 +12,44 @@ from competition.validation.inputs import InputValidationError, validate_case_in
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate a competition case input directory.")
-    parser.add_argument("--case", required=True, help="Path to a case directory containing case_config.yaml.")
+    parser.add_argument(
+        "--case",
+        required=True,
+        type=Path,
+        help="Path to a case directory containing case_config.yaml.",
+    )
     args = parser.parse_args()
 
     try:
-        inputs = validate_case_inputs(Path(args.case))
+        inputs = validate_case_inputs(args.case)
     except InputValidationError as exc:
-        print("[失败] 输入校验未通过：", file=sys.stderr)
-        for error in exc.errors:
-            print(f"- {error}", file=sys.stderr)
-        return 1
+        print(
+            json.dumps(
+                {"status": "invalid", "errors": exc.issues},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            file=sys.stderr,
+        )
+        return 2
 
-    print("[通过] 输入校验通过")
-    print(f"case_id={inputs.config['case_id']}")
-    print(f"scenario_id={inputs.config['scenario_id']}")
-    print(f"buildings={len(inputs.buildings)}")
-    print(f"hours={len(inputs.timestamp_hour_map)}")
-    print(f"technologies={len(inputs.technologies)}")
+    print(
+        json.dumps(
+            {
+                "status": "valid",
+                "case_dir": str(inputs.case_dir),
+                "case_id": inputs.config["case_id"],
+                "scenario_id": inputs.config["scenario_id"],
+                "data_version": inputs.config["data_version"],
+                "building_count": len(inputs.buildings),
+                "hour_count": len(inputs.timestamp_hour_map),
+                "technology_count": len(inputs.technologies),
+                "file_sha256": inputs.file_sha256,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

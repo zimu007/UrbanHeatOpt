@@ -13,7 +13,11 @@ from competition.validation.inputs import InputValidationError
 def main() -> int:
     parser = argparse.ArgumentParser(description="Adapt a validated competition case to legacy UrbanHeatOpt files.")
     parser.add_argument("--case", required=True, help="Path to a competition case directory.")
-    parser.add_argument("--output", required=True, help="Output directory for legacy files.")
+    parser.add_argument(
+        "--output",
+        default="runs/adapted_case",
+        help="Output directory for legacy files (default: runs/adapted_case).",
+    )
     args = parser.parse_args()
 
     try:

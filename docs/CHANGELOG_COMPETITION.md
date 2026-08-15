@@ -1,5 +1,35 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-15 — VALIDATOR-02 合并输入校验增强
+
+### 更改内容
+
+- 保留 `competition/validation/inputs.py`、`CaseInputs` 和 `validate_case_inputs()` 作为唯一校验架构，没有引入第二套 `competition/validation.py`。
+- 在兼容现有适配器、结果导出和 `run_case.py` 的前提下，增加 YAML 重复键拒绝、稳定错误码、契约输入 SHA-256 和校验前后全文件快照只读检查。
+- `scripts/validate_inputs.py` 保留基础校验 API，改为输出 JSON 摘要；成功返回 0，输入契约失败返回 2。
+- 新增 `tests/test_input_validation.py`，覆盖 SHA-256、只读、重复键、错误 ID/单位/字段不自动修正和未实现技术明确失败。
+- 新增两份数据接口中文文档，并语义合并路线图、数据契约、README 和脚本说明；保留既有最小案例、适配器、运行入口、结果导出和成本年化状态。
+- `adapt_case_to_legacy.py` 的 `--output` 增加被忽略目录下的默认值，同时保留显式输出路径兼容性。
+
+### 合并边界
+
+- 未覆盖 `.gitignore`、`clustering.py`、`model.py`、负荷组问题清单或最小案例；
+- 未复制 `.vscode`、缓存、Notebook 输出或原项目的平行校验模块；
+- 未执行 Git 暂存、提交或推送。
+
+### 验证结果
+
+```text
+环境检查：通过
+最小案例输入校验：通过（4栋建筑、24小时、1项技术）
+最小案例旧格式适配：通过
+tests/test_input_validation.py：6 passed
+tests/test_validate_and_adapt_case.py：6 passed
+tests/test_cost_formula.py：5 passed
+完整测试套件：65 passed
+git diff --check：通过
+```
+
 ## 2026-08-11 — SOLVER-01 确定可移植求解器
 
 ### 更改内容

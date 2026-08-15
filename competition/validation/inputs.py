@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Any
@@ -64,12 +65,63 @@ ALLOWED_ASSUMPTIONS = {
 }
 
 
+def _stable_error_code(message: str) -> str:
+    """Map existing human-readable validation messages to stable public codes."""
+
+    rules = (
+        (("只读", "修改了案例输入"), "INPUT_INTEGRITY_CHANGED"),
+        (("不支持", "当前只可执行", "storage_enabled", "waste_heat_enabled"), "FEATURE_NOT_IMPLEMENTED"),
+        (("重复键",), "CONFIG_DUPLICATE_KEY"),
+        (("schema", "不符合契约", "顶层必须"), "CONFIG_SCHEMA_ERROR"),
+        (("缺少",), "FILE_OR_FIELD_MISSING"),
+        (("CRS",), "CRS_INVALID"),
+        (("geometry",), "GEOMETRY_INVALID"),
+        (("timestamp", "时区", "整点", "逐时范围"), "TIME_INVALID"),
+        (("ID", "building_id", "technology_id", "feature_id"), "ID_INVALID"),
+        (("data_version",), "DATA_VERSION_MISMATCH"),
+        (("dhw", "DHW"), "DHW_MISMATCH"),
+        (("不得为负", "大于 0", "数值", "NaN", "无穷"), "VALUE_INVALID"),
+    )
+    for terms, code in rules:
+        if any(term in message for term in terms):
+            return code
+    return "INPUT_CONTRACT_ERROR"
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that refuses duplicate mapping keys."""
+
+
+def _construct_unique_mapping(
+    loader: yaml.SafeLoader, node: yaml.MappingNode
+) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=False)
+        if key in mapping:
+            raise ValueError(f"重复键：{key!r}")
+        mapping[key] = loader.construct_object(value_node, deep=False)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
 class InputValidationError(ValueError):
     """Raised when a case input bundle violates the competition contract."""
 
     def __init__(self, errors: list[str]) -> None:
-        self.errors = errors
-        super().__init__("\n".join(errors))
+        self.messages = list(errors)
+        self.issues = [
+            {"code": _stable_error_code(message), "message": message}
+            for message in errors
+        ]
+        # Keep the established ``errors`` API as the original message list.
+        # Stable machine-readable codes are exposed separately through ``issues``.
+        self.errors = list(errors)
+        super().__init__("\n".join(self.errors))
 
 
 @dataclass(frozen=True)
@@ -86,6 +138,31 @@ class CaseInputs:
     resource_anchors: gpd.GeoDataFrame | None
     legacy_loads_kW: pd.DataFrame
     timestamp_hour_map: pd.DataFrame
+    # Default preserves compatibility for callers that construct CaseInputs
+    # directly while validators populate hashes for normal runtime use.
+    file_sha256: dict[str, str] = field(default_factory=dict)
+
+
+def _snapshot_files(case_dir: Path) -> dict[str, str]:
+    """Return hashes for every case file without writing to the case directory."""
+
+    if not case_dir.is_dir():
+        return {}
+    return {
+        path.relative_to(case_dir).as_posix(): sha256(path.read_bytes()).hexdigest()
+        for path in sorted(case_dir.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _configured_input_hashes(
+    case_dir: Path, config: dict[str, Any], snapshot: dict[str, str]
+) -> dict[str, str]:
+    names = {"case_config.yaml"}
+    for value in config.get("files", {}).values():
+        if isinstance(value, str):
+            names.add(Path(value).as_posix())
+    return {name: snapshot[name] for name in sorted(names) if name in snapshot}
 
 
 def _is_clean_string_series(series: pd.Series) -> pd.Series:
@@ -107,7 +184,9 @@ def _load_case_config(case_dir: Path, errors: list[str]) -> dict[str, Any]:
         errors.append("缺少 case_config.yaml")
         return {}
     try:
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        config = yaml.load(
+            config_path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader
+        )
     except Exception as exc:
         errors.append(f"case_config.yaml 无法读取或解析：{exc}")
         return {}
@@ -366,6 +445,11 @@ def _cross_file_checks(inputs: CaseInputs, errors: list[str]) -> None:
             if extra_loads:
                 errors.append(f"负荷包含建筑表不存在的 ID：{', '.join(extra_loads)}")
 
+    # File readers already report their own failures. Without a valid config,
+    # semantic cross-file checks would only add misleading default-value errors.
+    if not config:
+        return
+
     data_version = config.get("data_version")
     if "data_version" in inputs.loads.columns and inputs.loads["data_version"].nunique() == 1:
         actual = inputs.loads["data_version"].iloc[0]
@@ -380,7 +464,13 @@ def _cross_file_checks(inputs: CaseInputs, errors: list[str]) -> None:
         expected = bool(config.get("dhw", {}).get("input_includes_dhw"))
         if actual != expected:
             errors.append(f"dhw_included={actual} 与 case_config dhw.input_includes_dhw={expected} 不一致")
-    if not inputs.external_timeseries.empty and "timestamp" in inputs.external_timeseries.columns and not inputs.loads.empty:
+    if (
+        not inputs.external_timeseries.empty
+        and "timestamp" in inputs.external_timeseries.columns
+        and not inputs.loads.empty
+        and config.get("time", {}).get("start")
+        and config.get("time", {}).get("end")
+    ):
         load_times = pd.DatetimeIndex(inputs.loads["timestamp"].drop_duplicates())
         external_times = pd.DatetimeIndex(inputs.external_timeseries["timestamp"])
         if not load_times.equals(external_times):
@@ -399,7 +489,7 @@ def _cross_file_checks(inputs: CaseInputs, errors: list[str]) -> None:
     if config.get("features", {}).get("storage_enabled") or config.get("features", {}).get("waste_heat_enabled"):
         errors.append("P0 当前要求 storage_enabled=false 且 waste_heat_enabled=false")
 
-    if not inputs.technologies.empty:
+    if not inputs.technologies.empty and "technology_id" in inputs.technologies.columns:
         technology_ids = set(inputs.technologies["technology_id"])
         enabled = set(config.get("enabled_technology_ids", []))
         missing = enabled - technology_ids
@@ -425,6 +515,7 @@ def validate_case_inputs(case_dir: str | Path) -> CaseInputs:
     """Load and validate a complete P0 case input bundle."""
 
     case_path = Path(case_dir).resolve()
+    before_snapshot = _snapshot_files(case_path)
     errors: list[str] = []
     config = _load_case_config(case_path, errors)
     buildings = _read_buildings(case_path, config, errors)
@@ -444,8 +535,12 @@ def validate_case_inputs(case_dir: str | Path) -> CaseInputs:
         resource_anchors=resource_anchors,
         legacy_loads_kW=legacy_loads,
         timestamp_hour_map=timestamp_hour_map,
+        file_sha256=_configured_input_hashes(case_path, config, before_snapshot),
     )
     _cross_file_checks(candidate, errors)
+    after_snapshot = _snapshot_files(case_path)
+    if before_snapshot != after_snapshot:
+        errors.append("校验过程修改了案例输入文件；validation 必须保持只读")
     if errors:
         raise InputValidationError(errors)
     return candidate
