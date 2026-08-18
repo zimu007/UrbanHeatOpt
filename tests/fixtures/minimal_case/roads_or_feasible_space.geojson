@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "roads_or_feasible_space",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "feature_id": "road_1", "spatial_role": "road" }, "geometry": { "type": "LineString", "coordinates": [ [ 113.999, 29.999 ], [ 114.004, 30.004 ] ] } }
+]
+}

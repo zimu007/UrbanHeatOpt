@@ -15,6 +15,7 @@ htmlcov/
 # 运行日志和派生结果（均可由输入与配置重建）
 /logs/
 /results/
+/runs/
 **/output/
 **/expost/
 **/plots/
