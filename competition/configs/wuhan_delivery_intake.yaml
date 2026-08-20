@@ -1,0 +1,116 @@
+manifest_version: intake_manifest_v1
+source_root: ../..
+
+# This is a source profile, not a runtime case configuration.  It describes
+# the current Wuhan delivery while all validation mechanics remain generic.
+datasets:
+  - name: dest_hourly_weather
+    glob: Wuhan_DeST_models汇总/*/001_weather/*逐时气象参数.csv
+    format: csv
+    encoding: utf-8-sig
+    layout: hourly_wide
+    row_count: 8760
+    required_columns: [日期, 时刻, 小时, 干球温度(℃), 含湿量（g/Kg), 总辐射（W/M2）, 散射辐射（W/M2）, 直射辐射（W/M2）]
+    primary_key: [小时]
+    null_policy: {'*': reject}
+    numeric:
+      时刻: {min: 0, max: 23}
+      小时: {min: 0, max: 8759}
+      含湿量（g/Kg): {min: 0}
+      总辐射（W/M2）: {min: 0}
+      散射辐射（W/M2）: {min: 0}
+      直射辐射（W/M2）: {min: 0}
+    time_index: {column: 小时, start: 0, step: 1}
+
+  - name: dest_hourly_loads
+    # This is the source actually consumed by wuhan_delivery.py.  The delivery
+    # also contains whole-building kW exports, but the adapter scales W/m2 by
+    # each virtual building's area.
+    glob: Wuhan_DeST_models汇总/*/006_building_load/*建筑逐时单位面积负荷.csv
+    format: csv
+    encoding: utf-8-sig
+    layout: hourly_wide
+    row_count: 8760
+    required_columns: [日期, 小时, 热负荷（W/m2）, 冷负荷（W/m2）, 加湿量（g/h/m2）]
+    primary_key: [小时]
+    null_policy:
+      日期: reject
+      小时: reject
+      热负荷（W/m2）: fill_zero
+      冷负荷（W/m2）: fill_zero
+      加湿量（g/h/m2）: fill_zero
+    numeric:
+      小时: {min: 0, max: 8759}
+      热负荷（W/m2）: {min: 0, negative_tolerance: 0.001, small_negative_policy: clip_zero}
+      # Cooling is retained for future use. Material negatives are allowed by
+      # this source profile; only floating-point noise is declared clip-safe.
+      冷负荷（W/m2）: {negative_tolerance: 0.001, small_negative_policy: clip_zero}
+    time_index: {column: 小时, start: 0, step: 1}
+
+  - name: virtual_buildings
+    path: 建筑虚拟建模/buildings_revised_no_overlap.csv
+    format: csv
+    encoding: utf-8-sig
+    layout: object_wide
+    row_count: 75
+    required_columns: [building_id, type, area_m2, floors, x, y, prototype_type, load_node]
+    primary_key: [building_id]
+    null_policy: {'*': reject}
+    numeric:
+      area_m2: {min: 0.000001}
+      floors: {min: 1}
+
+  - name: building_distances
+    path: 建筑虚拟建模/building_distances_all_pairs_revised.csv
+    format: csv
+    encoding: utf-8-sig
+    layout: edge_list
+    row_count: 2775
+    required_columns: [building_id_1, building_id_2, distance_m]
+    primary_key: [building_id_1, building_id_2]
+    null_policy: {'*': reject}
+    numeric:
+      distance_m: {min: 0.000001}
+
+  - name: technology_parameters
+    path: 设备性能&成本价格/technology_utf8_fixed.csv
+    format: csv
+    encoding: utf-8-sig
+    layout: parameter_long
+    row_count: 28
+    required_columns: [technology_id, technology_name, category, parameter, value, unit, basis_or_note, source]
+    primary_key: [technology_id, category, parameter]
+    null_policy: {'*': reject}
+    allowed_values:
+      category: [performance, cost]
+    units:
+      parameter_column: parameter
+      unit_column: unit
+      allow_unlisted: false
+      expected:
+        COP_reference_case: W/W
+        COP_reference_product: W/W
+        COP_sensitivity_low: W/W
+        capital_cost: [CNY/kW_th, CNY/kWh_th]
+        charge_efficiency: fraction
+        discharge_efficiency: fraction
+        energy_carrier: text
+        fixed_OM_rate: '% of capex/year'
+        gas_LHV: MJ/m3
+        heating_COP: W/W
+        lifetime: year
+        standing_loss_rate: fraction/day
+        thermal_efficiency: fraction
+        thermal_efficiency_reference: fraction
+
+relations:
+  - left: building_distances
+    left_column: building_id_1
+    right: virtual_buildings
+    right_column: building_id
+    mode: subset
+  - left: building_distances
+    left_column: building_id_2
+    right: virtual_buildings
+    right_column: building_id
+    mode: subset
