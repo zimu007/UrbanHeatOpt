@@ -37,6 +37,15 @@ files:
       - source
       - parameter_version
       - assumption_flag
+      - storage_energy_capacity_max_kWh_th
+      - storage_charge_capacity_max_kW_th
+      - storage_discharge_capacity_max_kW_th
+      - storage_charge_efficiency
+      - storage_discharge_efficiency
+      - storage_standing_loss_fraction_per_hour
+      - storage_capex_CNY_per_kWh_th
+      - storage_power_capex_CNY_per_kW_th
+      - storage_fixed_capex_CNY
     executable_roles:
       - central_air_source_heat_pump
       - central_gas_boiler

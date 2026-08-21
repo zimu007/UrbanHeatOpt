@@ -1,5 +1,23 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-21 — PIPELINE-01 接通统一新核心入口
+
+### 更改内容与目的
+
+- 新增不可变 `CanonicalCaseData`、V3 只读文件加载器和统一 Case Pipeline。
+- 正式 `run_case.py` 仅调用新 Pyomo 核心；旧执行链迁至显式
+  `run_legacy_case.py`，不自动回退。
+- 三种模式从同一 Canonical 快照构模并求解，运行清单明确记录契约、数据哈希、
+  参数版本和未完成能力。
+
+### 边界
+
+- 当前 Pipeline 仍使用核心已有固定 COP 和单档等效管段；储热、温度 COP、
+  碳排、三档管径选择和 Pareto 后续接入。
+- `candidate_source=generate` 当前明确失败，不伪装成候选自动生成已完成。
+- 专项验证 `4 passed`；全量 `205 passed, 13 warnings`；
+  `git diff --check` 通过。
+
 ## 2026-08-21 — CONTRACT-04 补齐 V3 经济控制字段
 
 - 更改内容：为站点固定投资、站点寿命、逐节点接入投资、接入寿命和 HNS

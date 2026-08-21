@@ -14,6 +14,7 @@ from competition.core_model import (
     solve_core_model,
     validate_core_input,
 )
+from competition.canonical import CanonicalCaseData, PipeTypeSpec, StorageSpec
 from competition.economics import (
     EconomicStandardizationError,
     standardize_gas_price_CNY_per_kWh_LHV,
@@ -26,13 +27,16 @@ from competition.solvers import (
 
 __all__ = [
     "CoreModelInput",
+    "CanonicalCaseData",
     "CoreModelInputError",
     "CoreSolveResult",
     "EconomicInput",
     "EconomicStandardizationError",
     "SegmentSpec",
+    "PipeTypeSpec",
     "SolverSettings",
     "TechnologySpec",
+    "StorageSpec",
     "build_core_model",
     "solve_core_model",
     "solve_pyomo_model",
