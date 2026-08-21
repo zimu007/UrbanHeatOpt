@@ -24,6 +24,7 @@ from competition.economics import (
     EconomicStandardizationError,
     standardize_gas_price_CNY_per_kWh_LHV,
 )
+from competition.costing.annualized import capital_recovery_factor
 from competition.solvers import (
     SolverSettings,
     solve_pyomo_model,
@@ -188,6 +189,66 @@ def test_central_mode_solves_independent_devices_and_hand_energy_inputs() -> Non
     assert value(model.central_electricity_input_kWh_e["central_ashp", 1]) == pytest.approx(15)
     assert value(model.gas_input_kWh_LHV["central_gas_boiler", 1]) == pytest.approx(40 / 0.9)
     assert value(model.unserved_heat_kW["demand_1", 1]) == pytest.approx(0)
+
+
+def test_crf_annualizes_device_and_station_capex() -> None:
+    economics = replace(
+        _economics(),
+        discount_rate=0.05,
+        station_fixed_capex_CNY=20_000.0,
+        station_lifetime_years=30,
+    )
+    technologies = _technologies(
+        central_ashp={"capacity_max_kW": 100.0, "capex_CNY_per_kW": 1_000.0},
+        central_gas_boiler={"capacity_max_kW": 100.0, "capex_CNY_per_kW": 1_000_000.0},
+    )
+    model = solve_core_model(
+        _core_input(technologies=technologies, economics=economics)
+    ).model
+    expected_device = 100.0 * 1_000.0 * capital_recovery_factor(0.05, 20)
+    expected_station = 20_000.0 * capital_recovery_factor(0.05, 30)
+    assert value(model.annual_device_capex_CNY_per_year) == _cost_approx(expected_device)
+    assert value(model.annual_station_capex_CNY_per_year) == _cost_approx(expected_station)
+
+
+def test_operating_carbon_and_policy_cost_are_separate_from_real_cost() -> None:
+    economics = replace(
+        _economics(),
+        electricity_carbon_kgCO2e_per_kWh_e={1: 0.4},
+        gas_carbon_kgCO2e_per_kWh_LHV={1: 0.2},
+        policy_carbon_price_CNY_per_tCO2e=100.0,
+    )
+    model = solve_core_model(_core_input(economics=economics)).model
+    expected_electric = 60.0 / 4.0 * 0.4
+    expected_gas = 40.0 / 0.9 * 0.2
+    expected_carbon = expected_electric + expected_gas
+    assert value(model.annual_electricity_carbon_kgCO2e_per_year) == pytest.approx(expected_electric)
+    assert value(model.annual_gas_carbon_kgCO2e_per_year) == pytest.approx(expected_gas)
+    assert value(model.annual_operating_physical_carbon_kgCO2e_per_year) == pytest.approx(expected_carbon)
+    assert value(model.annual_policy_carbon_cost_CNY_per_year) == _cost_approx(expected_carbon / 1000 * 100)
+    assert value(model.annual_policy_adjusted_cost_CNY_per_year) == _cost_approx(
+        value(model.annual_real_cost_CNY_per_year) + expected_carbon / 1000 * 100
+    )
+    assert value(model.optimization_objective_CNY_per_year) == _cost_approx(
+        value(model.annual_real_cost_CNY_per_year)
+        + value(model.annual_hns_penalty_CNY_per_year)
+    )
+
+
+def test_carbon_factor_hour_keys_and_discount_rate_fail_before_build() -> None:
+    with pytest.raises(CoreModelInputError, match="必须且只能覆盖"):
+        validate_core_input(
+            _core_input(
+                economics=replace(
+                    _economics(),
+                    electricity_carbon_kgCO2e_per_kWh_e={2: 0.4},
+                )
+            )
+        )
+    with pytest.raises(CoreModelInputError, match="discount_rate"):
+        validate_core_input(
+            _core_input(economics=replace(_economics(), discount_rate=1.0))
+        )
 
 
 def test_core_input_copies_and_freezes_heat_demand_mapping() -> None:

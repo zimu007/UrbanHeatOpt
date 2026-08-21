@@ -70,6 +70,12 @@ def run_case_pipeline(
                 "annual_real_cost_CNY_per_year": float(value(model.annual_real_cost_CNY_per_year)),
                 "annual_hns_penalty_CNY_per_year": float(value(model.annual_hns_penalty_CNY_per_year)),
                 "optimization_objective_CNY_per_year": float(value(model.optimization_objective_CNY_per_year)),
+                "annual_operating_physical_carbon_kgCO2e_per_year": float(
+                    value(model.annual_operating_physical_carbon_kgCO2e_per_year)
+                ),
+                "annual_policy_carbon_cost_CNY_per_year": float(
+                    value(model.annual_policy_carbon_cost_CNY_per_year)
+                ),
                 "unserved_heat_kWh": float(
                     sum(
                         value(model.unserved_heat_kW[node, hour])
@@ -100,12 +106,12 @@ def run_case_pipeline(
         "legacy_model_used": False,
         "capability_status": {
             "unified_core": "implemented",
-            "economics": "existing_simple_annualization_pending_crf",
+            "economics": "crf_annualization_implemented",
             "storage": "interface_only",
             "temperature_cop": "interface_only",
             "pipe_loss": "interface_only",
             "pumping": "interface_only",
-            "carbon": "pending",
+            "carbon": "operating_physical_carbon_implemented",
             "pareto": "pending",
         },
     }

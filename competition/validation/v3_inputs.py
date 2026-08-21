@@ -377,6 +377,16 @@ def load_v3_case(case_dir: str | Path, *, profile: str | None = None) -> Canonic
         connection_capex_CNY={node: float(config["economics"]["connection_capex_CNY_per_demand_node"]) for node in building_ids},
         connection_lifetime_years={node: int(config["economics"]["connection_lifetime_years"]) for node in building_ids},
         hns_penalty_CNY_per_kWh=float(config["economics"]["hns_penalty_CNY_per_kWh_th"]),
+        discount_rate=float(config["planning"]["discount_rate"]),
+        station_fixed_capex_CNY=float(config["economics"]["station_fixed_capex_CNY"]),
+        station_lifetime_years=int(config["economics"]["station_lifetime_years"]),
+        electricity_carbon_kgCO2e_per_kWh_e=dict(
+            zip(hours, external["electricity_carbon_kgCO2e_per_kWh_e"].astype(float), strict=True)
+        ),
+        gas_carbon_kgCO2e_per_kWh_LHV=dict(
+            zip(hours, external["gas_carbon_kgCO2e_per_kWh_LHV"].astype(float), strict=True)
+        ),
+        policy_carbon_price_CNY_per_tCO2e=0.0,
     )
     solver = SolverSettings(
         name=config["solver"]["name"], mip_gap=float(config["solver"]["mip_gap"]),

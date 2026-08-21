@@ -1,14 +1,14 @@
 """竞赛版三模式源—网—荷与年化经济最小核心模型。
 
-本模块独立于旧 ``model.py``。当前只实现固定 COP/效率、一个中央站点、
-多个需求节点、无向候选物理管段、未供热量和附件口径的简单年化成本；
-储热、余热、管网热损失与多站点均留给后续节点。
+本模块独立于旧 ``model.py``。当前实现固定 COP/效率、一个中央站点、
+多个需求节点、无向候选物理管段、CRF 年化成本和运行物理碳排；
+储热、余热、管网热损失、泵耗与多站点均留给后续节点。
 """
 
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from numbers import Integral, Real
 from types import MappingProxyType
@@ -29,6 +29,7 @@ from pyomo.environ import (
 )
 
 from competition.solvers import SolverSettings, solve_pyomo_model
+from competition.costing.annualized import capital_recovery_factor
 
 
 AIR_SOURCE_HEAT_PUMP = "air_source_heat_pump"
@@ -92,6 +93,12 @@ class EconomicInput:
     connection_capex_CNY: Mapping[str, float]
     connection_lifetime_years: Mapping[str, int]
     hns_penalty_CNY_per_kWh: float
+    discount_rate: float = 0.0
+    station_fixed_capex_CNY: float = 0.0
+    station_lifetime_years: int = 30
+    electricity_carbon_kgCO2e_per_kWh_e: Mapping[int, float] = field(default_factory=dict)
+    gas_carbon_kgCO2e_per_kWh_LHV: Mapping[int, float] = field(default_factory=dict)
+    policy_carbon_price_CNY_per_tCO2e: float = 0.0
 
     def __post_init__(self) -> None:
         """复制并冻结所有映射，阻断调用方在构模前后篡改经济输入。"""
@@ -102,6 +109,8 @@ class EconomicInput:
             "gas_price_CNY_per_kWh_LHV",
             "connection_capex_CNY",
             "connection_lifetime_years",
+            "electricity_carbon_kgCO2e_per_kWh_e",
+            "gas_carbon_kgCO2e_per_kWh_LHV",
         ):
             source = getattr(self, field)
             if isinstance(source, Mapping):
@@ -421,6 +430,15 @@ def _validate_economics(
         "economics.gas_price_CNY_per_kWh_LHV",
         strictly_positive=False,
     )
+    for field in (
+        "electricity_carbon_kgCO2e_per_kWh_e",
+        "gas_carbon_kgCO2e_per_kWh_LHV",
+    ):
+        values = getattr(economics, field)
+        if values:
+            _validate_hourly_mapping(
+                values, hours, f"economics.{field}", strictly_positive=False
+            )
     expected_weight = _finite_real(
         economics.expected_weight_sum_h_per_year,
         "economics.expected_weight_sum_h_per_year",
@@ -464,6 +482,28 @@ def _validate_economics(
     if penalty < 0:
         raise CoreModelInputError(
             "economics.hns_penalty_CNY_per_kWh 必须大于等于 0"
+        )
+    discount_rate = _finite_real(economics.discount_rate, "economics.discount_rate")
+    if not 0 <= discount_rate < 1:
+        raise CoreModelInputError("economics.discount_rate 必须在 [0, 1) 内")
+    station_capex = _finite_real(
+        economics.station_fixed_capex_CNY, "economics.station_fixed_capex_CNY"
+    )
+    if station_capex < 0:
+        raise CoreModelInputError("economics.station_fixed_capex_CNY 必须大于等于 0")
+    if (
+        isinstance(economics.station_lifetime_years, bool)
+        or not isinstance(economics.station_lifetime_years, Integral)
+        or economics.station_lifetime_years < 1
+    ):
+        raise CoreModelInputError("economics.station_lifetime_years 必须是正整数")
+    carbon_price = _finite_real(
+        economics.policy_carbon_price_CNY_per_tCO2e,
+        "economics.policy_carbon_price_CNY_per_tCO2e",
+    )
+    if carbon_price < 0:
+        raise CoreModelInputError(
+            "economics.policy_carbon_price_CNY_per_tCO2e 必须大于等于 0"
         )
 
 
@@ -530,7 +570,7 @@ def validate_core_input(data: CoreModelInput) -> None:
 
 
 def build_core_model(data: CoreModelInput) -> ConcreteModel:
-    """构建固定性能、无热损失和简单年化经济目标的三模式模型。"""
+    """构建固定性能、无热损失的三模式成本—碳排核心模型。"""
 
     validate_core_input(data)
     central_ashp, boiler, local_ashp = _resolve_technology_roles(data.technologies)
@@ -651,6 +691,35 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         },
         within=NonNegativeReals,
     )
+    model.electricity_carbon_kgCO2e_per_kWh_e = Param(
+        model.HOURS,
+        initialize={
+            hour: float(data.economics.electricity_carbon_kgCO2e_per_kWh_e.get(hour, 0.0))
+            for hour in data.hours
+        },
+        within=NonNegativeReals,
+    )
+    model.gas_carbon_kgCO2e_per_kWh_LHV = Param(
+        model.HOURS,
+        initialize={
+            hour: float(data.economics.gas_carbon_kgCO2e_per_kWh_LHV.get(hour, 0.0))
+            for hour in data.hours
+        },
+        within=NonNegativeReals,
+    )
+    model.discount_rate = Param(initialize=float(data.economics.discount_rate))
+    model.policy_carbon_price_CNY_per_tCO2e = Param(
+        initialize=float(data.economics.policy_carbon_price_CNY_per_tCO2e),
+        within=NonNegativeReals,
+    )
+    model.station_fixed_capex_CNY = Param(
+        initialize=float(data.economics.station_fixed_capex_CNY),
+        within=NonNegativeReals,
+    )
+    model.station_lifetime_years = Param(
+        initialize=int(data.economics.station_lifetime_years),
+        within=NonNegativeReals,
+    )
     model.central_capex_CNY_per_kW = Param(
         model.CENTRAL_TECHNOLOGIES,
         initialize={key: float(spec.capex_CNY_per_kW) for key, spec in central_specs.items()},
@@ -707,6 +776,38 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     )
     model.incidence = Param(model.NODES, model.SEGMENTS, initialize=incidence)
     model.timestep_hours = Param(initialize=1.0)
+    discount_rate = float(data.economics.discount_rate)
+    model.central_crf = Param(
+        model.CENTRAL_TECHNOLOGIES,
+        initialize={
+            key: capital_recovery_factor(discount_rate, spec.lifetime_years)
+            for key, spec in central_specs.items()
+        },
+    )
+    model.local_crf = Param(
+        initialize=capital_recovery_factor(discount_rate, local_ashp.lifetime_years)
+    )
+    model.pipe_crf = Param(
+        model.SEGMENTS,
+        initialize={
+            key: capital_recovery_factor(discount_rate, segment.lifetime_years)
+            for key, segment in segment_by_id.items()
+        },
+    )
+    model.connection_crf = Param(
+        model.DEMAND_NODES,
+        initialize={
+            node: capital_recovery_factor(
+                discount_rate, data.economics.connection_lifetime_years[node]
+            )
+            for node in data.demand_nodes
+        },
+    )
+    model.station_crf = Param(
+        initialize=capital_recovery_factor(
+            discount_rate, data.economics.station_lifetime_years
+        )
+    )
 
     model.site_built = Var(domain=Binary)
     model.connected = Var(model.DEMAND_NODES, domain=Binary)
@@ -964,20 +1065,19 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         * m.timestep_hours,
     )
 
-    # 附件口径：所有投资均采用“原始投资 / 寿命”的简单年化，不使用折现率、
-    # CRF、规划期、残值或更换投资。固定运维采用附件批准口径：装机容量
-    # 乘单位投资，再乘无量纲年度固定维护比例。
+    # 最新批注口径：各类一次性投资按各自寿命和统一实质折现率使用 CRF 年化；
+    # 固定运维仍按装机容量×单位投资×年度维护比例核算。
     model.annual_device_capex_CNY_per_year = Expression(
         expr=sum(
             model.central_capacity_kW[technology_id]
             * model.central_capex_CNY_per_kW[technology_id]
-            / model.central_lifetime_years[technology_id]
+            * model.central_crf[technology_id]
             for technology_id in model.CENTRAL_TECHNOLOGIES
         )
         + sum(
             model.local_capacity_kW[node]
             * model.local_capex_CNY_per_kW
-            / model.local_lifetime_years
+            * model.local_crf
             for node in model.DEMAND_NODES
         )
     )
@@ -986,7 +1086,7 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
             model.pipe_built[segment_id]
             * model.segment_length_m[segment_id]
             * model.pipe_capex_CNY_per_m[segment_id]
-            / model.pipe_lifetime_years[segment_id]
+            * model.pipe_crf[segment_id]
             for segment_id in model.SEGMENTS
         )
     )
@@ -994,9 +1094,12 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         expr=sum(
             model.connected[node]
             * model.connection_capex_CNY[node]
-            / model.connection_lifetime_years[node]
+            * model.connection_crf[node]
             for node in model.DEMAND_NODES
         )
+    )
+    model.annual_station_capex_CNY_per_year = Expression(
+        expr=model.site_built * model.station_fixed_capex_CNY * model.station_crf
     )
     model.annual_fixed_om_CNY_per_year = Expression(
         expr=sum(
@@ -1057,10 +1160,49 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         expr=model.annual_device_capex_CNY_per_year
         + model.annual_network_capex_CNY_per_year
         + model.annual_connection_capex_CNY_per_year
+        + model.annual_station_capex_CNY_per_year
         + model.annual_fixed_om_CNY_per_year
         + model.annual_variable_om_CNY_per_year
         + model.annual_electricity_cost_CNY_per_year
         + model.annual_gas_cost_CNY_per_year
+    )
+    model.annual_electricity_carbon_kgCO2e_per_year = Expression(
+        expr=sum(
+            model.central_electricity_input_kW_e[technology_id, hour]
+            * model.time_weight_h_per_year[hour]
+            * model.electricity_carbon_kgCO2e_per_kWh_e[hour]
+            for technology_id in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS
+            for hour in model.HOURS
+        )
+        + sum(
+            model.local_electricity_input_kW_e[node, hour]
+            * model.time_weight_h_per_year[hour]
+            * model.electricity_carbon_kgCO2e_per_kWh_e[hour]
+            for node in model.DEMAND_NODES
+            for hour in model.HOURS
+        )
+    )
+    model.annual_gas_carbon_kgCO2e_per_year = Expression(
+        expr=sum(
+            model.gas_input_kW_LHV[technology_id, hour]
+            * model.time_weight_h_per_year[hour]
+            * model.gas_carbon_kgCO2e_per_kWh_LHV[hour]
+            for technology_id in model.CENTRAL_GAS_BOILERS
+            for hour in model.HOURS
+        )
+    )
+    model.annual_operating_physical_carbon_kgCO2e_per_year = Expression(
+        expr=model.annual_electricity_carbon_kgCO2e_per_year
+        + model.annual_gas_carbon_kgCO2e_per_year
+    )
+    model.annual_policy_carbon_cost_CNY_per_year = Expression(
+        expr=model.annual_operating_physical_carbon_kgCO2e_per_year
+        / 1000.0
+        * model.policy_carbon_price_CNY_per_tCO2e
+    )
+    model.annual_policy_adjusted_cost_CNY_per_year = Expression(
+        expr=model.annual_real_cost_CNY_per_year
+        + model.annual_policy_carbon_cost_CNY_per_year
     )
     model.annual_hns_penalty_CNY_per_year = Expression(
         expr=sum(
