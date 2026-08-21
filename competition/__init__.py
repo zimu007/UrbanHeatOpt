@@ -24,6 +24,7 @@ from competition.solvers import (
     solve_pyomo_model,
     validate_solver_settings,
 )
+from competition.pareto import ParetoPoint, ParetoRun, ParetoSpec, solve_case_pareto
 
 __all__ = [
     "CoreModelInput",
@@ -34,11 +35,15 @@ __all__ = [
     "EconomicStandardizationError",
     "SegmentSpec",
     "PipeTypeSpec",
+    "ParetoPoint",
+    "ParetoRun",
+    "ParetoSpec",
     "SolverSettings",
     "TechnologySpec",
     "StorageSpec",
     "build_core_model",
     "solve_core_model",
+    "solve_case_pareto",
     "solve_pyomo_model",
     "standardize_gas_price_CNY_per_kWh_LHV",
     "validate_core_input",

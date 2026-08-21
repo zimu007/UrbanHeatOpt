@@ -12,6 +12,7 @@ from typing import Any
 from pyomo.environ import value
 
 from competition.core_model import solve_core_model
+from competition.pareto import ParetoSpec, point_to_dict, solve_case_pareto
 from competition.validation.v3_inputs import load_v3_case
 
 
@@ -21,6 +22,7 @@ class PipelineRun:
     manifest_path: Path
     summary_path: Path
     manifest: dict[str, Any]
+    pareto_path: Path | None = None
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -90,6 +92,18 @@ def run_case_pipeline(
             }
         )
 
+    pareto_config = case.raw_config.get("pareto", {})
+    qa_config = case.raw_config.get("qa", {})
+    pareto = solve_case_pareto(
+        case,
+        ParetoSpec(
+            point_count=int(pareto_config.get("point_count", 5)),
+            unserved_tolerance_kWh=float(qa_config.get("unserved_tolerance_kWh", 1e-6)),
+            cost_tolerance_CNY_per_year=float(qa_config.get("cost_tolerance_CNY_per_year", 1e-6)),
+            carbon_tolerance_kgCO2e_per_year=float(qa_config.get("carbon_tolerance_kgCO2e_per_year", 1e-6)),
+        ),
+    )
+
     manifest = {
         "run_id": run_id,
         "software_release": "UrbanHeatOpt-test-V0.x",
@@ -112,11 +126,22 @@ def run_case_pipeline(
             "pipe_loss": "interface_only",
             "pumping": "interface_only",
             "carbon": "operating_physical_carbon_implemented",
-            "pareto": "pending",
+            "pareto": "epsilon_constraint_implemented",
         },
     }
     manifest_path = output / "run_manifest.json"
     summary_path = output / "mode_summary.json"
+    pareto_path = output / "pareto_points.json"
     _write_json(manifest_path, manifest)
     _write_json(summary_path, mode_results)
-    return PipelineRun(output, manifest_path, summary_path, manifest)
+    _write_json(
+        pareto_path,
+        {
+            "by_mode": {
+                mode: [point_to_dict(point) for point in points]
+                for mode, points in pareto.mode_frontiers.items()
+            },
+            "combined": [point_to_dict(point) for point in pareto.combined_frontier],
+        },
+    )
+    return PipelineRun(output, manifest_path, summary_path, manifest, pareto_path)
