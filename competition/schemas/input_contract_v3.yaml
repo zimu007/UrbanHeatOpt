@@ -1,0 +1,96 @@
+contract_version: competition_input_3.0.0-draft.1
+software_release_track: test_v0
+status: draft_interfaces_frozen_implementation_pending
+canonical_units:
+  heating_power: kW_th
+  heating_energy: kWh_th
+  electric_power: kW_e
+  electric_energy: kWh_e
+  gas_energy: kWh_LHV
+  storage_energy: kWh_th
+  annual_cost: CNY_per_year
+  annual_carbon: kgCO2e_per_year
+  time_weight: h_per_year
+files:
+  buildings.geojson:
+    geometry: [Polygon, MultiPolygon]
+    required: [building_id, use_type, heated_area_m2, archetype_id, terminal_type, data_version]
+    terminal_type: [floor_radiant, fan_coil]
+  building_hourly_loads.parquet:
+    required: [timestamp, building_id, heating_kW, data_version]
+    rules: [timezone_aware_Asia_Shanghai, strictly_hourly, no_dhw, no_cooling, nonnegative]
+  technologies.csv:
+    required:
+      - technology_id
+      - technology_type
+      - applicable_scope
+      - energy_carrier
+      - performance_model
+      - fixed_cop
+      - efficiency_LHV
+      - capacity_min_kW_th
+      - capacity_max_kW_th
+      - capex_CNY_per_kW_th
+      - fixed_om_fraction_per_year
+      - variable_om_CNY_per_kWh_th
+      - lifetime_years
+      - source
+      - parameter_version
+    executable_roles:
+      - central_air_source_heat_pump
+      - central_gas_boiler
+      - local_air_source_heat_pump
+      - central_water_thermal_storage
+  external_timeseries.parquet:
+    required:
+      - timestamp
+      - outdoor_temperature_C
+      - time_weight_h_per_year
+      - electricity_price_CNY_per_kWh_e
+      - gas_price_CNY_per_kWh_LHV
+      - electricity_carbon_kgCO2e_per_kWh_e
+      - gas_carbon_kgCO2e_per_kWh_LHV
+      - data_version
+  roads_or_feasible_space.geojson:
+    required: [feature_id, spatial_role, data_version]
+  pipe_types.csv:
+    required:
+      - pipe_type_id
+      - level
+      - capacity_max_kW_th
+      - capex_CNY_per_m
+      - heat_loss_kW_per_m
+      - pumping_kWh_e_per_kWh_th_transferred
+      - lifetime_years
+      - source
+      - parameter_version
+    rules: [exactly_three_levels, strictly_increasing_capacity]
+generated_or_provided_interfaces:
+  candidate_sites.geojson:
+    required: [site_id, candidate_rank, geometry, data_version]
+    rules: [Point_geometry, five_to_ten_for_v1, at_most_one_built]
+  candidate_network.geojson:
+    required: [segment_id, node_from, node_to, length_m, geometry, data_version]
+    rules: [LineString_geometry, undirected_pair_unique, endpoints_exist]
+performance_interface:
+  input: [technology_id, timestamp, outdoor_temperature_C, leaving_water_temperature_C]
+  output: [cop, capacity_ratio]
+  rule: coefficients_are_precomputed_before_pyomo_build
+storage_interface:
+  variables: [energy_capacity_kWh_th, charge_capacity_kW_th, discharge_capacity_kW_th, soc_kWh_th]
+  parameters: [charge_efficiency, discharge_efficiency, standing_loss_fraction_per_hour]
+  rule: first_and_last_soc_must_follow_configured_cyclic_policy
+network_interface:
+  pipe_decision: one_build_decision_per_physical_segment_and_level
+  heat_loss: linear_per_m
+  pumping: linear_per_kWh_th_transferred
+objectives:
+  economic: annual_real_cost_CNY_per_year
+  carbon: annual_operating_physical_carbon_kgCO2e_per_year
+  policy_carbon_cost: separate_CNY_per_year_not_default_objective
+  pareto: epsilon_constraint
+  topsis: prohibited_in_v1
+version_policy:
+  old_contracts: explicit_legacy_only
+  automatic_migration: prohibited
+  stable_target: competition_input_3.0.0

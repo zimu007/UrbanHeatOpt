@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://urbanheatopt.local/schemas/case_config_v3.schema.json",
+  "title": "UrbanHeatOpt competition input 3.0.0 draft 1",
+  "description": "Test-track contract for the unified source-network-load-storage, cost-carbon and Pareto pipeline.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version", "software_release_track", "case_id", "scenario_id",
+    "data_version", "data_classification", "time", "units", "crs", "files",
+    "run", "spatial", "demand", "features", "network", "planning",
+    "performance", "pareto", "enabled_technology_ids", "solver", "qa"
+  ],
+  "properties": {
+    "contract_version": {"const": "competition_input_3.0.0-draft.1"},
+    "software_release_track": {"const": "test_v0"},
+    "case_id": {"$ref": "#/$defs/id"},
+    "scenario_id": {"$ref": "#/$defs/id"},
+    "data_version": {"type": "string", "minLength": 1},
+    "data_classification": {"enum": ["synthetic_test", "formal_project_data"]},
+    "time": {
+      "type": "object", "additionalProperties": false,
+      "required": ["start", "end", "timezone", "frequency", "interval", "complete_heating_season"],
+      "properties": {
+        "start": {"type": "string", "format": "date-time"},
+        "end": {"type": "string", "format": "date-time"},
+        "timezone": {"const": "Asia/Shanghai"},
+        "frequency": {"const": "1h"},
+        "interval": {"const": "start_inclusive_end_exclusive"},
+        "complete_heating_season": {"type": "boolean"}
+      }
+    },
+    "units": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "heating_power", "heating_energy", "electric_power", "electric_energy",
+        "gas_energy", "storage_energy", "currency", "annual_cost", "carbon",
+        "electricity_price", "gas_price", "electricity_carbon_intensity",
+        "gas_carbon_intensity", "time_weight", "length", "temperature"
+      ],
+      "properties": {
+        "heating_power": {"const": "kW_th"},
+        "heating_energy": {"const": "kWh_th"},
+        "electric_power": {"const": "kW_e"},
+        "electric_energy": {"const": "kWh_e"},
+        "gas_energy": {"const": "kWh_LHV"},
+        "storage_energy": {"const": "kWh_th"},
+        "currency": {"const": "CNY"},
+        "annual_cost": {"const": "CNY_per_year"},
+        "carbon": {"const": "kgCO2e_per_year"},
+        "electricity_price": {"const": "CNY_per_kWh_e"},
+        "gas_price": {"const": "CNY_per_kWh_LHV"},
+        "electricity_carbon_intensity": {"const": "kgCO2e_per_kWh_e"},
+        "gas_carbon_intensity": {"const": "kgCO2e_per_kWh_LHV"},
+        "time_weight": {"const": "h_per_year"},
+        "length": {"const": "m"},
+        "temperature": {"const": "degC"}
+      }
+    },
+    "crs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["input", "projected"],
+      "properties": {
+        "input": {"const": "EPSG:4326"},
+        "projected": {"const": "EPSG:32650"}
+      }
+    },
+    "files": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "buildings", "building_hourly_loads", "technologies",
+        "roads_or_feasible_space", "external_timeseries", "pipe_types",
+        "candidate_sites", "candidate_network"
+      ],
+      "properties": {
+        "buildings": {"const": "buildings.geojson"},
+        "building_hourly_loads": {"const": "building_hourly_loads.parquet"},
+        "technologies": {"const": "technologies.csv"},
+        "roads_or_feasible_space": {"const": "roads_or_feasible_space.geojson"},
+        "external_timeseries": {"const": "external_timeseries.parquet"},
+        "pipe_types": {"const": "pipe_types.csv"},
+        "candidate_sites": {"type": ["string", "null"]},
+        "candidate_network": {"type": ["string", "null"]}
+      }
+    },
+    "run": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profile", "modes"],
+      "properties": {
+        "profile": {"enum": ["v0-smoke", "v1-full"]},
+        "modes": {
+          "type": "array", "prefixItems": [
+            {"const": "central"}, {"const": "distributed"}, {"const": "hybrid"}
+          ], "items": false, "minItems": 3, "maxItems": 3
+        }
+      }
+    },
+    "spatial": {
+      "type": "object", "additionalProperties": false,
+      "required": ["input_mode", "candidate_source", "candidate_site_count_min", "candidate_site_count_max", "max_built_sites"],
+      "properties": {
+        "input_mode": {"enum": ["roads", "feasible_space"]},
+        "candidate_source": {"enum": ["provided", "generate"]},
+        "candidate_site_count_min": {"type": "integer", "minimum": 1},
+        "candidate_site_count_max": {"type": "integer", "minimum": 1},
+        "max_built_sites": {"const": 1}
+      }
+    },
+    "demand": {
+      "type": "object", "additionalProperties": false,
+      "required": ["area_scaling_already_applied", "includes_dhw", "includes_cooling"],
+      "properties": {
+        "area_scaling_already_applied": {"const": true},
+        "includes_dhw": {"const": false},
+        "includes_cooling": {"const": false}
+      }
+    },
+    "features": {
+      "type": "object", "additionalProperties": false,
+      "required": ["storage_enabled", "temperature_cop_enabled", "pipe_loss_enabled", "pumping_enabled", "waste_heat_enabled"],
+      "properties": {
+        "storage_enabled": {"const": true},
+        "temperature_cop_enabled": {"type": "boolean"},
+        "pipe_loss_enabled": {"type": "boolean"},
+        "pumping_enabled": {"type": "boolean"},
+        "waste_heat_enabled": {"const": false}
+      }
+    },
+    "network": {
+      "type": "object", "additionalProperties": false,
+      "required": ["supply_temperature_C", "return_temperature_C", "pipe_level_count", "loss_model", "pumping_model"],
+      "properties": {
+        "supply_temperature_C": {"type": "number"},
+        "return_temperature_C": {"type": "number"},
+        "pipe_level_count": {"const": 3},
+        "loss_model": {"enum": ["disabled_for_v0", "linear_per_m"]},
+        "pumping_model": {"enum": ["disabled_for_v0", "linear_per_kWh_transferred"]}
+      }
+    },
+    "planning": {
+      "type": "object", "additionalProperties": false,
+      "required": ["discount_rate", "price_base_year", "currency", "unserved_policy", "carbon_price_scenarios_CNY_per_tCO2e"],
+      "properties": {
+        "discount_rate": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+        "price_base_year": {"type": "integer", "minimum": 1900},
+        "currency": {"const": "CNY"},
+        "unserved_policy": {"enum": ["penalized_for_v0", "forbidden_for_v1"]},
+        "carbon_price_scenarios_CNY_per_tCO2e": {
+          "type": "array", "prefixItems": [{"const": 0}, {"const": 50}, {"const": 100}, {"const": 150}],
+          "items": false, "minItems": 4, "maxItems": 4
+        }
+      }
+    },
+    "performance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cop_model", "capacity_derating_model", "precompute_coefficients"],
+      "properties": {
+        "cop_model": {"enum": ["fixed_for_v0", "temperature_interpolated"]},
+        "capacity_derating_model": {"enum": ["disabled_for_v0", "temperature_interpolated"]},
+        "precompute_coefficients": {"const": true}
+      }
+    },
+    "pareto": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "point_count", "second_objective", "knee_method", "topsis_enabled"],
+      "properties": {
+        "method": {"const": "epsilon_constraint"},
+        "point_count": {"type": "integer", "minimum": 3, "maximum": 101},
+        "second_objective": {"const": "annual_operating_physical_carbon"},
+        "knee_method": {"const": "normalized_max_distance_to_endpoint_chord"},
+        "topsis_enabled": {"const": false}
+      }
+    },
+    "enabled_technology_ids": {
+      "type": "array", "minItems": 4, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "solver": {"$ref": "#/$defs/solver"},
+    "qa": {
+      "type": "object", "additionalProperties": false,
+      "required": ["balance_tolerance_kW", "unserved_tolerance_kWh", "cost_tolerance_CNY_per_year", "carbon_tolerance_kgCO2e_per_year", "deterministic_tolerance"],
+      "properties": {
+        "balance_tolerance_kW": {"const": 0.000001},
+        "unserved_tolerance_kWh": {"const": 0.000001},
+        "cost_tolerance_CNY_per_year": {"const": 0.000001},
+        "carbon_tolerance_kgCO2e_per_year": {"const": 0.000001},
+        "deterministic_tolerance": {"const": 1e-9}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"run": {"properties": {"profile": {"const": "v0-smoke"}}}}},
+      "then": {"properties": {"pareto": {"properties": {"point_count": {"const": 5}}}}}
+    },
+    {
+      "if": {"properties": {"run": {"properties": {"profile": {"const": "v1-full"}}}}},
+      "then": {
+        "properties": {
+          "time": {"properties": {"complete_heating_season": {"const": true}}},
+          "features": {"properties": {
+            "temperature_cop_enabled": {"const": true},
+            "pipe_loss_enabled": {"const": true},
+            "pumping_enabled": {"const": true}
+          }},
+          "network": {"properties": {
+            "loss_model": {"const": "linear_per_m"},
+            "pumping_model": {"const": "linear_per_kWh_transferred"}
+          }},
+          "performance": {"properties": {
+            "cop_model": {"const": "temperature_interpolated"},
+            "capacity_derating_model": {"const": "temperature_interpolated"}
+          }},
+          "planning": {"properties": {"unserved_policy": {"const": "forbidden_for_v1"}}},
+          "pareto": {"properties": {"point_count": {"const": 11}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"spatial": {"properties": {"candidate_source": {"const": "provided"}}}}},
+      "then": {"properties": {"files": {"properties": {
+        "candidate_sites": {"type": "string", "minLength": 1},
+        "candidate_network": {"type": "string", "minLength": 1}
+      }}}}
+    }
+  ],
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*$"},
+    "solver": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "threads", "time_limit_seconds", "mip_gap", "random_seed", "load_solution_only_if_optimal"],
+      "properties": {
+        "name": {"enum": ["highs", "gurobi"]},
+        "threads": {"const": 1},
+        "time_limit_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "mip_gap": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+        "random_seed": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "load_solution_only_if_optimal": {"const": true}
+      }
+    }
+  }
+}

@@ -1,5 +1,20 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-21 — CONTRACT-03 冻结 3.0.0-draft.1 输入接口
+
+### 更改内容与目的
+
+- 新增独立 V3 draft Schema、机器契约和中文说明，不覆盖 v2.1。
+- 冻结四类设备、温度 COP 系数、三档管径、储热、管损泵耗、碳排和
+  epsilon-constraint Pareto 的数据边界。
+- 明确程序测试版 V0.x 与输入契约版本是两条独立版本轴。
+
+### 验证与边界
+
+- 本节点只冻结接口；物理模块、新主线、碳目标和 Pareto 尚未因此实现。
+- Schema 专项 `5 passed`；全量 `201 passed, 13 warnings`；
+  `git diff --check` 通过。
+
 ## 2026-08-21 — BASELINE-02 隔离旧契约并恢复回归基线
 
 ### 更改内容与目的
