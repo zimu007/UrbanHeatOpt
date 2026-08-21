@@ -329,6 +329,25 @@ def test_linear_pipe_loss_and_pumping_enter_balance_cost_and_carbon() -> None:
     )
 
 
+def test_formal_policy_can_forbid_unserved_heat_as_a_hard_constraint() -> None:
+    model = build_core_model(
+        _core_input(
+            allow_unserved=False,
+            technologies=_technologies(
+                central_ashp={"capacity_max_kW": 20},
+                central_gas_boiler={"capacity_max_kW": 20},
+            ),
+        )
+    )
+    with pytest.raises(RuntimeError, match="optimal"):
+        solve_pyomo_model(model)
+    assert all(
+        value(model.unserved_heat_kW[node, hour], exception=False) is None
+        for node in model.DEMAND_NODES
+        for hour in model.HOURS
+    )
+
+
 def test_storage_cyclic_soc_moves_heat_between_two_hours() -> None:
     storage = ThermalStorageSpec(
         technology_id="tes", energy_capacity_max_kWh_th=100,

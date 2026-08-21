@@ -68,6 +68,15 @@ python scripts/run_case.py --case tests/fixtures/v3_smoke_case --profile v0-smok
 The public command never falls back to `model.run_model()`. Historical input
 contracts must use the explicit `scripts/run_legacy_case.py` regression entry.
 
+V1.0 eligibility is checked without running or modifying a case:
+
+```powershell
+python scripts/check_v1_release_gate.py --case <formal-case> --run-dir <formal-run>
+```
+
+The current draft fixture is expected to fail this gate; that failure prevents
+synthetic V0 output from being mislabeled as a formal V1.0 result.
+
 ---
 
 ## Documentation

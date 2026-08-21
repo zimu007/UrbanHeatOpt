@@ -155,4 +155,5 @@ class CanonicalCaseData:
             heat_pump_capacity_ratio_by_hour=(
                 self.heat_pump_performance.capacity_ratio_by_technology_hour
             ),
+            allow_unserved=self.profile != "v1-full",
         )

@@ -407,6 +407,17 @@ def load_v3_case(
     parameter_versions["heat_pump_performance_provider"] = performance.parameter_version
 
     if config["run"]["profile"] == "v1-full":
+        if len(timestamps) != 2160:
+            raise V3InputError([
+                f"v1-full 完整供暖季必须为 2160 个连续小时；当前为 {len(timestamps)}"
+            ])
+        if not np.allclose(
+            external["time_weight_h_per_year"].astype(float).to_numpy(),
+            np.ones(len(external)),
+            rtol=0,
+            atol=1e-12,
+        ):
+            raise V3InputError(["v1-full 完整供暖季每小时权重必须为 1 h/year"])
         if any(item.heat_loss_kW_per_m <= 0 for item in pipe_types):
             raise V3InputError(["v1-full 三档管径必须提供大于 0 的简化线性热损系数"])
         if any(

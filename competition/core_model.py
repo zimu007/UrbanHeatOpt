@@ -168,6 +168,7 @@ class CoreModelInput:
     pipe_levels: tuple[PipeLevelSpec, ...] = ()
     heat_pump_cop_by_hour: Mapping[tuple[str, int], float] = field(default_factory=dict)
     heat_pump_capacity_ratio_by_hour: Mapping[tuple[str, int], float] = field(default_factory=dict)
+    allow_unserved: bool = True
 
     def __post_init__(self) -> None:
         """复制并冻结负荷映射，阻断调用方在构模前后篡改输入。"""
@@ -681,6 +682,8 @@ def validate_core_input(data: CoreModelInput) -> None:
         raise TypeError("data 必须是 CoreModelInput")
     if data.mode not in SUPPORTED_MODES:
         raise CoreModelInputError("mode 只能是 'central'、'distributed' 或 'hybrid'")
+    if not isinstance(data.allow_unserved, bool):
+        raise CoreModelInputError("allow_unserved 必须是 boolean")
     hours = _validate_hours(data.hours)
     demand_nodes = _validate_nodes(data)
     central_ashp, _, local_ashp = _resolve_technology_roles(data.technologies)
@@ -1460,6 +1463,12 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         + m.unserved_heat_kW[node, hour]
         == m.heat_demand_kW[node, hour],
     )
+    if not data.allow_unserved:
+        model.formal_unserved_forbidden = Constraint(
+            model.DEMAND_NODES,
+            model.HOURS,
+            rule=lambda m, node, hour: m.unserved_heat_kW[node, hour] == 0,
+        )
 
     if data.mode == "central":
         model.mode_site = Constraint(expr=model.site_built == 1)
