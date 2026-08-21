@@ -11,7 +11,7 @@
 3. 人类可读解释和交接边界：本文档；
 4. 原作者 `_config.yaml`、`Building_TS.csv` 等只属于兼容层，不得反向改变标准输入语义。
 
-机器契约当前状态为 `unit_time_device_price_and_simple_annual_cost_core_implemented_validator_adapter_pending`：负荷单位、时间映射、三种独立设备角色、逐时绝对电气价格、公共年化小时权重和附件口径的简单年化成本已由竞赛内存核心及测试执行。完整七类输入校验、文件适配、CLI 和正式数据运行仍留给后续节点，核心实现不等于端到端比赛程序已经完成。
+机器契约当前状态为 `competition_input_v1_validation_and_legacy_adapter_enforced`：`competition/validation/inputs.py` 已执行配置、文件、字段、数值、ID、时间、CRS、几何、技术引用和主要跨文件检查，并返回稳定错误码及输入 SHA-256；`competition/adapters/legacy_case.py` 已实现 P0 标准输入到旧模型格式的派生适配。原始输入保持只读，错误 ID、单位、字段、时间或几何不得自动修正。契约登记某种技术仍不代表当前比赛管线已经实现该技术。
 
 ## 2. 案例目录、编码和只读边界
 

@@ -52,10 +52,10 @@ Using the software does not require expert programming knowledge.
 
 > All major functionalities can also be called directly from the Python modules.
 
-> **Competition-branch status:** the environment check is available now. The
-> standardized competition input validator and the `scripts/run_case.py`
-> one-command pipeline are separate P0 tasks and are not claimed as implemented
-> by this installation section.
+> **Competition-branch status:** the environment check, standardized input
+> validator, distributable minimal case, legacy adapter, and a path-based
+> `scripts/run_case.py` entry are available. A verified full optimization and
+> export run remains a separate P0 acceptance task.
 
 ---
 
@@ -72,6 +72,8 @@ Full documentation is available and includes:
 Competition-branch specifications and status records:
 
 - [Competition input data contract](docs/DATA_CONTRACT.md)
+- [Data-interface input and correction policy](docs/INPUT_INTERFACE_GUIDE.md)
+- [Data-interface development status (Chinese)](docs/DATA_INTERFACE_STATUS_CN.md)
 - [Model assumptions and legacy boundaries](docs/MODEL_ASSUMPTIONS.md)
 - [Verified development environment](docs/ENVIRONMENT_REPORT.md)
 - [Deferred real-data work](docs/P0_DEFERRED_REAL_DATA.md)
