@@ -1,5 +1,19 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-21 — BASELINE-02 隔离旧契约并恢复回归基线
+
+### 更改内容与目的
+
+- 按 `contract_version` 分离 `competition_input_v1` legacy smoke 校验与当前
+  `competition_input_v2_1` Schema。
+- 新增测试基线记录，防止新契约原地解释旧固定热源案例。
+
+### 验证与边界
+
+- 全量验证：`196 passed, 13 warnings`；`git diff --check` 通过。
+- legacy smoke 仍调用旧适配/旧模型；新 Pyomo 核心的标准输入、单命令和
+  V0 小案例尚未接通。
+
 ## 2026-08-15 — VALIDATOR-02 合并输入校验增强
 
 ### 更改内容

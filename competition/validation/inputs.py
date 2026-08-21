@@ -22,7 +22,17 @@ from competition.adapters.load_timeseries import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-CASE_SCHEMA_PATH = REPOSITORY_ROOT / "competition" / "schemas" / "case_config.schema.json"
+ACTIVE_CASE_SCHEMA_PATH = REPOSITORY_ROOT / "competition" / "schemas" / "case_config.schema.json"
+LEGACY_V1_TOP_LEVEL_FIELDS = {
+    "contract_version", "case_id", "scenario_id", "data_version",
+    "data_classification", "time", "units", "crs", "files", "clustering",
+    "spatial", "demand", "dhw", "features", "network", "planning",
+    "enabled_technology_ids", "solver", "qa",
+}
+LEGACY_V1_UNITS = {
+    "heating_power": "kW", "heating_energy": "kWh", "currency": "CNY",
+    "area": "m2", "length": "m", "temperature": "degC", "carbon": "kgCO2e",
+}
 SUPPORTED_P0_TECHNOLOGY_TYPES = {"fixed_heat_source"}
 REQUIRED_BUILDING_COLUMNS = ("building_id", "use_type", "heated_area_m2", "archetype_id")
 REQUIRED_TECHNOLOGY_COLUMNS = (
@@ -193,15 +203,52 @@ def _load_case_config(case_dir: Path, errors: list[str]) -> dict[str, Any]:
     if not isinstance(config, dict):
         errors.append("case_config.yaml 顶层必须是映射对象")
         return {}
-    try:
-        schema = json.loads(CASE_SCHEMA_PATH.read_text(encoding="utf-8"))
-        validator = Draft202012Validator(schema, format_checker=FormatChecker())
-        for error in sorted(validator.iter_errors(config), key=lambda item: list(item.path)):
-            path = ".".join(map(str, error.path)) or "$"
-            errors.append(f"case_config.yaml 字段 {path} 不符合契约：{error.message}")
-    except Exception as exc:
-        errors.append(f"case_config schema 校验失败：{exc}")
+    contract_version = config.get("contract_version")
+    if contract_version == "competition_input_v1":
+        _validate_legacy_v1_config(config, errors)
+    elif contract_version == "competition_input_v2_1":
+        try:
+            schema = json.loads(ACTIVE_CASE_SCHEMA_PATH.read_text(encoding="utf-8"))
+            validator = Draft202012Validator(schema, format_checker=FormatChecker())
+            for error in sorted(validator.iter_errors(config), key=lambda item: list(item.path)):
+                path = ".".join(map(str, error.path)) or "$"
+                errors.append(f"case_config.yaml 字段 {path} 不符合契约：{error.message}")
+        except Exception as exc:
+            errors.append(f"case_config schema 校验失败：{exc}")
+    else:
+        errors.append(
+            "case_config.yaml 字段 contract_version 不符合契约："
+            "legacy 入口只接受 competition_input_v1 或 competition_input_v2_1"
+        )
     return config
+
+
+def _validate_legacy_v1_config(config: dict[str, Any], errors: list[str]) -> None:
+    """Validate the frozen v1 smoke envelope separately from the active schema."""
+
+    fields = set(config)
+    missing = sorted(LEGACY_V1_TOP_LEVEL_FIELDS - fields)
+    extra = sorted(fields - LEGACY_V1_TOP_LEVEL_FIELDS)
+    if missing:
+        errors.append("case_config.yaml 字段 $ 不符合契约：缺少 " + ", ".join(missing))
+    if extra:
+        errors.append("case_config.yaml 字段 $ 不符合契约：包含未知字段 " + ", ".join(extra))
+
+    units = config.get("units")
+    if not isinstance(units, dict):
+        errors.append("case_config.yaml 字段 units 不符合契约：必须是映射对象")
+        return
+    missing_units = sorted(set(LEGACY_V1_UNITS) - set(units))
+    extra_units = sorted(set(units) - set(LEGACY_V1_UNITS))
+    if missing_units:
+        errors.append("case_config.yaml 字段 units 不符合契约：缺少 " + ", ".join(missing_units))
+    if extra_units:
+        errors.append("case_config.yaml 字段 units 不符合契约：包含未知字段 " + ", ".join(extra_units))
+    for field, expected in LEGACY_V1_UNITS.items():
+        if field in units and units[field] != expected:
+            errors.append(
+                f"case_config.yaml 字段 units.{field} 不符合契约：必须为 {expected!r}"
+            )
 
 
 def _read_buildings(case_dir: Path, config: dict[str, Any], errors: list[str]) -> gpd.GeoDataFrame:
