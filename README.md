@@ -55,8 +55,9 @@ Using the software does not require expert programming knowledge.
 > **Competition-branch status:** the V3 draft synthetic case now runs the
 > central, distributed, and hybrid modes through one new Pyomo core, including
 > CRF cost, operating carbon, storage, three pipe levels, Pareto export, and
-> independent QA. Temperature-dependent COP, pipe loss, pumping, automatic
-> site/network generation, and a formal heating-season run remain release gates.
+> independent QA. The hourly performance/linear pipe-loss/pumping interfaces
+> are wired into the core, but their formal providers and parameters, automatic
+> site/network generation, and a heating-season run remain release gates.
 
 V0 smoke command (synthetic test data only):
 

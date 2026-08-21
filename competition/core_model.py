@@ -1,8 +1,8 @@
 """竞赛版三模式源—网—荷与年化经济最小核心模型。
 
-本模块独立于旧 ``model.py``。当前实现固定 COP/效率、一个中央站点、
-多个需求节点、无向候选物理管段、CRF 年化成本和运行物理碳排；
-储热、余热、管网热损失、泵耗与多站点均留给后续节点。
+本模块独立于旧 ``model.py``。当前实现预计算逐时 COP/容量修正、一个中央
+站点、多个需求节点、无向候选物理管段、线性管损/泵耗、储热、CRF 年化
+成本和运行物理碳排；余热、复杂水力与多站点留给后续版本。
 """
 
 from __future__ import annotations
@@ -87,6 +87,8 @@ class PipeLevelSpec:
     capacity_max_kW_th: float
     capex_CNY_per_m: float
     lifetime_years: int
+    heat_loss_kW_per_m: float = 0.0
+    pumping_kWh_e_per_kWh_th_transferred: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +166,8 @@ class CoreModelInput:
     economics: EconomicInput
     storage: ThermalStorageSpec | None = None
     pipe_levels: tuple[PipeLevelSpec, ...] = ()
+    heat_pump_cop_by_hour: Mapping[tuple[str, int], float] = field(default_factory=dict)
+    heat_pump_capacity_ratio_by_hour: Mapping[tuple[str, int], float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """复制并冻结负荷映射，阻断调用方在构模前后篡改输入。"""
@@ -173,6 +177,13 @@ class CoreModelInput:
                 dict(self.heat_demand_kW)
             )
             object.__setattr__(self, "heat_demand_kW", frozen_demand)
+        for field_name in (
+            "heat_pump_cop_by_hour",
+            "heat_pump_capacity_ratio_by_hour",
+        ):
+            source = getattr(self, field_name)
+            if isinstance(source, Mapping):
+                object.__setattr__(self, field_name, MappingProxyType(dict(source)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,10 +436,21 @@ def _validate_pipe_levels(levels: object) -> tuple[PipeLevelSpec, ...]:
         ids.add(pipe_id)
         capacity = _finite_real(item.capacity_max_kW_th, f"{pipe_id}.capacity_max_kW_th")
         capex = _finite_real(item.capex_CNY_per_m, f"{pipe_id}.capex_CNY_per_m")
+        loss = _finite_real(item.heat_loss_kW_per_m, f"{pipe_id}.heat_loss_kW_per_m")
+        pumping = _finite_real(
+            item.pumping_kWh_e_per_kWh_th_transferred,
+            f"{pipe_id}.pumping_kWh_e_per_kWh_th_transferred",
+        )
         if capacity <= previous_capacity:
             raise CoreModelInputError("pipe_levels 容量必须随 level 严格递增")
         if capex < 0:
             raise CoreModelInputError(f"{pipe_id}.capex_CNY_per_m 不得为负")
+        if loss < 0:
+            raise CoreModelInputError(f"{pipe_id}.heat_loss_kW_per_m 不得为负")
+        if pumping < 0:
+            raise CoreModelInputError(
+                f"{pipe_id}.pumping_kWh_e_per_kWh_th_transferred 不得为负"
+            )
         if isinstance(item.lifetime_years, bool) or not isinstance(item.lifetime_years, Integral) or item.lifetime_years < 1:
             raise CoreModelInputError(f"{pipe_id}.lifetime_years 必须是正整数")
         previous_capacity = capacity
@@ -599,6 +621,43 @@ def _validate_economics(
         )
 
 
+def _validate_heat_pump_performance(
+    data: CoreModelInput,
+    hours: tuple[int, ...],
+    heat_pump_ids: tuple[str, ...],
+) -> None:
+    """Validate optional precomputed coefficients before Pyomo construction."""
+
+    mappings = (
+        (data.heat_pump_cop_by_hour, "heat_pump_cop_by_hour", False),
+        (
+            data.heat_pump_capacity_ratio_by_hour,
+            "heat_pump_capacity_ratio_by_hour",
+            True,
+        ),
+    )
+    if not any(values for values, _, _ in mappings):
+        return
+    expected = {(technology_id, hour) for technology_id in heat_pump_ids for hour in hours}
+    for values, name, is_ratio in mappings:
+        if not isinstance(values, Mapping) or set(values) != expected:
+            raise CoreModelInputError(
+                f"{name} 必须且只能覆盖全部热泵 technology_id × hours"
+            )
+        for key in expected:
+            technology_id, hour = key
+            if (
+                not isinstance(technology_id, str)
+                or isinstance(hour, bool)
+                or not isinstance(hour, Integral)
+            ):
+                raise CoreModelInputError(f"{name} 键必须为 (technology_id, integer hour)")
+            number = _finite_real(values[key], f"{name}[{technology_id!r}, {hour}]")
+            if number <= 0 or (is_ratio and number > 1):
+                interval = "(0, 1]" if is_ratio else "大于 0"
+                raise CoreModelInputError(f"{name}[{technology_id!r}, {hour}] 必须为 {interval}")
+
+
 def _reachable_nodes(site_node: str, segments: tuple[SegmentSpec, ...]) -> set[str]:
     adjacency: dict[str, set[str]] = {}
     for segment in segments:
@@ -624,11 +683,16 @@ def validate_core_input(data: CoreModelInput) -> None:
         raise CoreModelInputError("mode 只能是 'central'、'distributed' 或 'hybrid'")
     hours = _validate_hours(data.hours)
     demand_nodes = _validate_nodes(data)
-    _resolve_technology_roles(data.technologies)
+    central_ashp, _, local_ashp = _resolve_technology_roles(data.technologies)
     segments = _validate_segments(data.segments, data.site_node, demand_nodes)
     _validate_pipe_levels(data.pipe_levels)
     _validate_storage(data.storage)
     _validate_economics(data.economics, hours, demand_nodes)
+    _validate_heat_pump_performance(
+        data,
+        hours,
+        (central_ashp.technology_id, local_ashp.technology_id),
+    )
 
     if not isinstance(data.heat_demand_kW, Mapping):
         raise CoreModelInputError("heat_demand_kW 必须是 (demand_node, hour) 到 kW 的映射")
@@ -664,7 +728,7 @@ def validate_core_input(data: CoreModelInput) -> None:
 
 
 def build_core_model(data: CoreModelInput) -> ConcreteModel:
-    """构建固定性能、无热损失的三模式成本—碳排核心模型。"""
+    """构建使用预计算性能系数和线性网络物理的三模式核心模型。"""
 
     validate_core_input(data)
     central_ashp, boiler, local_ashp = _resolve_technology_roles(data.technologies)
@@ -679,6 +743,23 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         item.pipe_type_id: item for item in sorted(data.pipe_levels, key=lambda value: value.level)
     }
     pipe_level_ids = tuple(pipe_level_by_id)
+    heat_pump_ids = (central_ashp.technology_id, local_ashp.technology_id)
+    if data.heat_pump_cop_by_hour:
+        heat_pump_cop = dict(data.heat_pump_cop_by_hour)
+        heat_pump_capacity_ratio = dict(data.heat_pump_capacity_ratio_by_hour)
+    else:
+        heat_pump_cop = {
+            (central_ashp.technology_id, hour): float(central_ashp.cop)
+            for hour in data.hours
+        } | {
+            (local_ashp.technology_id, hour): float(local_ashp.cop)
+            for hour in data.hours
+        }
+        heat_pump_capacity_ratio = {
+            (technology_id, hour): 1.0
+            for technology_id in heat_pump_ids
+            for hour in data.hours
+        }
     storage = data.storage or ThermalStorageSpec(
         technology_id="disabled_storage",
         energy_capacity_max_kWh_th=1.0,
@@ -745,7 +826,13 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     )
     model.central_ashp_cop = Param(
         model.CENTRAL_AIR_SOURCE_HEAT_PUMPS,
-        initialize={central_ashp.technology_id: float(central_ashp.cop)},
+        model.HOURS,
+        initialize={
+            (central_ashp.technology_id, hour): heat_pump_cop[
+                central_ashp.technology_id, hour
+            ]
+            for hour in data.hours
+        },
         within=NonNegativeReals,
     )
     model.central_boiler_efficiency = Param(
@@ -753,7 +840,30 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         initialize={boiler.technology_id: float(boiler.efficiency)},
         within=NonNegativeReals,
     )
-    model.local_ashp_cop = Param(initialize=float(local_ashp.cop))
+    model.central_ashp_capacity_ratio = Param(
+        model.CENTRAL_AIR_SOURCE_HEAT_PUMPS,
+        model.HOURS,
+        initialize={
+            (central_ashp.technology_id, hour): heat_pump_capacity_ratio[
+                central_ashp.technology_id, hour
+            ]
+            for hour in data.hours
+        },
+        within=NonNegativeReals,
+    )
+    model.local_ashp_cop = Param(
+        model.HOURS,
+        initialize={hour: heat_pump_cop[local_ashp.technology_id, hour] for hour in data.hours},
+        within=NonNegativeReals,
+    )
+    model.local_ashp_capacity_ratio = Param(
+        model.HOURS,
+        initialize={
+            hour: heat_pump_capacity_ratio[local_ashp.technology_id, hour]
+            for hour in data.hours
+        },
+        within=NonNegativeReals,
+    )
     model.local_capacity_min_kW = Param(initialize=float(local_ashp.capacity_min_kW))
     model.local_capacity_max_kW = Param(initialize=float(local_ashp.capacity_max_kW))
     model.segment_capacity_max_kW = Param(
@@ -787,6 +897,19 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     model.pipe_level_capex_CNY_per_m = Param(
         model.PIPE_LEVELS,
         initialize={key: item.capex_CNY_per_m for key, item in pipe_level_by_id.items()},
+        within=NonNegativeReals,
+    )
+    model.pipe_level_heat_loss_kW_per_m = Param(
+        model.PIPE_LEVELS,
+        initialize={key: item.heat_loss_kW_per_m for key, item in pipe_level_by_id.items()},
+        within=NonNegativeReals,
+    )
+    model.pipe_level_pumping_kWh_e_per_kWh_th = Param(
+        model.PIPE_LEVELS,
+        initialize={
+            key: item.pumping_kWh_e_per_kWh_th_transferred
+            for key, item in pipe_level_by_id.items()
+        },
         within=NonNegativeReals,
     )
     model.time_weight_h_per_year = Param(
@@ -984,6 +1107,13 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     model.pipe_level_built = Var(model.SEGMENTS, model.PIPE_LEVELS, domain=Binary)
     model.pipe_capacity_kW = Var(model.SEGMENTS, domain=NonNegativeReals)
     model.heat_flow_kW = Var(model.SEGMENTS, model.HOURS, domain=Reals)
+    model.heat_flow_positive = Var(model.SEGMENTS, model.HOURS, domain=Binary)
+    model.pipe_level_abs_flow_kW = Var(
+        model.SEGMENTS,
+        model.PIPE_LEVELS,
+        model.HOURS,
+        domain=NonNegativeReals,
+    )
     model.network_heat_kW = Var(
         model.DEMAND_NODES,
         model.HOURS,
@@ -1023,7 +1153,12 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         rule=lambda m, technology_id, hour: m.central_heat_output_kW[
             technology_id, hour
         ]
-        <= m.central_capacity_kW[technology_id],
+        <= m.central_capacity_kW[technology_id]
+        * (
+            m.central_ashp_capacity_ratio[technology_id, hour]
+            if technology_id in m.CENTRAL_AIR_SOURCE_HEAT_PUMPS
+            else 1.0
+        ),
     )
     model.local_capacity_minimum = Constraint(
         model.DEMAND_NODES,
@@ -1039,7 +1174,7 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         model.DEMAND_NODES,
         model.HOURS,
         rule=lambda m, node, hour: m.local_heat_output_kW[node, hour]
-        <= m.local_capacity_kW[node],
+        <= m.local_capacity_kW[node] * m.local_ashp_capacity_ratio[hour],
     )
     model.service_exclusive = Constraint(
         model.DEMAND_NODES,
@@ -1153,6 +1288,59 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
                 for pipe_type_id in m.PIPE_LEVELS
             ),
         )
+        model.pipe_level_abs_flow_positive = Constraint(
+            model.SEGMENTS,
+            model.PIPE_LEVELS,
+            model.HOURS,
+            rule=lambda m, segment_id, pipe_type_id, hour:
+            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+            >= m.heat_flow_kW[segment_id, hour]
+            - m.segment_capacity_max_kW[segment_id]
+            * (1 - m.pipe_level_built[segment_id, pipe_type_id]),
+        )
+        model.pipe_level_abs_flow_negative = Constraint(
+            model.SEGMENTS,
+            model.PIPE_LEVELS,
+            model.HOURS,
+            rule=lambda m, segment_id, pipe_type_id, hour:
+            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+            >= -m.heat_flow_kW[segment_id, hour]
+            - m.segment_capacity_max_kW[segment_id]
+            * (1 - m.pipe_level_built[segment_id, pipe_type_id]),
+        )
+        model.pipe_level_abs_flow_limit = Constraint(
+            model.SEGMENTS,
+            model.PIPE_LEVELS,
+            model.HOURS,
+            rule=lambda m, segment_id, pipe_type_id, hour:
+            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+            <= m.pipe_level_capacity_kW[pipe_type_id]
+            * m.pipe_level_built[segment_id, pipe_type_id],
+        )
+        model.pipe_level_abs_flow_upper_positive = Constraint(
+            model.SEGMENTS,
+            model.PIPE_LEVELS,
+            model.HOURS,
+            rule=lambda m, segment_id, pipe_type_id, hour:
+            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+            <= m.heat_flow_kW[segment_id, hour]
+            + 2 * m.segment_capacity_max_kW[segment_id]
+            * (1 - m.heat_flow_positive[segment_id, hour])
+            + m.segment_capacity_max_kW[segment_id]
+            * (1 - m.pipe_level_built[segment_id, pipe_type_id]),
+        )
+        model.pipe_level_abs_flow_upper_negative = Constraint(
+            model.SEGMENTS,
+            model.PIPE_LEVELS,
+            model.HOURS,
+            rule=lambda m, segment_id, pipe_type_id, hour:
+            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+            <= -m.heat_flow_kW[segment_id, hour]
+            + 2 * m.segment_capacity_max_kW[segment_id]
+            * m.heat_flow_positive[segment_id, hour]
+            + m.segment_capacity_max_kW[segment_id]
+            * (1 - m.pipe_level_built[segment_id, pipe_type_id]),
+        )
     else:
         model.pipe_capacity_limit = Constraint(
             model.SEGMENTS,
@@ -1170,6 +1358,20 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         model.HOURS,
         rule=lambda m, segment_id, hour: m.heat_flow_kW[segment_id, hour]
         >= -m.pipe_capacity_kW[segment_id],
+    )
+    model.heat_flow_direction_upper = Constraint(
+        model.SEGMENTS,
+        model.HOURS,
+        rule=lambda m, segment_id, hour: m.heat_flow_kW[segment_id, hour]
+        <= m.segment_capacity_max_kW[segment_id]
+        * m.heat_flow_positive[segment_id, hour],
+    )
+    model.heat_flow_direction_lower = Constraint(
+        model.SEGMENTS,
+        model.HOURS,
+        rule=lambda m, segment_id, hour: m.heat_flow_kW[segment_id, hour]
+        >= -m.segment_capacity_max_kW[segment_id]
+        * (1 - m.heat_flow_positive[segment_id, hour]),
     )
 
     commodity_big_m = len(data.demand_nodes)
@@ -1208,6 +1410,13 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         )
         + m.storage_discharge_kW[hour]
         - m.storage_charge_kW[hour]
+        - sum(
+            m.segment_length_m[segment_id]
+            * m.pipe_level_heat_loss_kW_per_m[pipe_type_id]
+            * m.pipe_level_built[segment_id, pipe_type_id]
+            for segment_id in m.SEGMENTS
+            for pipe_type_id in m.PIPE_LEVELS
+        )
         + sum(
             m.incidence[data.site_node, segment_id] * m.heat_flow_kW[segment_id, hour]
             for segment_id in m.SEGMENTS
@@ -1279,7 +1488,7 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         rule=lambda m, technology_id, hour: m.central_heat_output_kW[
             technology_id, hour
         ]
-        / m.central_ashp_cop[technology_id],
+        / m.central_ashp_cop[technology_id, hour],
     )
     model.central_electricity_input_kWh_e = Expression(
         model.CENTRAL_AIR_SOURCE_HEAT_PUMPS,
@@ -1309,7 +1518,16 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         model.DEMAND_NODES,
         model.HOURS,
         rule=lambda m, node, hour: m.local_heat_output_kW[node, hour]
-        / m.local_ashp_cop,
+        / m.local_ashp_cop[hour],
+    )
+    model.pumping_electricity_input_kW_e = Expression(
+        model.HOURS,
+        rule=lambda m, hour: sum(
+            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+            * m.pipe_level_pumping_kWh_e_per_kWh_th[pipe_type_id]
+            for segment_id in m.SEGMENTS
+            for pipe_type_id in m.PIPE_LEVELS
+        ),
     )
     model.local_electricity_input_kWh_e = Expression(
         model.DEMAND_NODES,
@@ -1419,6 +1637,12 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
             for node in model.DEMAND_NODES
             for hour in model.HOURS
         )
+        + sum(
+            model.pumping_electricity_input_kW_e[hour]
+            * model.time_weight_h_per_year[hour]
+            * model.electricity_price_CNY_per_kWh_e[hour]
+            for hour in model.HOURS
+        )
     )
     model.annual_gas_cost_CNY_per_year = Expression(
         expr=sum(
@@ -1453,6 +1677,12 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
             * model.time_weight_h_per_year[hour]
             * model.electricity_carbon_kgCO2e_per_kWh_e[hour]
             for node in model.DEMAND_NODES
+            for hour in model.HOURS
+        )
+        + sum(
+            model.pumping_electricity_input_kW_e[hour]
+            * model.time_weight_h_per_year[hour]
+            * model.electricity_carbon_kgCO2e_per_kWh_e[hour]
             for hour in model.HOURS
         )
     )

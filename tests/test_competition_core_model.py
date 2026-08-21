@@ -262,6 +262,73 @@ def test_three_pipe_levels_select_smallest_feasible_physical_capacity() -> None:
     assert value(model.pipe_capacity_kW["segment_1"]) == pytest.approx(100)
 
 
+def test_precomputed_cop_and_capacity_derating_are_used_hour_by_hour() -> None:
+    hours = (1, 2)
+    economics = _economics(
+        hours=hours,
+        electricity_prices={1: 1, 2: 1},
+        gas_prices={1: 100, 2: 100},
+    )
+    model = solve_core_model(
+        _core_input(
+            hours=hours,
+            heat_demand_kW={("demand_1", 1): 50, ("demand_1", 2): 50},
+            technologies=_technologies(
+                central_ashp={"capacity_max_kW": 100},
+                central_gas_boiler={"capacity_max_kW": 100},
+            ),
+            economics=economics,
+            heat_pump_cop_by_hour={
+                ("central_ashp", 1): 4,
+                ("central_ashp", 2): 2,
+                ("local_ashp", 1): 3,
+                ("local_ashp", 2): 3,
+            },
+            heat_pump_capacity_ratio_by_hour={
+                ("central_ashp", 1): 0.5,
+                ("central_ashp", 2): 0.25,
+                ("local_ashp", 1): 1,
+                ("local_ashp", 2): 1,
+            },
+        )
+    ).model
+    assert value(model.central_capacity_kW["central_ashp"]) == pytest.approx(100)
+    assert value(model.central_heat_output_kW["central_ashp", 1]) == pytest.approx(50)
+    assert value(model.central_heat_output_kW["central_ashp", 2]) == pytest.approx(25)
+    assert value(model.central_heat_output_kW["central_gas_boiler", 2]) == pytest.approx(25)
+    assert value(model.central_electricity_input_kW_e["central_ashp", 1]) == pytest.approx(12.5)
+    assert value(model.central_electricity_input_kW_e["central_ashp", 2]) == pytest.approx(12.5)
+
+
+def test_linear_pipe_loss_and_pumping_enter_balance_cost_and_carbon() -> None:
+    levels = (
+        PipeLevelSpec("dn1", 1, 50, 1, 30, 0.1, 0.02),
+        PipeLevelSpec("dn2", 2, 100, 2, 30, 0.1, 0.02),
+        PipeLevelSpec("dn3", 3, 150, 3, 30, 0.1, 0.02),
+    )
+    economics = replace(
+        _economics(electricity_prices={1: 1}, gas_prices={1: 100}),
+        electricity_carbon_kgCO2e_per_kWh_e={1: 0.4},
+        gas_carbon_kgCO2e_per_kWh_LHV={1: 0.2},
+    )
+    model = solve_core_model(
+        _core_input(
+            heat_demand_kW={("demand_1", 1): 50},
+            pipe_levels=levels,
+            economics=economics,
+        )
+    ).model
+    assert value(model.pipe_level_built["segment_1", "dn1"]) == pytest.approx(1)
+    assert value(model.heat_flow_kW["segment_1", 1]) == pytest.approx(50)
+    assert value(model.central_heat_output_kW["central_ashp", 1]) == pytest.approx(51)
+    assert value(model.pumping_electricity_input_kW_e[1]) == pytest.approx(1)
+    expected_electricity = 51 / 4 + 1
+    assert value(model.annual_electricity_cost_CNY_per_year) == _cost_approx(expected_electricity)
+    assert value(model.annual_electricity_carbon_kgCO2e_per_year) == pytest.approx(
+        expected_electricity * 0.4
+    )
+
+
 def test_storage_cyclic_soc_moves_heat_between_two_hours() -> None:
     storage = ThermalStorageSpec(
         technology_id="tes", energy_capacity_max_kWh_th=100,

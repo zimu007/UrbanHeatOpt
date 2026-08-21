@@ -37,6 +37,7 @@ def _assert_standard_outputs(run_dir: Path) -> pd.DataFrame:
         "building_connection.csv",
         "storage_decisions.csv",
         "network_decisions.geojson",
+        "network_hourly.csv",
         "dispatch_hourly.parquet",
         "balance_check.csv",
         "cost_breakdown.csv",

@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 from types import MappingProxyType, SimpleNamespace
 
 import pandas as pd
 import pytest
+import yaml
 
 from competition.canonical import CanonicalCaseData, PipeTypeSpec, StorageSpec
 from competition.core_model import EconomicInput, SegmentSpec, TechnologySpec
+from competition.physical_interfaces import FixedV0PerformanceProvider
 from competition.pipelines.case_pipeline import PipelineRun, run_case_pipeline
 from competition.solvers import SolverSettings
 from competition.validation.v3_inputs import V3InputError, load_v3_case
@@ -36,6 +39,16 @@ def _technology(role: str) -> TechnologySpec:
 
 def _canonical() -> CanonicalCaseData:
     timestamp = pd.Timestamp("2026-01-01T00:00:00+08:00")
+    technologies = tuple(
+        _technology(role) for role in ("central_hp", "central_boiler", "local_hp")
+    )
+    performance = FixedV0PerformanceProvider().precompute(
+        technologies=technologies,
+        hours=(1,),
+        timestamps=(timestamp,),
+        outdoor_temperature_C=(0.0,),
+        leaving_water_temperature_C=50.0,
+    )
     return CanonicalCaseData(
         contract_version="competition_input_3.0.0-draft.1",
         software_release_track="test_v0",
@@ -43,7 +56,7 @@ def _canonical() -> CanonicalCaseData:
         profile="v0-smoke", modes=("central", "distributed", "hybrid"),
         timestamps=(timestamp,), hours=(1,), site_node="site_1",
         demand_nodes=("building_1",), heat_demand_kW_th={("building_1", 1): 10.0},
-        technologies=tuple(_technology(role) for role in ("central_hp", "central_boiler", "local_hp")),
+        technologies=technologies,
         storage=StorageSpec("tes", 10, 5, 5, 0.95, 0.95, 0.0, 0, 0, 0, 15, "synthetic_test", "v1"),
         segments=(SegmentSpec("s1", "site_1", "building_1", 10, 20, 1, 30),),
         pipe_types=(
@@ -51,6 +64,7 @@ def _canonical() -> CanonicalCaseData:
             PipeTypeSpec("p2", 2, 15, 2, 0, 0, 30, "synthetic_test", "v1"),
             PipeTypeSpec("p3", 3, 20, 3, 0, 0, 30, "synthetic_test", "v1"),
         ),
+        heat_pump_performance=performance,
         economics=EconomicInput(
             {1: 1}, {1: 0.5}, {1: 0.3}, 1,
             {"building_1": 0}, {"building_1": 30}, 1_000_000,
@@ -107,3 +121,39 @@ def test_v3_loader_rejects_legacy_contract_before_file_adaptation(tmp_path: Path
     with pytest.raises(V3InputError) as captured:
         load_v3_case(tmp_path)
     assert "3.0.0-draft.1" in str(captured.value)
+
+
+def test_v1_full_never_falls_back_to_fixed_v0_performance(tmp_path: Path) -> None:
+    source = Path(__file__).parent / "fixtures" / "v3_smoke_case"
+    case_dir = tmp_path / "v1_case"
+    shutil.copytree(source, case_dir)
+    config_path = case_dir / "case_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["run"]["profile"] = "v1-full"
+    config["time"]["complete_heating_season"] = True
+    config["features"].update(
+        temperature_cop_enabled=True,
+        pipe_loss_enabled=True,
+        pumping_enabled=True,
+    )
+    config["network"].update(
+        loss_model="linear_per_m",
+        pumping_model="linear_per_kWh_transferred",
+    )
+    config["performance"].update(
+        cop_model="temperature_interpolated",
+        capacity_derating_model="temperature_interpolated",
+    )
+    config["planning"]["unserved_policy"] = "forbidden_for_v1"
+    config["pareto"]["point_count"] = 11
+    config_path.write_text(
+        yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(V3InputError, match="不得使用 V0 固定 COP"):
+        load_v3_case(
+            case_dir,
+            profile="v1-full",
+            performance_provider=FixedV0PerformanceProvider(),
+        )

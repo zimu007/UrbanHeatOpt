@@ -123,6 +123,11 @@ def _manual_costs(model: Any) -> dict[str, float]:
         value(model.local_electricity_input_kW_e[node, hour]) * value(model.time_weight_h_per_year[hour])
         * value(model.electricity_price_CNY_per_kWh_e[hour])
         for node in model.DEMAND_NODES for hour in model.HOURS
+    ) + sum(
+        value(model.pumping_electricity_input_kW_e[hour])
+        * value(model.time_weight_h_per_year[hour])
+        * value(model.electricity_price_CNY_per_kWh_e[hour])
+        for hour in model.HOURS
     )
     gas = sum(
         value(model.gas_input_kW_LHV[tech, hour]) * value(model.time_weight_h_per_year[hour])
@@ -147,6 +152,11 @@ def _manual_carbon(model: Any) -> dict[str, float]:
         value(model.local_electricity_input_kW_e[node, hour]) * value(model.time_weight_h_per_year[hour])
         * value(model.electricity_carbon_kgCO2e_per_kWh_e[hour])
         for node in model.DEMAND_NODES for hour in model.HOURS
+    ) + sum(
+        value(model.pumping_electricity_input_kW_e[hour])
+        * value(model.time_weight_h_per_year[hour])
+        * value(model.electricity_carbon_kgCO2e_per_kWh_e[hour])
+        for hour in model.HOURS
     )
     gas = sum(
         value(model.gas_input_kW_LHV[tech, hour]) * value(model.time_weight_h_per_year[hour])
@@ -195,6 +205,7 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
     network.to_file(target / "network_decisions.geojson", driver="GeoJSON")
 
     dispatch_rows: list[dict[str, Any]] = []
+    network_rows: list[dict[str, Any]] = []
     balance_rows: list[dict[str, Any]] = []
     timestamp_by_hour = dict(zip(case.hours, case.timestamps, strict=True))
     for hour in model.HOURS:
@@ -215,6 +226,36 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
             "storage_discharge_kW_th": value(model.storage_discharge_kW[hour]),
             "storage_soc_kWh_th": value(model.storage_soc_kWh[hour]),
         })
+        dispatch_rows.append({
+            "timestamp": timestamp, "hour": int(hour), "asset_id": "network_pump",
+            "node_id": case.site_node, "heat_output_kW_th": 0.0,
+            "electricity_input_kW_e": value(model.pumping_electricity_input_kW_e[hour]),
+            "gas_input_kW_LHV": 0.0, "storage_charge_kW_th": 0.0,
+            "storage_discharge_kW_th": 0.0, "storage_soc_kWh_th": 0.0,
+        })
+        for segment in model.SEGMENTS:
+            selected = _selected_pipe_type(model, str(segment))
+            heat_loss = 0.0
+            pumping = 0.0
+            if selected is not None:
+                heat_loss = (
+                    value(model.segment_length_m[segment])
+                    * value(model.pipe_level_heat_loss_kW_per_m[selected])
+                )
+                pumping = (
+                    value(model.pipe_level_abs_flow_kW[segment, selected, hour])
+                    * value(model.pipe_level_pumping_kWh_e_per_kWh_th[selected])
+                )
+            network_rows.append({
+                "timestamp": timestamp,
+                "hour": int(hour),
+                "segment_id": str(segment),
+                "selected_pipe_type_id": selected,
+                "flow_kW_th": value(model.heat_flow_kW[segment, hour]),
+                "capacity_kW_th": value(model.pipe_capacity_kW[segment]),
+                "heat_loss_kW_th": heat_loss,
+                "pumping_electricity_kW_e": pumping,
+            })
         for node in model.DEMAND_NODES:
             dispatch_rows.append({
                 "timestamp": timestamp, "hour": int(hour), "asset_id": f"local_hp@{node}",
@@ -234,6 +275,7 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
                 "residual_kW": network_heat + local + hns - demand,
             })
     pd.DataFrame(dispatch_rows).to_parquet(target / "dispatch_hourly.parquet", index=False)
+    pd.DataFrame(network_rows).to_csv(target / "network_hourly.csv", index=False)
     balance = pd.DataFrame(balance_rows)
     balance.to_csv(target / "balance_check.csv", index=False)
 
@@ -256,13 +298,29 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
     weighted_hns = float(sum(value(model.unserved_heat_kW[node, hour]) * value(model.time_weight_h_per_year[hour]) for node in model.DEMAND_NODES for hour in model.HOURS))
     pipe_violation = max((abs(value(model.heat_flow_kW[segment, hour])) - value(model.pipe_capacity_kW[segment]) for segment in model.SEGMENTS for hour in model.HOURS), default=0.0)
     connectivity_ok = all(value(model.connected[node]) < 0.5 or _is_connected(model, case.site_node, str(node)) for node in model.DEMAND_NODES)
+    site_residual = max((abs(
+        sum(value(model.central_heat_output_kW[technology_id, hour]) for technology_id in model.CENTRAL_TECHNOLOGIES)
+        + value(model.storage_discharge_kW[hour])
+        - value(model.storage_charge_kW[hour])
+        - sum(
+            value(model.segment_length_m[segment])
+            * value(model.pipe_level_heat_loss_kW_per_m[pipe_type])
+            * value(model.pipe_level_built[segment, pipe_type])
+            for segment in model.SEGMENTS for pipe_type in model.PIPE_LEVELS
+        )
+        + sum(
+            value(model.incidence[case.site_node, segment])
+            * value(model.heat_flow_kW[segment, hour])
+            for segment in model.SEGMENTS
+        )
+    ) for hour in model.HOURS), default=0.0)
     previous = {hour: case.hours[index - 1] if index else case.hours[-1] for index, hour in enumerate(case.hours)}
     storage_residual = max((abs(value(model.storage_soc_kWh[hour]) - (value(model.storage_soc_kWh[previous[int(hour)]]) * (1 - value(model.storage_standing_loss_fraction_per_hour)) + value(model.storage_charge_kW[hour]) * value(model.storage_charge_efficiency) - value(model.storage_discharge_kW[hour]) / value(model.storage_discharge_efficiency))) for hour in model.HOURS), default=0.0)
     qa_config = case.raw_config["qa"]
     qa = {
         "point_id": point.point_id,
         "termination_condition": str(solution.solver_results.solver.termination_condition),
-        "max_heat_balance_error_kW": max_balance,
+        "max_heat_balance_error_kW": max(max_balance, float(site_residual)),
         "unserved_heat_kWh": weighted_hns,
         "max_pipe_capacity_violation_kW": max(0.0, float(pipe_violation)),
         "network_connectivity_ok": connectivity_ok,
@@ -271,7 +329,7 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
         "carbon_reaggregation_error_kgCO2e_per_year": carbon_total - value(model.annual_operating_physical_carbon_kgCO2e_per_year),
     }
     qa["passed"] = bool(
-        max_balance <= qa_config["balance_tolerance_kW"]
+        max(max_balance, site_residual) <= qa_config["balance_tolerance_kW"]
         and weighted_hns <= qa_config["unserved_tolerance_kWh"]
         and max(0.0, pipe_violation) <= qa_config["balance_tolerance_kW"]
         and connectivity_ok

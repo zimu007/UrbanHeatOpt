@@ -22,6 +22,12 @@ from competition.canonical import (
     StorageSpec,
 )
 from competition.core_model import EconomicInput, SegmentSpec, TechnologySpec
+from competition.physical_interfaces import (
+    FixedV0PerformanceProvider,
+    HeatPumpPerformanceProvider,
+    PhysicalInterfaceError,
+    validate_performance_coefficients,
+)
 from competition.solvers import SolverSettings
 
 
@@ -333,7 +339,12 @@ def _read_spatial(case_dir: Path, config: dict[str, Any], building_ids: tuple[st
     return site_id, segments
 
 
-def load_v3_case(case_dir: str | Path, *, profile: str | None = None) -> CanonicalCaseData:
+def load_v3_case(
+    case_dir: str | Path,
+    *,
+    profile: str | None = None,
+    performance_provider: HeatPumpPerformanceProvider | None = None,
+) -> CanonicalCaseData:
     """Validate and snapshot a V3 draft case without writing derived files."""
 
     root = Path(case_dir).resolve()
@@ -363,6 +374,45 @@ def load_v3_case(case_dir: str | Path, *, profile: str | None = None) -> Canonic
         raise V3InputError([f"V3 文件读取失败：{exc}"]) from exc
 
     hours = tuple(range(1, len(timestamps) + 1))
+    if config["run"]["profile"] == "v1-full" and (
+        performance_provider is None
+        or isinstance(performance_provider, FixedV0PerformanceProvider)
+    ):
+        raise V3InputError([
+            "v1-full 必须显式提供经过验收的温度 COP/容量修正 provider；不得使用 V0 固定 COP"
+        ])
+    provider = performance_provider or FixedV0PerformanceProvider()
+    try:
+        performance = provider.precompute(
+            technologies=technologies,
+            hours=hours,
+            timestamps=timestamps,
+            outdoor_temperature_C=tuple(
+                external["outdoor_temperature_C"].astype(float).tolist()
+            ),
+            leaving_water_temperature_C=float(config["network"]["supply_temperature_C"]),
+        )
+        heat_pump_ids = tuple(
+            spec.technology_id
+            for spec in technologies
+            if spec.technology_type == "air_source_heat_pump"
+        )
+        validate_performance_coefficients(
+            performance,
+            technology_ids=heat_pump_ids,
+            hours=hours,
+        )
+    except PhysicalInterfaceError as exc:
+        raise V3InputError([f"热泵性能接口失败：{exc}"]) from exc
+    parameter_versions["heat_pump_performance_provider"] = performance.parameter_version
+
+    if config["run"]["profile"] == "v1-full":
+        if any(item.heat_loss_kW_per_m <= 0 for item in pipe_types):
+            raise V3InputError(["v1-full 三档管径必须提供大于 0 的简化线性热损系数"])
+        if any(
+            item.pumping_kWh_e_per_kWh_th_transferred <= 0 for item in pipe_types
+        ):
+            raise V3InputError(["v1-full 三档管径必须提供大于 0 的泵耗系数"])
     hour_by_timestamp = dict(zip(timestamps, hours, strict=True))
     heat_demand = {
         (str(row.building_id), hour_by_timestamp[row.timestamp]): float(row.heating_kW)
@@ -406,5 +456,6 @@ def load_v3_case(case_dir: str | Path, *, profile: str | None = None) -> Canonic
         site_node=site_node, demand_nodes=building_ids,
         heat_demand_kW_th=heat_demand, technologies=technologies, storage=storage,
         segments=segments, pipe_types=pipe_types, economics=economics, solver=solver,
+        heat_pump_performance=performance,
         input_sha256=before, parameter_versions=parameter_versions, raw_config=config,
     )

@@ -16,6 +16,7 @@ from competition.core_model import (
     TechnologySpec,
     ThermalStorageSpec,
 )
+from competition.physical_interfaces import HeatPumpPerformanceCoefficients
 from competition.solvers import SolverSettings
 
 
@@ -86,6 +87,7 @@ class CanonicalCaseData:
     storage: StorageSpec
     segments: tuple[SegmentSpec, ...]
     pipe_types: tuple[PipeTypeSpec, ...]
+    heat_pump_performance: HeatPumpPerformanceCoefficients
     economics: EconomicInput
     solver: SolverSettings
     input_sha256: Mapping[str, str]
@@ -142,7 +144,15 @@ class CanonicalCaseData:
                     capacity_max_kW_th=item.capacity_max_kW_th,
                     capex_CNY_per_m=item.capex_CNY_per_m,
                     lifetime_years=item.lifetime_years,
+                    heat_loss_kW_per_m=item.heat_loss_kW_per_m,
+                    pumping_kWh_e_per_kWh_th_transferred=(
+                        item.pumping_kWh_e_per_kWh_th_transferred
+                    ),
                 )
                 for item in self.pipe_types
+            ),
+            heat_pump_cop_by_hour=self.heat_pump_performance.cop_by_technology_hour,
+            heat_pump_capacity_ratio_by_hour=(
+                self.heat_pump_performance.capacity_ratio_by_technology_hour
             ),
         )
