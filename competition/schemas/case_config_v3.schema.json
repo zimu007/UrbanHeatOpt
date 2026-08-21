@@ -8,7 +8,7 @@
   "required": [
     "contract_version", "software_release_track", "case_id", "scenario_id",
     "data_version", "data_classification", "time", "units", "crs", "files",
-    "run", "spatial", "demand", "features", "network", "planning",
+    "run", "spatial", "demand", "features", "network", "planning", "economics",
     "performance", "pareto", "enabled_technology_ids", "solver", "qa"
   ],
   "properties": {
@@ -149,6 +149,22 @@
           "type": "array", "prefixItems": [{"const": 0}, {"const": 50}, {"const": 100}, {"const": 150}],
           "items": false, "minItems": 4, "maxItems": 4
         }
+      }
+    },
+    "economics": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "annualization_method", "station_fixed_capex_CNY", "station_lifetime_years",
+        "connection_capex_CNY_per_demand_node", "connection_lifetime_years",
+        "hns_penalty_CNY_per_kWh_th"
+      ],
+      "properties": {
+        "annualization_method": {"const": "capital_recovery_factor"},
+        "station_fixed_capex_CNY": {"type": "number", "minimum": 0},
+        "station_lifetime_years": {"type": "integer", "minimum": 1},
+        "connection_capex_CNY_per_demand_node": {"type": "number", "minimum": 0},
+        "connection_lifetime_years": {"type": "integer", "minimum": 1},
+        "hns_penalty_CNY_per_kWh_th": {"type": "number", "minimum": 0}
       }
     },
     "performance": {

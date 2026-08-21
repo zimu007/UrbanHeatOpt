@@ -36,6 +36,7 @@ files:
       - lifetime_years
       - source
       - parameter_version
+      - assumption_flag
     executable_roles:
       - central_air_source_heat_pump
       - central_gas_boiler
@@ -90,6 +91,16 @@ objectives:
   policy_carbon_cost: separate_CNY_per_year_not_default_objective
   pareto: epsilon_constraint
   topsis: prohibited_in_v1
+economics_interface:
+  annualization_method: capital_recovery_factor
+  required_case_parameters:
+    - discount_rate
+    - station_fixed_capex_CNY
+    - station_lifetime_years
+    - connection_capex_CNY_per_demand_node
+    - connection_lifetime_years
+    - hns_penalty_CNY_per_kWh_th
+  rule: missing_values_block_execution_and_are_never_defaulted
 version_policy:
   old_contracts: explicit_legacy_only
   automatic_migration: prohibited

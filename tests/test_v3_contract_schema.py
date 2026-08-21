@@ -76,6 +76,14 @@ def _config(profile: str = "v0-smoke") -> dict[str, object]:
             "unserved_policy": "forbidden_for_v1" if is_full else "penalized_for_v0",
             "carbon_price_scenarios_CNY_per_tCO2e": [0, 50, 100, 150],
         },
+        "economics": {
+            "annualization_method": "capital_recovery_factor",
+            "station_fixed_capex_CNY": 0,
+            "station_lifetime_years": 30,
+            "connection_capex_CNY_per_demand_node": 0,
+            "connection_lifetime_years": 30,
+            "hns_penalty_CNY_per_kWh_th": 1000000,
+        },
         "performance": {
             "cop_model": "temperature_interpolated" if is_full else "fixed_for_v0",
             "capacity_derating_model": "temperature_interpolated" if is_full else "disabled_for_v0",
