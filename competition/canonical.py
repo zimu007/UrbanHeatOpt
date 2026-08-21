@@ -8,7 +8,14 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from competition.core_model import CoreModelInput, EconomicInput, SegmentSpec, TechnologySpec
+from competition.core_model import (
+    CoreModelInput,
+    EconomicInput,
+    PipeLevelSpec,
+    SegmentSpec,
+    TechnologySpec,
+    ThermalStorageSpec,
+)
 from competition.solvers import SolverSettings
 
 
@@ -115,4 +122,27 @@ class CanonicalCaseData:
             technologies=self.technologies,
             segments=self.segments,
             economics=self.economics,
+            storage=ThermalStorageSpec(
+                technology_id=self.storage.technology_id,
+                energy_capacity_max_kWh_th=self.storage.energy_capacity_max_kWh_th,
+                charge_capacity_max_kW_th=self.storage.charge_capacity_max_kW_th,
+                discharge_capacity_max_kW_th=self.storage.discharge_capacity_max_kW_th,
+                charge_efficiency=self.storage.charge_efficiency,
+                discharge_efficiency=self.storage.discharge_efficiency,
+                standing_loss_fraction_per_hour=self.storage.standing_loss_fraction_per_hour,
+                capex_CNY_per_kWh_th=self.storage.capex_CNY_per_kWh_th,
+                power_capex_CNY_per_kW_th=self.storage.power_capex_CNY_per_kW_th,
+                fixed_capex_CNY=self.storage.fixed_capex_CNY,
+                lifetime_years=self.storage.lifetime_years,
+            ),
+            pipe_levels=tuple(
+                PipeLevelSpec(
+                    pipe_type_id=item.pipe_type_id,
+                    level=item.level,
+                    capacity_max_kW_th=item.capacity_max_kW_th,
+                    capex_CNY_per_m=item.capex_CNY_per_m,
+                    lifetime_years=item.lifetime_years,
+                )
+                for item in self.pipe_types
+            ),
         )

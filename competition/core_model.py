@@ -79,6 +79,34 @@ class SegmentSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class PipeLevelSpec:
+    """One discrete capacity/cost level shared by candidate physical segments."""
+
+    pipe_type_id: str
+    level: int
+    capacity_max_kW_th: float
+    capex_CNY_per_m: float
+    lifetime_years: int
+
+
+@dataclass(frozen=True, slots=True)
+class ThermalStorageSpec:
+    """Linear water-thermal-storage boundary used by the V0 core."""
+
+    technology_id: str
+    energy_capacity_max_kWh_th: float
+    charge_capacity_max_kW_th: float
+    discharge_capacity_max_kW_th: float
+    charge_efficiency: float
+    discharge_efficiency: float
+    standing_loss_fraction_per_hour: float
+    capex_CNY_per_kWh_th: float
+    power_capex_CNY_per_kW_th: float
+    fixed_capex_CNY: float
+    lifetime_years: int
+
+
+@dataclass(frozen=True, slots=True)
 class EconomicInput:
     """竞赛核心使用的年度成本边界。
 
@@ -134,6 +162,8 @@ class CoreModelInput:
     technologies: tuple[TechnologySpec, ...]
     segments: tuple[SegmentSpec, ...]
     economics: EconomicInput
+    storage: ThermalStorageSpec | None = None
+    pipe_levels: tuple[PipeLevelSpec, ...] = ()
 
     def __post_init__(self) -> None:
         """复制并冻结负荷映射，阻断调用方在构模前后篡改输入。"""
@@ -377,6 +407,68 @@ def _validate_segments(
     return segments
 
 
+def _validate_pipe_levels(levels: object) -> tuple[PipeLevelSpec, ...]:
+    if not isinstance(levels, tuple):
+        raise CoreModelInputError("pipe_levels 必须是 PipeLevelSpec tuple")
+    if not levels:
+        return ()
+    if len(levels) != 3 or sorted(item.level for item in levels) != [1, 2, 3]:
+        raise CoreModelInputError("pipe_levels 必须恰好包含 level 1、2、3")
+    ids: set[str] = set()
+    previous_capacity = -1.0
+    for index, item in enumerate(sorted(levels, key=lambda value: value.level)):
+        if not isinstance(item, PipeLevelSpec):
+            raise CoreModelInputError(f"pipe_levels[{index}] 必须是 PipeLevelSpec")
+        pipe_id = _validate_plain_id(item.pipe_type_id, f"pipe_levels[{index}].pipe_type_id")
+        if pipe_id in ids:
+            raise CoreModelInputError("pipe_type_id 不得重复")
+        ids.add(pipe_id)
+        capacity = _finite_real(item.capacity_max_kW_th, f"{pipe_id}.capacity_max_kW_th")
+        capex = _finite_real(item.capex_CNY_per_m, f"{pipe_id}.capex_CNY_per_m")
+        if capacity <= previous_capacity:
+            raise CoreModelInputError("pipe_levels 容量必须随 level 严格递增")
+        if capex < 0:
+            raise CoreModelInputError(f"{pipe_id}.capex_CNY_per_m 不得为负")
+        if isinstance(item.lifetime_years, bool) or not isinstance(item.lifetime_years, Integral) or item.lifetime_years < 1:
+            raise CoreModelInputError(f"{pipe_id}.lifetime_years 必须是正整数")
+        previous_capacity = capacity
+    return levels
+
+
+def _validate_storage(storage: object) -> None:
+    if storage is None:
+        return
+    if not isinstance(storage, ThermalStorageSpec):
+        raise CoreModelInputError("storage 必须是 ThermalStorageSpec 或 None")
+    _validate_plain_id(storage.technology_id, "storage.technology_id")
+    for field in (
+        "energy_capacity_max_kWh_th",
+        "charge_capacity_max_kW_th",
+        "discharge_capacity_max_kW_th",
+    ):
+        if _finite_real(getattr(storage, field), f"storage.{field}") <= 0:
+            raise CoreModelInputError(f"storage.{field} 必须大于 0")
+    for field in ("charge_efficiency", "discharge_efficiency"):
+        value = _finite_real(getattr(storage, field), f"storage.{field}")
+        if not 0 < value <= 1:
+            raise CoreModelInputError(f"storage.{field} 必须在 (0, 1] 内")
+    loss = _finite_real(
+        storage.standing_loss_fraction_per_hour,
+        "storage.standing_loss_fraction_per_hour",
+    )
+    if not 0 <= loss < 1:
+        raise CoreModelInputError("storage.standing_loss_fraction_per_hour 必须在 [0, 1) 内")
+    for field in (
+        "capex_CNY_per_kWh_th",
+        "power_capex_CNY_per_kW_th",
+        "fixed_capex_CNY",
+    ):
+        if _finite_real(getattr(storage, field), f"storage.{field}") < 0:
+            raise CoreModelInputError(f"storage.{field} 不得为负")
+    if isinstance(storage.lifetime_years, bool) or not isinstance(storage.lifetime_years, Integral) or storage.lifetime_years < 1:
+        raise CoreModelInputError("storage.lifetime_years 必须是正整数")
+
+
 def _validate_hourly_mapping(
     values: object,
     hours: tuple[int, ...],
@@ -534,6 +626,8 @@ def validate_core_input(data: CoreModelInput) -> None:
     demand_nodes = _validate_nodes(data)
     _resolve_technology_roles(data.technologies)
     segments = _validate_segments(data.segments, data.site_node, demand_nodes)
+    _validate_pipe_levels(data.pipe_levels)
+    _validate_storage(data.storage)
     _validate_economics(data.economics, hours, demand_nodes)
 
     if not isinstance(data.heat_demand_kW, Mapping):
@@ -581,6 +675,23 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     central_ids = tuple(central_specs)
     segment_by_id = {segment.segment_id: segment for segment in data.segments}
     segment_ids = tuple(segment_by_id)
+    pipe_level_by_id = {
+        item.pipe_type_id: item for item in sorted(data.pipe_levels, key=lambda value: value.level)
+    }
+    pipe_level_ids = tuple(pipe_level_by_id)
+    storage = data.storage or ThermalStorageSpec(
+        technology_id="disabled_storage",
+        energy_capacity_max_kWh_th=1.0,
+        charge_capacity_max_kW_th=1.0,
+        discharge_capacity_max_kW_th=1.0,
+        charge_efficiency=1.0,
+        discharge_efficiency=1.0,
+        standing_loss_fraction_per_hour=0.0,
+        capex_CNY_per_kWh_th=0.0,
+        power_capex_CNY_per_kW_th=0.0,
+        fixed_capex_CNY=0.0,
+        lifetime_years=1,
+    )
     all_nodes = (data.site_node, *data.demand_nodes)
 
     incidence = {
@@ -614,6 +725,7 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         ordered=True,
     )
     model.SEGMENTS = Set(initialize=segment_ids, ordered=True)
+    model.PIPE_LEVELS = Set(initialize=pipe_level_ids, ordered=True)
 
     model.heat_demand_kW = Param(
         model.DEMAND_NODES,
@@ -665,6 +777,16 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     model.pipe_lifetime_years = Param(
         model.SEGMENTS,
         initialize={key: int(segment.lifetime_years) for key, segment in segment_by_id.items()},
+        within=NonNegativeReals,
+    )
+    model.pipe_level_capacity_kW = Param(
+        model.PIPE_LEVELS,
+        initialize={key: item.capacity_max_kW_th for key, item in pipe_level_by_id.items()},
+        within=NonNegativeReals,
+    )
+    model.pipe_level_capex_CNY_per_m = Param(
+        model.PIPE_LEVELS,
+        initialize={key: item.capex_CNY_per_m for key, item in pipe_level_by_id.items()},
         within=NonNegativeReals,
     )
     model.time_weight_h_per_year = Param(
@@ -719,6 +841,29 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     model.station_lifetime_years = Param(
         initialize=int(data.economics.station_lifetime_years),
         within=NonNegativeReals,
+    )
+    model.storage_energy_capacity_max_kWh = Param(
+        initialize=storage.energy_capacity_max_kWh_th, within=NonNegativeReals
+    )
+    model.storage_charge_capacity_max_kW = Param(
+        initialize=storage.charge_capacity_max_kW_th, within=NonNegativeReals
+    )
+    model.storage_discharge_capacity_max_kW = Param(
+        initialize=storage.discharge_capacity_max_kW_th, within=NonNegativeReals
+    )
+    model.storage_charge_efficiency = Param(initialize=storage.charge_efficiency)
+    model.storage_discharge_efficiency = Param(initialize=storage.discharge_efficiency)
+    model.storage_standing_loss_fraction_per_hour = Param(
+        initialize=storage.standing_loss_fraction_per_hour
+    )
+    model.storage_capex_CNY_per_kWh = Param(
+        initialize=storage.capex_CNY_per_kWh_th, within=NonNegativeReals
+    )
+    model.storage_power_capex_CNY_per_kW = Param(
+        initialize=storage.power_capex_CNY_per_kW_th, within=NonNegativeReals
+    )
+    model.storage_fixed_capex_CNY = Param(
+        initialize=storage.fixed_capex_CNY, within=NonNegativeReals
     )
     model.central_capex_CNY_per_kW = Param(
         model.CENTRAL_TECHNOLOGIES,
@@ -794,6 +939,13 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
             for key, segment in segment_by_id.items()
         },
     )
+    model.pipe_level_crf = Param(
+        model.PIPE_LEVELS,
+        initialize={
+            key: capital_recovery_factor(discount_rate, item.lifetime_years)
+            for key, item in pipe_level_by_id.items()
+        },
+    )
     model.connection_crf = Param(
         model.DEMAND_NODES,
         initialize={
@@ -807,6 +959,9 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         initialize=capital_recovery_factor(
             discount_rate, data.economics.station_lifetime_years
         )
+    )
+    model.storage_crf = Param(
+        initialize=capital_recovery_factor(discount_rate, storage.lifetime_years)
     )
 
     model.site_built = Var(domain=Binary)
@@ -826,6 +981,7 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         domain=NonNegativeReals,
     )
     model.pipe_built = Var(model.SEGMENTS, domain=Binary)
+    model.pipe_level_built = Var(model.SEGMENTS, model.PIPE_LEVELS, domain=Binary)
     model.pipe_capacity_kW = Var(model.SEGMENTS, domain=NonNegativeReals)
     model.heat_flow_kW = Var(model.SEGMENTS, model.HOURS, domain=Reals)
     model.network_heat_kW = Var(
@@ -839,6 +995,15 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         model.HOURS,
         domain=NonNegativeReals,
     )
+    model.storage_installed = Var(domain=Binary)
+    model.storage_energy_capacity_kWh = Var(domain=NonNegativeReals)
+    model.storage_charge_capacity_kW = Var(domain=NonNegativeReals)
+    model.storage_discharge_capacity_kW = Var(domain=NonNegativeReals)
+    model.storage_power_cost_capacity_kW = Var(domain=NonNegativeReals)
+    model.storage_soc_kWh = Var(model.HOURS, domain=NonNegativeReals)
+    model.storage_charge_kW = Var(model.HOURS, domain=NonNegativeReals)
+    model.storage_discharge_kW = Var(model.HOURS, domain=NonNegativeReals)
+    model.storage_charging = Var(model.HOURS, domain=Binary)
 
     model.central_capacity_minimum = Constraint(
         model.CENTRAL_TECHNOLOGIES,
@@ -902,12 +1067,98 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         model.SEGMENTS,
         rule=lambda m, segment_id: m.pipe_built[segment_id] <= m.site_built,
     )
-
-    model.pipe_capacity_limit = Constraint(
-        model.SEGMENTS,
-        rule=lambda m, segment_id: m.pipe_capacity_kW[segment_id]
-        <= m.segment_capacity_max_kW[segment_id] * m.pipe_built[segment_id],
+    model.storage_requires_site = Constraint(
+        expr=model.storage_installed <= model.site_built
     )
+    if data.storage is None:
+        model.storage_disabled = Constraint(expr=model.storage_installed == 0)
+    model.storage_energy_capacity_limit = Constraint(
+        expr=model.storage_energy_capacity_kWh
+        <= model.storage_energy_capacity_max_kWh * model.storage_installed
+    )
+    model.storage_charge_capacity_limit = Constraint(
+        expr=model.storage_charge_capacity_kW
+        <= model.storage_charge_capacity_max_kW * model.storage_installed
+    )
+    model.storage_discharge_capacity_limit = Constraint(
+        expr=model.storage_discharge_capacity_kW
+        <= model.storage_discharge_capacity_max_kW * model.storage_installed
+    )
+    model.storage_power_cost_charge = Constraint(
+        expr=model.storage_power_cost_capacity_kW >= model.storage_charge_capacity_kW
+    )
+    model.storage_power_cost_discharge = Constraint(
+        expr=model.storage_power_cost_capacity_kW >= model.storage_discharge_capacity_kW
+    )
+    model.storage_power_cost_installed = Constraint(
+        expr=model.storage_power_cost_capacity_kW
+        <= max(storage.charge_capacity_max_kW_th, storage.discharge_capacity_max_kW_th)
+        * model.storage_installed
+    )
+    model.storage_soc_capacity = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: m.storage_soc_kWh[hour] <= m.storage_energy_capacity_kWh,
+    )
+    model.storage_charge_dispatch = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: m.storage_charge_kW[hour] <= m.storage_charge_capacity_kW,
+    )
+    model.storage_discharge_dispatch = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: m.storage_discharge_kW[hour] <= m.storage_discharge_capacity_kW,
+    )
+    model.storage_charge_mode = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: m.storage_charge_kW[hour]
+        <= m.storage_charge_capacity_max_kW * m.storage_charging[hour],
+    )
+    model.storage_discharge_mode = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: m.storage_discharge_kW[hour]
+        <= m.storage_discharge_capacity_max_kW
+        * (m.storage_installed - m.storage_charging[hour]),
+    )
+    model.storage_charging_requires_installation = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: m.storage_charging[hour] <= m.storage_installed,
+    )
+    previous_hour = {
+        hour: data.hours[index - 1] if index > 0 else data.hours[-1]
+        for index, hour in enumerate(data.hours)
+    }
+    model.storage_soc_balance = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: m.storage_soc_kWh[hour]
+        == m.storage_soc_kWh[previous_hour[hour]]
+        * (1 - m.storage_standing_loss_fraction_per_hour)
+        + m.storage_charge_kW[hour] * m.storage_charge_efficiency
+        - m.storage_discharge_kW[hour] / m.storage_discharge_efficiency,
+    )
+
+    if pipe_level_ids:
+        model.pipe_level_choice = Constraint(
+            model.SEGMENTS,
+            rule=lambda m, segment_id: sum(
+                m.pipe_level_built[segment_id, pipe_type_id]
+                for pipe_type_id in m.PIPE_LEVELS
+            )
+            == m.pipe_built[segment_id],
+        )
+        model.pipe_capacity_limit = Constraint(
+            model.SEGMENTS,
+            rule=lambda m, segment_id: m.pipe_capacity_kW[segment_id]
+            == sum(
+                m.pipe_level_capacity_kW[pipe_type_id]
+                * m.pipe_level_built[segment_id, pipe_type_id]
+                for pipe_type_id in m.PIPE_LEVELS
+            ),
+        )
+    else:
+        model.pipe_capacity_limit = Constraint(
+            model.SEGMENTS,
+            rule=lambda m, segment_id: m.pipe_capacity_kW[segment_id]
+            <= m.segment_capacity_max_kW[segment_id] * m.pipe_built[segment_id],
+        )
     model.heat_flow_upper = Constraint(
         model.SEGMENTS,
         model.HOURS,
@@ -955,6 +1206,8 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
             m.central_heat_output_kW[technology_id, hour]
             for technology_id in m.CENTRAL_TECHNOLOGIES
         )
+        + m.storage_discharge_kW[hour]
+        - m.storage_charge_kW[hour]
         + sum(
             m.incidence[data.site_node, segment_id] * m.heat_flow_kW[segment_id, hour]
             for segment_id in m.SEGMENTS
@@ -1081,15 +1334,27 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
             for node in model.DEMAND_NODES
         )
     )
-    model.annual_network_capex_CNY_per_year = Expression(
-        expr=sum(
-            model.pipe_built[segment_id]
-            * model.segment_length_m[segment_id]
-            * model.pipe_capex_CNY_per_m[segment_id]
-            * model.pipe_crf[segment_id]
-            for segment_id in model.SEGMENTS
+    if pipe_level_ids:
+        model.annual_network_capex_CNY_per_year = Expression(
+            expr=sum(
+                model.pipe_level_built[segment_id, pipe_type_id]
+                * model.segment_length_m[segment_id]
+                * model.pipe_level_capex_CNY_per_m[pipe_type_id]
+                * model.pipe_level_crf[pipe_type_id]
+                for segment_id in model.SEGMENTS
+                for pipe_type_id in model.PIPE_LEVELS
+            )
         )
-    )
+    else:
+        model.annual_network_capex_CNY_per_year = Expression(
+            expr=sum(
+                model.pipe_built[segment_id]
+                * model.segment_length_m[segment_id]
+                * model.pipe_capex_CNY_per_m[segment_id]
+                * model.pipe_crf[segment_id]
+                for segment_id in model.SEGMENTS
+            )
+        )
     model.annual_connection_capex_CNY_per_year = Expression(
         expr=sum(
             model.connected[node]
@@ -1100,6 +1365,14 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     )
     model.annual_station_capex_CNY_per_year = Expression(
         expr=model.site_built * model.station_fixed_capex_CNY * model.station_crf
+    )
+    model.annual_storage_capex_CNY_per_year = Expression(
+        expr=(
+            model.storage_energy_capacity_kWh * model.storage_capex_CNY_per_kWh
+            + model.storage_power_cost_capacity_kW * model.storage_power_capex_CNY_per_kW
+            + model.storage_installed * model.storage_fixed_capex_CNY
+        )
+        * model.storage_crf
     )
     model.annual_fixed_om_CNY_per_year = Expression(
         expr=sum(
@@ -1161,6 +1434,7 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         + model.annual_network_capex_CNY_per_year
         + model.annual_connection_capex_CNY_per_year
         + model.annual_station_capex_CNY_per_year
+        + model.annual_storage_capex_CNY_per_year
         + model.annual_fixed_om_CNY_per_year
         + model.annual_variable_om_CNY_per_year
         + model.annual_electricity_cost_CNY_per_year

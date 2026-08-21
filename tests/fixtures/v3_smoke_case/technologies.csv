@@ -1,0 +1,5 @@
+technology_id,technology_type,applicable_scope,energy_carrier,performance_model,fixed_cop,efficiency_LHV,capacity_min_kW_th,capacity_max_kW_th,capex_CNY_per_kW_th,fixed_om_fraction_per_year,variable_om_CNY_per_kWh_th,lifetime_years,source,parameter_version,assumption_flag,storage_energy_capacity_max_kWh_th,storage_charge_capacity_max_kW_th,storage_discharge_capacity_max_kW_th,storage_charge_efficiency,storage_discharge_efficiency,storage_standing_loss_fraction_per_hour,storage_capex_CNY_per_kWh_th,storage_power_capex_CNY_per_kW_th,storage_fixed_capex_CNY
+central_hp,air_source_heat_pump,central,electricity,fixed_for_v0,3.2,,0,150,3000,0.02,0,15,synthetic_test,v0-1,synthetic_test,,,,,,,,,
+central_boiler,gas_boiler,central,gas,fixed_efficiency,,0.94,0,150,800,0.02,0,15,synthetic_test,v0-1,synthetic_test,,,,,,,,,
+local_hp,air_source_heat_pump,local,electricity,fixed_for_v0,3.0,,0,100,2600,0.02,0,15,synthetic_test,v0-1,synthetic_test,,,,,,,,,
+central_tes,water_thermal_storage,central,thermal,linear_soc,,,0,1,0,0.0,0,15,synthetic_test,v0-1,synthetic_test,150,100,100,0.95,0.95,0,50,100,1000

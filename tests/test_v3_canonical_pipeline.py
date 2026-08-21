@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -71,6 +71,14 @@ def test_canonical_case_is_deeply_read_only_and_projects_same_inputs() -> None:
 
 def test_pipeline_solves_all_modes_without_legacy_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("competition.pipelines.case_pipeline.load_v3_case", lambda *_args, **_kwargs: _canonical())
+    monkeypatch.setattr(
+        "competition.pipelines.case_pipeline.export_v3_results",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            pareto_csv=Path("pareto_points.csv"),
+            candidate_sites_geojson=Path("generated_candidate_sites.geojson"),
+            qa_summary_json=Path("qa_summary.json"),
+        ),
+    )
     result = run_case_pipeline(tmp_path / "unused", profile="v0-smoke", output_root=tmp_path / "runs")
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     modes = json.loads(result.summary_path.read_text(encoding="utf-8"))

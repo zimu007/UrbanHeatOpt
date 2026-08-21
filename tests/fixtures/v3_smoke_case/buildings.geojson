@@ -1,0 +1,9 @@
+{
+"type": "FeatureCollection",
+"name": "buildings",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "building_id": "building_1", "use_type": "office", "heated_area_m2": 1000.0, "archetype_id": "synthetic_office", "terminal_type": "fan_coil", "data_version": "synthetic-v3-draft1" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 114.3, 30.5 ], [ 114.3002, 30.5 ], [ 114.3002, 30.5002 ], [ 114.3, 30.5002 ], [ 114.3, 30.5 ] ] ] } },
+{ "type": "Feature", "properties": { "building_id": "building_2", "use_type": "residential", "heated_area_m2": 800.0, "archetype_id": "synthetic_residential", "terminal_type": "floor_radiant", "data_version": "synthetic-v3-draft1" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 114.301, 30.5 ], [ 114.3012, 30.5 ], [ 114.3012, 30.5002 ], [ 114.301, 30.5002 ], [ 114.301, 30.5 ] ] ] } }
+]
+}

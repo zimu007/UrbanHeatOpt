@@ -13,6 +13,7 @@ from pyomo.environ import value
 
 from competition.core_model import solve_core_model
 from competition.pareto import ParetoSpec, point_to_dict, solve_case_pareto
+from competition.results import export_v3_results
 from competition.validation.v3_inputs import load_v3_case
 
 
@@ -103,6 +104,7 @@ def run_case_pipeline(
             carbon_tolerance_kgCO2e_per_year=float(qa_config.get("carbon_tolerance_kgCO2e_per_year", 1e-6)),
         ),
     )
+    standard_export = export_v3_results(case, pareto, output, case_dir)
 
     manifest = {
         "run_id": run_id,
@@ -121,12 +123,19 @@ def run_case_pipeline(
         "capability_status": {
             "unified_core": "implemented",
             "economics": "crf_annualization_implemented",
-            "storage": "interface_only",
+            "storage": "linear_core_and_cyclic_soc_implemented",
             "temperature_cop": "interface_only",
+            "discrete_pipe_capacity": "three_levels_implemented",
             "pipe_loss": "interface_only",
             "pumping": "interface_only",
             "carbon": "operating_physical_carbon_implemented",
             "pareto": "epsilon_constraint_implemented",
+        },
+        "standard_results": {
+            "pareto_points": standard_export.pareto_csv.name,
+            "candidate_sites": standard_export.candidate_sites_geojson.name,
+            "qa_summary": standard_export.qa_summary_json.name,
+            "solutions_directory": "solutions",
         },
     }
     manifest_path = output / "run_manifest.json"

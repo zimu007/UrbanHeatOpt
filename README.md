@@ -52,10 +52,20 @@ Using the software does not require expert programming knowledge.
 
 > All major functionalities can also be called directly from the Python modules.
 
-> **Competition-branch status:** the environment check, standardized input
-> validator, distributable minimal case, legacy adapter, and a path-based
-> `scripts/run_case.py` entry are available. A verified full optimization and
-> export run remains a separate P0 acceptance task.
+> **Competition-branch status:** the V3 draft synthetic case now runs the
+> central, distributed, and hybrid modes through one new Pyomo core, including
+> CRF cost, operating carbon, storage, three pipe levels, Pareto export, and
+> independent QA. Temperature-dependent COP, pipe loss, pumping, automatic
+> site/network generation, and a formal heating-season run remain release gates.
+
+V0 smoke command (synthetic test data only):
+
+```powershell
+python scripts/run_case.py --case tests/fixtures/v3_smoke_case --profile v0-smoke
+```
+
+The public command never falls back to `model.run_model()`. Historical input
+contracts must use the explicit `scripts/run_legacy_case.py` regression entry.
 
 ---
 

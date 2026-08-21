@@ -1,5 +1,27 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-21 — V0-01 完成三模式小案例标准输出与独立 QA
+
+### 更改内容与目的
+
+- 新增 2 个需求节点、24 小时、1 个给定能源站、2 条物理管段、3 档管径的
+  V3 合成案例；独立设备包括中央热泵、燃气锅炉、分布式热泵和水蓄热。
+- 新 Core 增加离散管径选择以及储热容量、充放功率、效率、逐时损失和循环
+  SOC 约束；三种模式继续使用同一模型结构。
+- 标准结果按 Pareto 点导出容量、接网、管网、逐时调度、储热、成本、碳排、
+  求解状态和 QA；QA 从导出所依据的物理决策独立重算成本与碳排。
+- 增加完整 Pipeline 双跑回归，确认输入 SHA-256 不变且 Pareto 数值在
+  `1e-9` 绝对容差内一致。
+
+### 验证与边界
+
+- 实际命令：`python scripts/run_case.py --case tests/fixtures/v3_smoke_case --profile v0-smoke`；
+  输出 12 个非支配点，`qa_summary.json` 为全部通过。
+- 专项测试 `115 passed, 1 warning`；全量 `214 passed, 12 warnings`；
+  `git diff --check` 通过。
+- 所有案例值均为 `synthetic_test`。温度相关 COP、管损、泵耗、自动候选生成
+  和正式完整供暖季仍未实现，本节点不得称为 V1.0。
+
 ## 2026-08-21 — PARETO-01 实现三模式 epsilon-constraint 编排
 
 ### 更改内容与目的
