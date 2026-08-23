@@ -14,6 +14,7 @@ from competition.adapters.wuhan_v02_case import (
     prepare_wuhan_v02_v0_case,
     select_v0_smoke_scope,
 )
+from competition.pipelines import run_wuhan_v02_pipeline
 
 
 def _loads() -> pd.DataFrame:
@@ -156,3 +157,50 @@ def test_v1_full_refuses_provisional_assumptions(tmp_path: Path) -> None:
             tmp_path / "work",
             profile="v1-full",
         )
+
+
+def test_wuhan_v02_pipeline_exports_snapshot_pareto_and_qa(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    adaptation = _fake_adaptation(tmp_path / "adapted-for-run")
+    monkeypatch.setattr(
+        "competition.adapters.wuhan_v02_case.adapt_wuhan_v02_sources",
+        lambda *args, **kwargs: adaptation,
+    )
+    delivery = tmp_path / "delivery-for-run"
+    delivery.mkdir()
+    result = run_wuhan_v02_pipeline(
+        delivery,
+        source_profile="wuhan_v02",
+        assumption_profile="provisional_v0",
+        profile="v0-smoke",
+        output_root=tmp_path / "runs",
+    )
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    qa_summary = json.loads(
+        (result.output_dir / "qa_summary.json").read_text(encoding="utf-8")
+    )
+    points = pd.read_csv(result.output_dir / "pareto_points.csv")
+    snapshot = result.output_dir / "standardized_input_snapshot"
+    assert manifest["legacy_model_used"] is False
+    assert manifest["result_classification"] == "weighted_period_test"
+    assert manifest["source_profile"] == "wuhan_v02"
+    assert manifest["capability_status"]["pareto"] == "epsilon_constraint_implemented"
+    assert manifest["capability_status"]["candidate_generation"].startswith(
+        "provisional_geometric_mst"
+    )
+    assert qa_summary["all_points_passed"] is True
+    assert set(points["mode"]) == {"central", "distributed", "hybrid"}
+    assert (result.output_dir / "source_validation_report.json").is_file()
+    assert (result.output_dir / "adaptation_report.json").is_file()
+    assert (result.output_dir / "assumptions_used.yaml").is_file()
+    assert (snapshot / "case_config.yaml").is_file()
+    assert (snapshot / "building_hourly_loads.parquet").is_file()
+    first_report = json.loads(
+        next((result.output_dir / "solutions").glob("*/qa_report.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert first_report["peak_capacity_margin_ok"] is True
+    assert first_report["storage_counted_in_peak_capacity_margin"] is False

@@ -55,6 +55,10 @@ def _assert_standard_outputs(run_dir: Path) -> pd.DataFrame:
         assert report["max_heat_balance_error_kW"] <= 1e-6
         assert report["max_storage_soc_residual_kWh"] <= 1e-6
         assert report["network_connectivity_ok"] is True
+        assert report["peak_capacity_margin_fraction"] == 0.2
+        assert report["peak_capacity_margin_ok"] is True
+        assert report["minimum_peak_capacity_margin_slack_kW"] >= -1e-6
+        assert report["storage_counted_in_peak_capacity_margin"] is False
     return points
 
 

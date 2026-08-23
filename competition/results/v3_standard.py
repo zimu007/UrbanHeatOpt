@@ -316,6 +316,38 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
     ) for hour in model.HOURS), default=0.0)
     previous = {hour: case.hours[index - 1] if index else case.hours[-1] for index, hour in enumerate(case.hours)}
     storage_residual = max((abs(value(model.storage_soc_kWh[hour]) - (value(model.storage_soc_kWh[previous[int(hour)]]) * (1 - value(model.storage_standing_loss_fraction_per_hour)) + value(model.storage_charge_kW[hour]) * value(model.storage_charge_efficiency) - value(model.storage_discharge_kW[hour]) / value(model.storage_discharge_efficiency))) for hour in model.HOURS), default=0.0)
+    margin = float(case.peak_capacity_margin_fraction)
+    if margin > 0:
+        capacity_margin_slacks = [
+            sum(
+                value(model.central_capacity_kW[technology_id])
+                * (
+                    value(model.central_ashp_capacity_ratio[technology_id, hour])
+                    if technology_id in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS
+                    else 1.0
+                )
+                for technology_id in model.CENTRAL_TECHNOLOGIES
+            )
+            - (1 + margin)
+            * sum(
+                value(model.heat_demand_kW[node, hour])
+                * value(model.connected[node])
+                for node in model.DEMAND_NODES
+            )
+            for hour in model.HOURS
+        ]
+        capacity_margin_slacks.extend(
+            value(model.local_capacity_kW[node])
+            * value(model.local_ashp_capacity_ratio[hour])
+            - (1 + margin)
+            * value(model.heat_demand_kW[node, hour])
+            * (1 - value(model.connected[node]))
+            for node in model.DEMAND_NODES
+            for hour in model.HOURS
+        )
+        minimum_capacity_margin_slack = float(min(capacity_margin_slacks))
+    else:
+        minimum_capacity_margin_slack = 0.0
     qa_config = case.raw_config["qa"]
     qa = {
         "point_id": point.point_id,
@@ -325,6 +357,12 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
         "max_pipe_capacity_violation_kW": max(0.0, float(pipe_violation)),
         "network_connectivity_ok": connectivity_ok,
         "max_storage_soc_residual_kWh": float(storage_residual),
+        "peak_capacity_margin_fraction": margin,
+        "minimum_peak_capacity_margin_slack_kW": minimum_capacity_margin_slack,
+        "peak_capacity_margin_ok": bool(
+            minimum_capacity_margin_slack >= -qa_config["balance_tolerance_kW"]
+        ),
+        "storage_counted_in_peak_capacity_margin": False,
         "cost_reaggregation_error_CNY_per_year": real_total - value(model.annual_real_cost_CNY_per_year),
         "carbon_reaggregation_error_kgCO2e_per_year": carbon_total - value(model.annual_operating_physical_carbon_kgCO2e_per_year),
     }
@@ -334,6 +372,7 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
         and max(0.0, pipe_violation) <= qa_config["balance_tolerance_kW"]
         and connectivity_ok
         and storage_residual <= qa_config["balance_tolerance_kW"]
+        and qa["peak_capacity_margin_ok"]
         and abs(qa["cost_reaggregation_error_CNY_per_year"]) <= qa_config["cost_tolerance_CNY_per_year"]
         and abs(qa["carbon_reaggregation_error_kgCO2e_per_year"]) <= qa_config["carbon_tolerance_kgCO2e_per_year"]
     )

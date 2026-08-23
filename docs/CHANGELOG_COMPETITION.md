@@ -1,5 +1,20 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-23 — WUHAN-V0-01 完成光谷 V0 三模式自动闭环与 QA
+
+### 更改内容与目的
+
+- 光谷正式入口补齐标准化输入快照，保存本次实际进入模型的配置、建筑、负荷、技术、逐时能源参数、候选站、物理管段和管径表；源交付目录仍保持只读。
+- 独立 QA 增加中央与分布式 20% 峰值容量裕度重算，逐时考虑热泵可用容量修正，并明确水蓄热不计入裕度。
+- 新增从 v0.2 准备层到统一 Pipeline 的端到端回归，核验三模式、epsilon-constraint Pareto、标准输出、快照和 QA；新增 `WUHAN_V02_V0_RESULT.md` 保存实际运行证据和正式数据阻塞。
+
+### 验证与边界
+
+- 公开命令对真实 v0.2 完成 394 文件审计、62 栋×8760 小时标准化，并选取年供暖量最高的 8 栋与峰值日 `2021-01-08`；集中、分布、混合均为 `optimal`。
+- 共保留 13 个非重复非支配点，13/13 通过热平衡、容量、连通、储热、成本、碳排及峰值容量裕度 QA；相同命令重复运行未改变源文件或标准化输出哈希。
+- 全量自动测试 `251 passed, 27 warnings`；`conda run -n urbanheatopt_env python scripts/check_environment.py` 返回 0，CPU PyArrow、带时区 Parquet 和 APPSI HiGHS 均通过。测试警告来自既有 GDAL 数据目录探测及第三方 GeoPandas、PyProj、Pandas 弃用提示，不影响本次验收结果。
+- 结果严格标为 `weighted_period_test`。固定 COP、临时设备/管网成本、国家缺省 LHV/碳因子和非道路几何 MST 均为 `scenario_assumption`，不得用于正式年度或施工结论。
+
 ## 2026-08-23 — PIPELINE-V02-01 接通光谷数据新核心并加入峰值容量裕度
 
 ### 更改内容与目的

@@ -72,6 +72,7 @@ def run_case_pipeline(
         mode_results.append(
             {
                 "mode": mode,
+                "peak_capacity_margin_fraction": case.peak_capacity_margin_fraction,
                 "termination_condition": str(solved.solver_results.solver.termination_condition),
                 "annual_real_cost_CNY_per_year": float(value(model.annual_real_cost_CNY_per_year)),
                 "annual_hns_penalty_CNY_per_year": float(value(model.annual_hns_penalty_CNY_per_year)),
@@ -190,6 +191,16 @@ def run_wuhan_v02_pipeline(
             "assumptions_used.yaml",
         ):
             shutil.copy2(prepared.case_dir / name, result.output_dir / name)
+        snapshot = result.output_dir / "standardized_input_snapshot"
+        snapshot.mkdir(exist_ok=True)
+        snapshot_names = {"case_config.yaml"}
+        snapshot_names.update(
+            name
+            for name in prepared.canonical_case.raw_config["files"].values()
+            if isinstance(name, str)
+        )
+        for name in sorted(snapshot_names):
+            shutil.copy2(prepared.case_dir / name, snapshot / name)
         manifest = dict(result.manifest)
         manifest.update(
             {
@@ -199,6 +210,7 @@ def run_wuhan_v02_pipeline(
                 "selected_building_ids": list(prepared.scope.building_ids),
                 "selected_peak_day": prepared.scope.peak_day,
                 "delivery_root_stored": False,
+                "standardized_input_snapshot": snapshot.name,
             }
         )
         manifest["capability_status"] = dict(manifest["capability_status"])

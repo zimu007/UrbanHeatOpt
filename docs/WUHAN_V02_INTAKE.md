@@ -53,3 +53,18 @@ python scripts/validate_inputs.py `
 这些文件统一标记 `candidate_source=provisional_geometric_mst`、
 `road_constrained=false` 和 `construction_feasibility_verified=false`。它们不是
 道路约束下的线路寻优结果，也不能作为施工方案或正式管网长度结论。
+
+## V0 新核心运行
+
+```powershell
+python scripts/run_case.py `
+  --delivery-root "<0821代码组交付_光谷软件园目录>" `
+  --source-profile wuhan_v02 `
+  --assumption-profile provisional_v0 `
+  --profile v0-smoke
+```
+
+该命令先完成全量接收与标准化，再稳定选择 8 栋建筑和全园区峰值自然日，
+直接调用统一新 Pyomo Core，运行集中、分布、混合三种模式及
+epsilon-constraint Pareto。实际验收结果、数值边界和未完成项见
+`WUHAN_V02_V0_RESULT.md`。
