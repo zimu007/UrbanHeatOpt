@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from competition.intake import validate_wuhan_v02_delivery
+from competition.intake import validate_guanggu_v03_delivery, validate_wuhan_v02_delivery
 from competition.validation.inputs import InputValidationError, validate_case_inputs
 
 
@@ -16,18 +16,31 @@ def main() -> int:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--case", type=Path, help="Path to a legacy competition case directory.")
     source.add_argument("--delivery-root", type=Path, help="Path to a source delivery directory.")
-    parser.add_argument("--source-profile", choices=("wuhan_v02",))
+    parser.add_argument("--source-profile", choices=("wuhan_v02", "guanggu_v03"))
     parser.add_argument("--full-audit", action="store_true")
+    parser.add_argument(
+        "--scope",
+        choices=("heating-season",),
+        help="guanggu_v03 当前只接受完整供暖季标准化边界。",
+    )
     args = parser.parse_args()
 
     if args.delivery_root is not None:
-        if args.source_profile != "wuhan_v02":
-            parser.error("--delivery-root 当前必须配合 --source-profile wuhan_v02")
+        if args.source_profile is None:
+            parser.error("--delivery-root 必须同时提供 --source-profile")
+        if args.source_profile == "guanggu_v03" and args.scope not in (None, "heating-season"):
+            parser.error("guanggu_v03 只支持 --scope heating-season")
         try:
-            report = validate_wuhan_v02_delivery(
-                args.delivery_root,
-                full_audit=args.full_audit,
-            )
+            if args.source_profile == "guanggu_v03":
+                report = validate_guanggu_v03_delivery(
+                    args.delivery_root,
+                    full_audit=args.full_audit,
+                )
+            else:
+                report = validate_wuhan_v02_delivery(
+                    args.delivery_root,
+                    full_audit=args.full_audit,
+                )
         except (OSError, UnicodeError, ValueError) as exc:
             print(
                 json.dumps(
