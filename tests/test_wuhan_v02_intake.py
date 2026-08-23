@@ -104,6 +104,8 @@ def test_wuhan_v02_adapter_writes_canonical_sources_without_mutating_delivery(tm
     mapping = pd.read_csv(result.archetype_map_path, encoding="utf-8-sig")
     loads = pd.read_parquet(result.loads_path)
     external = pd.read_parquet(result.external_timeseries_path)
+    sites = gpd.read_file(result.candidate_sites_path)
+    network = gpd.read_file(result.candidate_network_path)
     assert result.data_version == "test-v0.2"
     assert buildings.loc[0, "heated_area_m2"] == 10.0
     assert buildings.loc[0, "terminal_type"] == "fan_coil"
@@ -114,6 +116,12 @@ def test_wuhan_v02_adapter_writes_canonical_sources_without_mutating_delivery(tm
     assert external["outdoor_temperature_C"].tolist() == [5.0, 6.0]
     assert external["gas_price_CNY_per_kWh_LHV"].nunique() == 1
     assert result.assumptions_path.is_file()
+    assert len(sites) == 1
+    assert len(network) == 1
+    assert network.loc[0, "candidate_source"] == "provisional_geometric_mst"
+    assert bool(network.loc[0, "road_constrained"]) is False
+    assert bool(network.loc[0, "construction_feasibility_verified"]) is False
+    assert result.feasible_space_path.is_file()
     assert {path: sha256(path.read_bytes()).hexdigest() for path in source.rglob("*") if path.is_file()} == before
 
 

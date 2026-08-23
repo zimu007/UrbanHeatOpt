@@ -15,6 +15,14 @@ from .provisional_v0 import (
     gas_price_CNY_per_kWh_LHV,
     load_provisional_v0_profile,
 )
+from competition.provisional_spatial import (
+    CANDIDATE_SOURCE,
+    PROJECTED_CRS,
+    ProvisionalSpatialError,
+    ProvisionalSpatialResult,
+    build_provisional_geometric_network,
+    write_provisional_spatial_outputs,
+)
 
 __all__ = [
     "CANONICAL_TIMEZONE",
@@ -29,4 +37,10 @@ __all__ = [
     "gas_carbon_kgCO2_per_kWh_LHV",
     "gas_price_CNY_per_kWh_LHV",
     "load_provisional_v0_profile",
+    "CANDIDATE_SOURCE",
+    "PROJECTED_CRS",
+    "ProvisionalSpatialError",
+    "ProvisionalSpatialResult",
+    "build_provisional_geometric_network",
+    "write_provisional_spatial_outputs",
 ]

@@ -42,3 +42,14 @@ python scripts/validate_inputs.py `
 
 上述结论只证明源交付可自动读取和校验，不等同于设备性能、能源价格、候选
 管网或正式模型参数已经齐全。
+
+## V0 临时空间产物
+
+适配器会额外写出 `candidate_sites.geojson`、`candidate_network.geojson` 和
+`roads_or_feasible_space.geojson`，用于在道路模块交付前联调新 Core。唯一站点
+是在 `EPSG:32650` 中按逐栋年度供暖量计算的负荷中心；候选物理管段是该站点
+与全部建筑质心的确定性欧氏 MST。真实 v0.2 演练为 1 个站点、62 条管段。
+
+这些文件统一标记 `candidate_source=provisional_geometric_mst`、
+`road_constrained=false` 和 `construction_feasibility_verified=false`。它们不是
+道路约束下的线路寻优结果，也不能作为施工方案或正式管网长度结论。
