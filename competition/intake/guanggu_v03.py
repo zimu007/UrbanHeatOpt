@@ -374,7 +374,23 @@ def _validate_buildings_and_mapping(
                 _issue(report, "TERMINAL_BOUNDARY_INVALID", f"00 {column} 必须全部为 {expected!r}")
         if "load_included" in master and not master["load_included"].map(bool).all():
             _issue(report, "LOAD_SCOPE_INVALID", "00 中所有计算建筑 load_included 必须为 true")
-    if master is not None and mapping is not None:
+    mapping_columns = {
+        "building_id",
+        "target_conditioned_area_m2",
+        "is_mixed_use",
+        "zone_id",
+        "zone_use_type",
+        "zone_area_m2",
+        "zone_archetype_id",
+        "zone_scale_factor",
+    }
+    if (
+        master is not None
+        and mapping is not None
+        and {"building_id", "conditioned_area_m2"} <= set(master)
+        and mapping_columns <= set(mapping)
+        and not master["building_id"].duplicated().any()
+    ):
         master_area = master.set_index("building_id")["conditioned_area_m2"].astype(float)
         for building_id, group in mapping.groupby("building_id", sort=False):
             target = pd.to_numeric(group["target_conditioned_area_m2"], errors="coerce")
@@ -431,6 +447,19 @@ def _validate_loads_and_external(
                 _issue(report, "BUILDING_SEASON_COVERAGE_INVALID", f"05 每栋必须有 {expected} 个供暖季小时", path)
     if external is not None:
         path = root / profile["standard_files"]["external_timeseries"]["path"]
+        canonical_gas_columns = {
+            "gas_price_CNY_per_kWh_LHV",
+            "gas_carbon_kgCO2e_per_kWh_LHV",
+        }
+        ambiguous = sorted(canonical_gas_columns & set(external))
+        if ambiguous:
+            _issue(
+                report,
+                "GAS_AUTHORITY_AMBIGUOUS",
+                "源 external 同时声明体积口径与标准LHV口径，适配器无法证明未重复换算: "
+                + ", ".join(ambiguous),
+                path,
+            )
         if "hour" in external and external["hour"].duplicated().any():
             _issue(report, "EXTERNAL_HOUR_DUPLICATE", "external hour 存在重复", path)
         _validate_full_year_table(report, external, path, season)
@@ -506,7 +535,14 @@ def _validate_technologies(
     metadata = frames.get("equipment_metadata")
     external = frames.get("external_timeseries")
     rules = profile["technology_rules"]
-    if technologies is not None:
+    technology_columns = {
+        "technology_id",
+        "parameter_name",
+        "recommended_value",
+        "unit",
+        "parameter_status",
+    }
+    if technologies is not None and technology_columns <= set(technologies):
         path = root / profile["standard_files"]["technologies"]["path"]
         if technologies.duplicated(["technology_id", "parameter_name"]).any():
             _issue(report, "TECHNOLOGY_PARAMETER_DUPLICATE", "technologies 技术+参数主键重复", path)
@@ -531,7 +567,14 @@ def _validate_technologies(
             float(efficiency[0]), expected_efficiency
         ):
             _issue(report, "BOILER_LHV_EFFICIENCY_INVALID", f"常规燃气锅炉 LHV 效率必须为 {expected_efficiency}", path)
-    if performance is not None:
+    performance_columns = {
+        "technology_id",
+        "technology_type",
+        "COP",
+        "efficiency",
+        "capacity_ratio",
+    }
+    if performance is not None and performance_columns <= set(performance):
         path = root / profile["standard_files"]["equipment_performance"]["path"]
         coordinate_columns = [
             "technology_id", "operating_mode", "Tout", "Tsource", "Tsupply",
@@ -565,7 +608,11 @@ def _validate_technologies(
         if metadata is not None and "technology_id" in metadata:
             if set(performance["technology_id"].dropna()) != set(metadata["technology_id"].dropna()):
                 _issue(report, "EQUIPMENT_METADATA_ID_MISMATCH", "06 与 06A 技术 ID 集合不一致", path)
-        if external is not None and len(ashp) and "outdoor_temperature_C" in external:
+        if (
+            external is not None
+            and len(ashp)
+            and {"outdoor_temperature_C", "heating_season_flag", "hour"} <= set(external)
+        ):
             season_rows = external.loc[external["heating_season_flag"].eq(1)]
             curve_max = float(rules["ashp_curve_max_temperature_C"])
             above = season_rows["outdoor_temperature_C"].gt(curve_max)
@@ -592,7 +639,7 @@ def _validate_scheme_manifest(
     root: Path,
 ) -> None:
     manifest = frames.get("scheme_manifest")
-    if manifest is None:
+    if manifest is None or "scheme_id" not in manifest:
         return
     expected_schemes = {"centralized", "distributed", "hybrid"}
     if set(manifest["scheme_id"].dropna()) != expected_schemes or manifest["scheme_id"].duplicated().any():
@@ -604,7 +651,10 @@ def _validate_scheme_manifest(
         "building_load_file_hash_sha256", "external_timeseries_file_hash_sha256",
         "terminal_parameter_hash_sha256",
     ]
-    if any(manifest[column].nunique(dropna=False) != 1 for column in shared_columns):
+    available_shared = [column for column in shared_columns if column in manifest]
+    if len(available_shared) == len(shared_columns) and any(
+        manifest[column].nunique(dropna=False) != 1 for column in available_shared
+    ):
         _issue(report, "SCHEME_INPUT_NOT_SHARED", "三种方案没有共享完全相同的负荷、外部时序和末端边界")
     hash_rules = {
         "building_master_file_hash_sha256": "00_building_master.csv",
@@ -613,10 +663,15 @@ def _validate_scheme_manifest(
         "external_timeseries_file_hash_sha256": "external_timeseries.parquet",
     }
     for column, relative in hash_rules.items():
-        actual = _sha256(root / relative)
+        if column not in manifest:
+            continue
+        target = root / relative
+        if not target.is_file():
+            continue
+        actual = _sha256(target)
         declared = set(manifest[column].dropna().astype(str).str.lower())
         if declared != {actual.lower()}:
-            _issue(report, "SCHEME_FILE_HASH_MISMATCH", f"{column} 与实际 {relative} SHA-256 不一致", root / relative)
+            _issue(report, "SCHEME_FILE_HASH_MISMATCH", f"{column} 与实际 {relative} SHA-256 不一致", target)
 
 
 def _validate_building_ts(
@@ -627,7 +682,12 @@ def _validate_building_ts(
 ) -> None:
     loads = frames.get("building_hourly_loads")
     wide = frames.get("building_ts")
-    if loads is None or wide is None or "hour" not in wide:
+    if (
+        loads is None
+        or wide is None
+        or "hour" not in wide
+        or not {"building_id", "hour", "heating_kW"} <= set(loads)
+    ):
         return
     path = root / profile["standard_files"]["building_ts"]["path"]
     expected_hours = np.arange(int(profile["heating_season"]["full_year_hour_count"]))
@@ -643,6 +703,8 @@ def _validate_building_ts(
     numeric = wide[load_ids].apply(pd.to_numeric, errors="coerce")
     if numeric.isna().any().any() or not np.isfinite(numeric.to_numpy(dtype=float)).all():
         _issue(report, "BUILDING_TS_VALUE_INVALID", "Building_TS 负荷必须为有限数值", path)
+        return
+    if loads.duplicated(["building_id", "hour"]).any():
         return
     pivot = loads.pivot(index="hour", columns="building_id", values="heating_kW").sort_index()[load_ids]
     difference = np.abs(numeric.to_numpy(dtype=float) - pivot.to_numpy(dtype=float))

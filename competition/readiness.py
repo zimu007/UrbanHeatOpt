@@ -286,6 +286,15 @@ def _inventory_role(relative: str) -> str:
     return "根目录交付/QA"
 
 
+def _read_text_fallback(path: Path) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    raise UnicodeError(f"无法确定说明文件编码: {path}")
+
+
 def render_guanggu_v03_guidance(
     run: GuangguV03InputValidationRun,
     *,
@@ -351,6 +360,36 @@ def render_guanggu_v03_guidance(
         lines.append(
             f"| {int(row.source_hour)} | {int(row.heating_season_hour)} | {int(row.hour)} | {row.timestamp} |"
         )
+    clamped = data.external_timeseries.loc[
+        data.external_timeseries["cop_boundary_clamped"].map(bool),
+        [
+            "source_hour",
+            "heating_season_hour",
+            "hour",
+            "timestamp",
+            "outdoor_temperature_C",
+            "cop_lookup_temperature_C",
+        ],
+    ]
+    lines.extend(
+        [
+            "",
+            "### 15℃ COP 边界封顶小时",
+            "",
+            "下列小时保留原始室外温度，但查表温度固定为15℃；这是V0临时边界，未做线性外推。",
+            "",
+            "| source_hour | heating_season_hour | 模型hour | timestamp | 原温度℃ | 查表温度℃ |",
+            "|---:|---:|---:|---|---:|---:|",
+        ]
+    )
+    for row in clamped.itertuples(index=False):
+        lines.append(
+            f"| {int(row.source_hour)} | {int(row.heating_season_hour)} | {int(row.hour)} | "
+            f"{row.timestamp} | {float(row.outdoor_temperature_C):.6g} | "
+            f"{float(row.cop_lookup_temperature_C):.6g} |"
+        )
+    if clamped.empty:
+        lines.append("| — | — | — | — | — | — |")
     lines.extend(
         [
             "",
@@ -389,6 +428,29 @@ def render_guanggu_v03_guidance(
         lines.append(
             f"| {name} | `{_markdown_escape(dataset['path'])}` | {dataset.get('row_count', '')} | {columns} |"
         )
+    lines.extend(
+        [
+            "",
+            "### 自主校验问题清单",
+            "",
+            "| 层级 | 严重度 | 代码 | 文件 | 证据 |",
+            "|---|---|---|---|---|",
+        ]
+    )
+    reported_issue_count = 0
+    for issue in adaptation.source_report.issues:
+        reported_issue_count += 1
+        lines.append(
+            f"| source | {issue.severity} | `{issue.code}` | "
+            f"`{_markdown_escape(issue.path or '—')}` | {_markdown_escape(issue.message)} |"
+        )
+    for issue in adaptation.canonical_report.issues:
+        reported_issue_count += 1
+        lines.append(
+            f"| canonical | {issue.severity} | `{issue.code}` | — | {_markdown_escape(issue.message)} |"
+        )
+    if reported_issue_count == 0:
+        lines.append("| source/canonical | passed | — | — | 未发现错误或警告 |")
     lines.extend(
         [
             "",
@@ -459,14 +521,31 @@ def render_guanggu_v03_guidance(
             "",
             "源目录只读；校验和适配前后412个源文件SHA-256保持一致。",
             "",
-            "## 附录：全部源文件SHA-256",
+            "## 附录A：交付数据字典原文",
             "",
-            "| 角色 | 相对路径 | SHA-256 |",
-            "|---|---|---|",
+            "以下内容自动读取自交付目录 `07_data_dictionary.md`，用于完整保留00—09字段、"
+            "语义与单位；代码仍以 source profile 和实际文件重算结果作为验收依据。",
+            "",
+        ]
+    )
+    dictionary_path = source / "07_data_dictionary.md"
+    if dictionary_path.is_file():
+        lines.append(_read_text_fallback(dictionary_path).rstrip())
+    else:
+        lines.append("`07_data_dictionary.md` 缺失。")
+    lines.extend(
+        [
+            "",
+            "## 附录B：全部源文件分类、读取状态与SHA-256",
+            "",
+            "| 角色 | 相对路径 | 读取状态 | SHA-256 |",
+            "|---|---|---|---|",
         ]
     )
     for relative, digest in sorted(adaptation.source_report.file_sha256.items()):
-        lines.append(f"| {_inventory_role(relative)} | `{_markdown_escape(relative)}` | `{digest}` |")
+        lines.append(
+            f"| {_inventory_role(relative)} | `{_markdown_escape(relative)}` | passed | `{digest}` |"
+        )
     return "\n".join(lines) + "\n"
 
 

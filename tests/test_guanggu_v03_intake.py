@@ -417,9 +417,11 @@ def test_guanggu_v03_readiness_report_is_generated_from_machine_results(
     assert "model_ready | `false`" in rendered
     assert "solver_executed | `false`" in rendered
     assert "在 VS Code 中复现" in rendered
-    assert "全部源文件SHA-256" in rendered
+    assert "全部源文件分类、读取状态与SHA-256" in rendered
     assert "roads_or_feasible_space.geojson" in rendered
     assert "未调用旧模型或求解器" in rendered
+    assert "15℃ COP 边界封顶小时" in rendered
+    assert "ASHP_UPPER_BOUNDARY_CLAMP_REQUIRED" in rendered
 
 
 def test_guanggu_v03_run_case_stops_before_any_pipeline_when_not_ready(
@@ -511,3 +513,162 @@ def test_guanggu_v03_validate_command_reports_input_success_independently_of_mod
 
     assert command.main() == 0
     assert calls == {"validation": 1}
+
+
+def test_guanggu_v03_missing_fields_are_aggregated_without_key_error(
+    tmp_path: Path,
+) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+    technologies = pd.read_csv(delivery / "technologies.csv", encoding="utf-8-sig")
+    technologies = technologies.drop(columns=["parameter_name"])
+    technologies.to_csv(delivery / "technologies.csv", index=False, encoding="utf-8-sig")
+    performance = pd.read_csv(
+        delivery / "06_equipment_performance.csv", encoding="utf-8-sig"
+    ).drop(columns=["technology_type"])
+    performance.to_csv(
+        delivery / "06_equipment_performance.csv", index=False, encoding="utf-8-sig"
+    )
+    mapping = pd.read_csv(
+        delivery / "04_building_archetype_map.csv", encoding="utf-8-sig"
+    ).drop(columns=["target_conditioned_area_m2"])
+    mapping.to_csv(
+        delivery / "04_building_archetype_map.csv", index=False, encoding="utf-8-sig"
+    )
+
+    report = validate_guanggu_v03_delivery(delivery, profile_path=profile)
+
+    assert not report.valid
+    issues = [issue for issue in report.issues if issue.code == "FIELD_MISSING"]
+    assert len(issues) == 3
+
+
+def test_guanggu_v03_rejects_duplicate_load_negative_value_and_time_mismatch(
+    tmp_path: Path,
+) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+    loads = pd.read_parquet(delivery / "05_building_hourly_loads.parquet")
+    loads.loc[1, "hour"] = loads.loc[0, "hour"]
+    loads.loc[2, "heating_kW"] = -1.0
+    loads.to_parquet(delivery / "05_building_hourly_loads.parquet", index=False)
+    external = pd.read_parquet(delivery / "external_timeseries.parquet")
+    external.loc[0, "timestamp"] = external.loc[0, "timestamp"] + pd.Timedelta(hours=1)
+    external.to_parquet(delivery / "external_timeseries.parquet", index=False)
+
+    report = validate_guanggu_v03_delivery(delivery, profile_path=profile)
+
+    codes = {issue.code for issue in report.issues}
+    assert {
+        "LOAD_KEY_DUPLICATE",
+        "NEGATIVE_VALUE",
+        "FULL_YEAR_HOUR_INVALID",
+        "LOAD_EXTERNAL_TIME_MISMATCH",
+    } <= codes
+
+
+def test_guanggu_v03_rejects_ambiguous_gas_authority_and_wrong_data_version(
+    tmp_path: Path,
+) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+    external = pd.read_parquet(delivery / "external_timeseries.parquet")
+    external["gas_price_CNY_per_kWh_LHV"] = 0.35
+    external["data_version"] = "wrong-version"
+    external.to_parquet(delivery / "external_timeseries.parquet", index=False)
+
+    report = validate_guanggu_v03_delivery(delivery, profile_path=profile)
+
+    codes = {issue.code for issue in report.issues}
+    assert "GAS_AUTHORITY_AMBIGUOUS" in codes
+    assert "DATA_VERSION_MISMATCH" in codes
+
+
+def test_guanggu_v03_hhv_curve_remains_non_executable_after_adaptation(
+    tmp_path: Path,
+) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+
+    result = adapt_guanggu_v03_sources(
+        delivery,
+        tmp_path / "adapted",
+        profile_path=profile,
+    )
+
+    gas_curve = result.canonical_data.equipment_performance.loc[
+        result.canonical_data.equipment_performance["technology_type"].eq("gas_boiler")
+    ]
+    assert len(gas_curve) == 1
+    assert gas_curve["energy_basis"].tolist() == ["HHV_provenance_only"]
+    assert gas_curve["executable_in_lhv_core"].tolist() == [False]
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected_codes"),
+    [
+        ("missing_file", {"FILE_MISSING", "INVENTORY_COUNT_MISMATCH"}),
+        ("wrong_encoding", {"FILE_READ_ERROR"}),
+        ("duplicate_building", {"BUILDING_ID_INVALID", "ROW_COUNT_MISMATCH"}),
+        ("nan_load", {"NUMERIC_VALUE_INVALID"}),
+        ("naive_timestamp", {"TIMESTAMP_TIMEZONE_MISSING"}),
+        ("mixed_area", {"ZONE_AREA_MISMATCH"}),
+    ],
+)
+def test_guanggu_v03_common_source_faults_return_contract_issues(
+    tmp_path: Path,
+    fault: str,
+    expected_codes: set[str],
+) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+
+    if fault == "missing_file":
+        (delivery / "00_building_master.csv").unlink()
+    elif fault == "wrong_encoding":
+        (delivery / "technologies.csv").write_bytes(b"\xff\xff\xff")
+    elif fault == "duplicate_building":
+        master = pd.read_csv(delivery / "00_building_master.csv", encoding="utf-8-sig")
+        pd.concat([master, master], ignore_index=True).to_csv(
+            delivery / "00_building_master.csv", index=False, encoding="utf-8-sig"
+        )
+    elif fault == "nan_load":
+        loads = pd.read_parquet(delivery / "05_building_hourly_loads.parquet")
+        loads.loc[0, "heating_kW"] = float("nan")
+        loads.to_parquet(delivery / "05_building_hourly_loads.parquet", index=False)
+    elif fault == "naive_timestamp":
+        external = pd.read_parquet(delivery / "external_timeseries.parquet")
+        external["timestamp"] = external["timestamp"].dt.tz_localize(None)
+        external.to_parquet(delivery / "external_timeseries.parquet", index=False)
+    elif fault == "mixed_area":
+        mapping = pd.read_csv(
+            delivery / "04_building_archetype_map.csv", encoding="utf-8-sig"
+        )
+        for column in ("zone_id", "zone_use_type", "zone_archetype_id"):
+            mapping[column] = mapping[column].astype("object")
+        mapping.loc[0, "is_mixed_use"] = True
+        mapping.loc[0, "zone_id"] = "zone_1"
+        mapping.loc[0, "zone_use_type"] = "office"
+        mapping.loc[0, "zone_archetype_id"] = "a1"
+        mapping.loc[0, "zone_scale_factor"] = 1.0
+        mapping.loc[0, "zone_area_m2"] = 99.0
+        mapping.to_csv(
+            delivery / "04_building_archetype_map.csv", index=False, encoding="utf-8-sig"
+        )
+    else:  # pragma: no cover - the parametrization is the exhaustive branch list
+        raise AssertionError(f"未知测试故障: {fault}")
+
+    report = validate_guanggu_v03_delivery(delivery, profile_path=profile)
+
+    assert not report.valid
+    assert expected_codes <= {issue.code for issue in report.issues}
