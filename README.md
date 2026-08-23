@@ -55,15 +55,30 @@ Using the software does not require expert programming knowledge.
 > **Competition-branch status:** the V3 draft synthetic case now runs the
 > central, distributed, and hybrid modes through one new Pyomo core, including
 > CRF cost, operating carbon, storage, three pipe levels, Pareto export, and
-> independent QA. The hourly performance/linear pipe-loss/pumping interfaces
-> are wired into the core, but their formal providers and parameters, automatic
-> site/network generation, and a heating-season run remain release gates.
+> independent QA. Guanggu v0.2 can now be audited and converted automatically;
+> its V0 smoke path uses a deterministic load-centre site and Euclidean MST.
+> That provisional geometry is not road-constrained. Formal performance,
+> road-network and heating-season inputs remain release gates.
 
 V0 smoke command (synthetic test data only):
 
 ```powershell
 python scripts/run_case.py --case tests/fixtures/v3_smoke_case --profile v0-smoke
 ```
+
+Guanggu v0.2 read-only audit, automatic adaptation and new-core V0 command:
+
+```powershell
+python scripts/run_case.py `
+  --delivery-root "<0821代码组交付_光谷软件园目录>" `
+  --source-profile wuhan_v02 `
+  --assumption-profile provisional_v0 `
+  --profile v0-smoke
+```
+
+This command first validates all 394 delivered files, then deterministically
+selects the eight highest-annual-load buildings and the full-park peak natural
+day. Its result is a `weighted_period_test`, not a formal annual conclusion.
 
 The public command never falls back to `model.run_model()`. Historical input
 contracts must use the explicit `scripts/run_legacy_case.py` regression entry.

@@ -179,6 +179,58 @@ def _core_input(**overrides: object) -> CoreModelInput:
     return CoreModelInput(**values)
 
 
+def test_peak_capacity_margin_is_configurable_and_excludes_storage() -> None:
+    data = _core_input(
+        peak_capacity_margin_fraction=0.2,
+        technologies=_technologies(
+            central_ashp={"capacity_max_kW": 120.0, "capex_CNY_per_kW": 1.0},
+            central_gas_boiler={"capacity_max_kW": 120.0, "capex_CNY_per_kW": 10.0},
+        ),
+        storage=ThermalStorageSpec(
+            technology_id="storage",
+            energy_capacity_max_kWh_th=1000.0,
+            charge_capacity_max_kW_th=1000.0,
+            discharge_capacity_max_kW_th=1000.0,
+            charge_efficiency=1.0,
+            discharge_efficiency=1.0,
+            standing_loss_fraction_per_hour=0.0,
+            capex_CNY_per_kWh_th=0.0,
+            power_capex_CNY_per_kW_th=0.0,
+            fixed_capex_CNY=0.0,
+            lifetime_years=20,
+        ),
+    )
+    solved = solve_core_model(data, SolverSettings(name="highs", mip_gap=0.0))
+    model = solved.model
+    installed_capacity = sum(
+        value(model.central_capacity_kW[technology_id])
+        for technology_id in model.CENTRAL_TECHNOLOGIES
+    )
+    assert installed_capacity == pytest.approx(120.0, rel=0, abs=1e-6)
+    assert value(model.storage_discharge_capacity_kW) <= 1000.0
+    assert value(model.peak_capacity_margin_fraction) == pytest.approx(0.2)
+
+
+def test_distributed_peak_margin_applies_per_demand_node() -> None:
+    data = _core_input(
+        mode="distributed",
+        peak_capacity_margin_fraction=0.2,
+        technologies=_technologies(
+            local_ashp={"capacity_max_kW": 150.0, "capex_CNY_per_kW": 1.0},
+        ),
+    )
+    solved = solve_core_model(data, SolverSettings(name="highs", mip_gap=0.0))
+    assert value(solved.model.local_capacity_kW["demand_1"]) == pytest.approx(
+        120.0, rel=0, abs=1e-6
+    )
+
+
+@pytest.mark.parametrize("margin", [-0.01, 1.01, float("nan"), True])
+def test_peak_capacity_margin_rejects_invalid_values(margin) -> None:
+    with pytest.raises(CoreModelInputError, match="peak_capacity_margin_fraction"):
+        validate_core_input(_core_input(peak_capacity_margin_fraction=margin))
+
+
 def test_central_mode_solves_independent_devices_and_hand_energy_inputs() -> None:
     result = solve_core_model(_core_input(), SolverSettings(mip_gap=0.0))
     model = result.model

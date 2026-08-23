@@ -94,6 +94,7 @@ class CanonicalCaseData:
     parameter_versions: Mapping[str, str]
     raw_config: Mapping[str, Any]
     building_archetype_map: tuple[Mapping[str, Any], ...] = ()
+    peak_capacity_margin_fraction: float = 0.0
 
     def __post_init__(self) -> None:
         if self.contract_version != V3_DRAFT_CONTRACT:
@@ -158,4 +159,5 @@ class CanonicalCaseData:
                 self.heat_pump_performance.capacity_ratio_by_technology_hour
             ),
             allow_unserved=self.profile != "v1-full",
+            peak_capacity_margin_fraction=self.peak_capacity_margin_fraction,
         )

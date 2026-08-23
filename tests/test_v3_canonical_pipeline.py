@@ -116,6 +116,37 @@ def test_public_command_only_delegates_to_new_pipeline(monkeypatch: pytest.Monke
     assert observed == {"case": "case", "profile": "v0-smoke", "output_root": "out"}
 
 
+def test_delivery_command_delegates_to_wuhan_new_core_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    observed = {}
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    def fake(delivery_root, **kwargs):
+        observed.update({"delivery_root": delivery_root, **kwargs})
+        return PipelineRun(tmp_path, manifest, tmp_path / "summary.json", {})
+
+    monkeypatch.setattr("scripts.run_case.run_wuhan_v02_pipeline", fake)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_case.py", "--delivery-root", "delivery", "--source-profile", "wuhan_v02",
+            "--assumption-profile", "provisional_v0", "--profile", "v0-smoke",
+            "--output-root", "out",
+        ],
+    )
+    assert run_main() == 0
+    assert observed == {
+        "delivery_root": "delivery",
+        "source_profile": "wuhan_v02",
+        "assumption_profile": "provisional_v0",
+        "profile": "v0-smoke",
+        "output_root": "out",
+    }
+
+
 def test_v3_loader_rejects_legacy_contract_before_file_adaptation(tmp_path: Path) -> None:
     (tmp_path / "case_config.yaml").write_text("contract_version: competition_input_v2_1\n", encoding="utf-8")
     with pytest.raises(V3InputError) as captured:

@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
+import shutil
 import subprocess
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from pyomo.environ import value
@@ -15,6 +17,7 @@ from competition.core_model import solve_core_model
 from competition.pareto import ParetoSpec, point_to_dict, solve_case_pareto
 from competition.results import export_v3_results
 from competition.validation.v3_inputs import load_v3_case
+from competition.adapters.wuhan_v02_case import prepare_wuhan_v02_v0_case
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,3 +158,58 @@ def run_case_pipeline(
         },
     )
     return PipelineRun(output, manifest_path, summary_path, manifest, pareto_path)
+
+
+def run_wuhan_v02_pipeline(
+    delivery_root: str | Path,
+    *,
+    source_profile: str,
+    assumption_profile: str,
+    profile: str,
+    output_root: str | Path = "runs",
+) -> PipelineRun:
+    """Audit/prepare Guanggu v0.2 and call the same unified new-core pipeline."""
+
+    with TemporaryDirectory(prefix="urbanheatopt-wuhan-v02-") as temporary:
+        prepared = prepare_wuhan_v02_v0_case(
+            delivery_root,
+            temporary,
+            source_profile=source_profile,
+            assumption_profile=assumption_profile,
+            profile=profile,
+        )
+        result = run_case_pipeline(
+            prepared.case_dir,
+            profile=profile,
+            output_root=output_root,
+        )
+        for name in (
+            "source_validation_report.json",
+            "adaptation_report.json",
+            "field_mapping.csv",
+            "assumptions_used.yaml",
+        ):
+            shutil.copy2(prepared.case_dir / name, result.output_dir / name)
+        manifest = dict(result.manifest)
+        manifest.update(
+            {
+                "source_profile": source_profile,
+                "assumption_profile": assumption_profile,
+                "result_classification": "weighted_period_test",
+                "selected_building_ids": list(prepared.scope.building_ids),
+                "selected_peak_day": prepared.scope.peak_day,
+                "delivery_root_stored": False,
+            }
+        )
+        manifest["capability_status"] = dict(manifest["capability_status"])
+        manifest["capability_status"]["candidate_generation"] = (
+            "provisional_geometric_mst_non_road_non_construction"
+        )
+        _write_json(result.manifest_path, manifest)
+        return PipelineRun(
+            result.output_dir,
+            result.manifest_path,
+            result.summary_path,
+            manifest,
+            result.pareto_path,
+        )

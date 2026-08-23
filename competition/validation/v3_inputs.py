@@ -522,4 +522,7 @@ def load_v3_case(
         heat_pump_performance=performance,
         input_sha256=before, parameter_versions=parameter_versions, raw_config=config,
         building_archetype_map=building_archetype_map,
+        peak_capacity_margin_fraction=float(
+            config["planning"]["peak_capacity_margin_fraction"]
+        ),
     )

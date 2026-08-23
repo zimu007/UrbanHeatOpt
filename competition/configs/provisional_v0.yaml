@@ -35,6 +35,69 @@ terminal:
   fresh_air_load_included: true
   supply_temperature_C: 45.0
   return_temperature_C: 40.0
+planning:
+  peak_capacity_margin_fraction: 0.20
+  capacity_rule: peak_margin_not_N_minus_1
+  boiler_fixed_share_required: false
+  storage_counts_toward_peak_margin: false
+  discount_rate: 0.05
+  price_base_year: 2026
+technologies:
+  central_heat_pump:
+    technology_id: central_hp
+    fixed_COP: 3.2
+    capacity_max_multiplier_of_margin_peak: 1.5
+    capex_CNY_per_kW_th: 3000.0
+    fixed_om_fraction_per_year: 0.02
+    variable_om_CNY_per_kWh_th: 0.0
+    lifetime_years: 15
+  central_gas_boiler:
+    technology_id: central_boiler
+    efficiency_LHV: 0.94
+    capacity_max_multiplier_of_margin_peak: 1.5
+    capex_CNY_per_kW_th: 800.0
+    fixed_om_fraction_per_year: 0.02
+    variable_om_CNY_per_kWh_th: 0.0
+    lifetime_years: 15
+  distributed_heat_pump:
+    technology_id: local_hp
+    fixed_COP: 3.0
+    capacity_max_multiplier_of_margin_peak: 1.5
+    capex_CNY_per_kW_th: 2600.0
+    fixed_om_fraction_per_year: 0.02
+    variable_om_CNY_per_kWh_th: 0.0
+    lifetime_years: 15
+storage:
+  technology_id: central_tes
+  energy_hours_at_selected_peak: 6.0
+  charge_power_multiplier_of_selected_peak: 1.0
+  discharge_power_multiplier_of_selected_peak: 1.0
+  charge_efficiency: 0.95
+  discharge_efficiency: 0.95
+  standing_loss_fraction_per_hour: 0.0
+  capex_CNY_per_kWh_th: 50.0
+  power_capex_CNY_per_kW_th: 100.0
+  fixed_capex_CNY: 1000.0
+  lifetime_years: 15
+pipe_types:
+  - {pipe_type_id: dn_small, level: 1, capacity_multiplier_of_margin_peak: 0.6, capex_CNY_per_m: 500.0, lifetime_years: 30}
+  - {pipe_type_id: dn_medium, level: 2, capacity_multiplier_of_margin_peak: 1.0, capex_CNY_per_m: 700.0, lifetime_years: 30}
+  - {pipe_type_id: dn_large, level: 3, capacity_multiplier_of_margin_peak: 1.5, capex_CNY_per_m: 900.0, lifetime_years: 30}
+economics:
+  annualization_method: capital_recovery_factor
+  station_fixed_capex_CNY: 10000.0
+  station_lifetime_years: 30
+  connection_capex_CNY_per_demand_node: 1000.0
+  connection_lifetime_years: 30
+  hns_penalty_CNY_per_kWh_th: 1000000.0
+solver:
+  name: highs
+  threads: 1
+  time_limit_seconds: 60
+  mip_gap: 0.0
+  random_seed: 202611
+pareto:
+  v0_point_count: 5
 formal_use:
   allowed: false
   reason: V0临时参数；正式价格、气质和碳核算范围尚未签认

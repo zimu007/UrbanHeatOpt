@@ -23,6 +23,13 @@ from competition.provisional_spatial import (
     build_provisional_geometric_network,
     write_provisional_spatial_outputs,
 )
+from .wuhan_v02_case import (
+    PreparedWuhanV02Case,
+    SmokeScope,
+    WuhanV02CaseError,
+    prepare_wuhan_v02_v0_case,
+    select_v0_smoke_scope,
+)
 
 __all__ = [
     "CANONICAL_TIMEZONE",
@@ -43,4 +50,9 @@ __all__ = [
     "ProvisionalSpatialResult",
     "build_provisional_geometric_network",
     "write_provisional_spatial_outputs",
+    "PreparedWuhanV02Case",
+    "SmokeScope",
+    "WuhanV02CaseError",
+    "prepare_wuhan_v02_v0_case",
+    "select_v0_smoke_scope",
 ]
