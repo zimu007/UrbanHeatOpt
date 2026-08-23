@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
+import sys
 
 import geopandas as gpd
 import pandas as pd
@@ -12,6 +14,7 @@ from shapely.geometry import Polygon
 from competition.adapters import adapt_guanggu_v03_sources, validate_canonical_season_data
 from competition.canonical import CanonicalSeasonData
 from competition.intake import validate_guanggu_v03_delivery
+from competition.readiness import run_guanggu_v03_input_validation
 
 
 DATA_VERSION = "guanggu-v0.3-test"
@@ -375,3 +378,136 @@ def test_canonical_season_revalidation_rejects_zero_based_model_hour(tmp_path: P
     assert "CANONICAL_LOAD_HOUR_COVERAGE_INVALID" in {
         issue.code for issue in report.issues
     }
+
+
+def test_guanggu_v03_readiness_report_is_generated_from_machine_results(
+    tmp_path: Path,
+) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+    guidance = tmp_path / "光谷v0.3输入校验与模型就绪状态.md"
+
+    run = run_guanggu_v03_input_validation(
+        delivery,
+        tmp_path / "audit",
+        guidance,
+        profile_path=profile,
+        workspace_root=tmp_path,
+    )
+
+    assert run.readiness.source_validation_passed is True
+    assert run.readiness.canonical_validation_passed is True
+    assert run.readiness.model_ready is False
+    assert run.readiness.solver_executed is False
+    assert {item.item_id for item in run.readiness.blockers} >= {
+        "ashp_curve_coverage",
+        "road_candidate_network",
+        "pipe_types",
+        "v03_case_builder",
+        "full_season_solve_qa",
+    }
+    machine = run.readiness_report_path.read_text(encoding="utf-8")
+    rendered = guidance.read_text(encoding="utf-8")
+    assert '"model_ready": false' in machine
+    assert '"solver_executed": false' in machine
+    assert "source_validation_passed | `true`" in rendered
+    assert "canonical_validation_passed | `true`" in rendered
+    assert "model_ready | `false`" in rendered
+    assert "solver_executed | `false`" in rendered
+    assert "在 VS Code 中复现" in rendered
+    assert "全部源文件SHA-256" in rendered
+    assert "roads_or_feasible_space.geojson" in rendered
+    assert "未调用旧模型或求解器" in rendered
+
+
+def test_guanggu_v03_run_case_stops_before_any_pipeline_when_not_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.run_case as command
+
+    blocker = SimpleNamespace(
+        item_id="v03_case_builder",
+        title="v0.3连接层",
+        reason="尚未接通",
+    )
+    fake_gate = SimpleNamespace(
+        readiness=SimpleNamespace(model_ready=False, blockers=(blocker,)),
+        guidance_report_path=tmp_path / "report.md",
+    )
+    calls = {"gate": 0}
+
+    def fake_gate_runner(*args: object, **kwargs: object) -> object:
+        calls["gate"] += 1
+        return fake_gate
+
+    def forbidden_pipeline(*args: object, **kwargs: object) -> object:
+        raise AssertionError("模型未就绪时不得实例化求解器或调用任何新旧求解Pipeline")
+
+    monkeypatch.setattr(command, "run_guanggu_v03_input_validation", fake_gate_runner)
+    monkeypatch.setattr(command, "run_wuhan_v02_pipeline", forbidden_pipeline)
+    monkeypatch.setattr(command, "run_case_pipeline", forbidden_pipeline)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_case.py",
+            "--delivery-root",
+            str(tmp_path / "delivery"),
+            "--source-profile",
+            "guanggu_v03",
+            "--profile",
+            "v1-full",
+            "--output-root",
+            str(tmp_path / "runs"),
+        ],
+    )
+
+    assert command.main() == 2
+    assert calls == {"gate": 1}
+
+
+def test_guanggu_v03_validate_command_reports_input_success_independently_of_model_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.validate_inputs as command
+
+    fake_run = SimpleNamespace(
+        to_dict=lambda: {
+            "source_validation_passed": True,
+            "canonical_validation_passed": True,
+            "model_ready": False,
+            "solver_executed": False,
+        }
+    )
+    calls = {"validation": 0}
+
+    def fake_validation(*args: object, **kwargs: object) -> object:
+        calls["validation"] += 1
+        return fake_run
+
+    monkeypatch.setattr(command, "run_guanggu_v03_input_validation", fake_validation)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "validate_inputs.py",
+            "--delivery-root",
+            str(tmp_path / "delivery"),
+            "--source-profile",
+            "guanggu_v03",
+            "--scope",
+            "heating-season",
+            "--full-audit",
+            "--output-root",
+            str(tmp_path / "audit"),
+            "--guidance-report",
+            str(tmp_path / "report.md"),
+        ],
+    )
+
+    assert command.main() == 0
+    assert calls == {"validation": 1}
