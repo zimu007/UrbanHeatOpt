@@ -1,0 +1,40 @@
+assumption_profile: provisional_v0
+parameter_version: provisional-v0-20260823
+classification: scenario_assumption
+timezone: Asia/Shanghai
+electricity_tariff:
+  unit: CNY_per_kWh_e
+  tax_included: false
+  source: user_confirmed_recommended_tariff_2026-08-23
+  periods:
+    - {start_hour: 0, end_hour: 6, label: valley, price: 0.48}
+    - {start_hour: 6, end_hour: 12, label: flat, price: 1.0}
+    - {start_hour: 12, end_hour: 14, label: valley, price: 0.48}
+    - {start_hour: 14, end_hour: 16, label: flat, price: 1.0}
+    - {start_hour: 16, end_hour: 20, label: peak, price: 1.49}
+    - {start_hour: 20, end_hour: 22, label: sharp, price: 2.0}
+    - {start_hour: 22, end_hour: 24, label: peak, price: 1.49}
+natural_gas:
+  raw_price_CNY_per_Nm3: 3.54
+  tax_included: false
+  LHV_MJ_per_Nm3: 38.931
+  model_unit: CNY_per_kWh_LHV
+  price_source: user_confirmed_recommended_price_2026-08-23
+  lhv_source: MEE_enterprise_GHG_reporting_default_2023
+  lhv_source_url: https://www.mee.gov.cn/xxgk2018/xxgk/xxgk06/202310/W020231018422353335935.pdf
+carbon:
+  electricity_kgCO2e_per_kWh_e: 0.4044
+  electricity_scope: Hubei_2023_average_electricity_CO2_factor
+  electricity_source_url: https://www.mee.gov.cn/xxgk2018/xxgk/xxgk01/202512/W020251231726284332528.pdf
+  gas_tCO2_per_GJ_LHV: 0.05554
+  gas_scope: direct_combustion_CO2_only
+  gas_source_url: https://www.mee.gov.cn/xxgk2018/xxgk/xxgk06/202511/W020251121563766583831.pdf
+terminal:
+  terminal_type: fan_coil
+  ventilation_system: dedicated_fresh_air
+  fresh_air_load_included: true
+  supply_temperature_C: 45.0
+  return_temperature_C: 40.0
+formal_use:
+  allowed: false
+  reason: V0临时参数；正式价格、气质和碳核算范围尚未签认

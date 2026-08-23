@@ -48,7 +48,7 @@ def create_case(output: Path) -> None:
             ["building_2", "building_2-01", "residential", 800.0, "synthetic_residential", 1.0],
         ],
         columns=["building_id", "zone_id", "zone_use_type", "zone_area_m2", "zone_archetype_id", "zone_scale_factor"],
-    ).to_csv(output / "building_archetype_map.csv", index=False, encoding="utf-8-sig")
+    ).to_csv(output / "building_archetype_map.csv", index=False, encoding="utf-8")
 
     load_rows = []
     for timestamp in timestamps:
@@ -62,15 +62,25 @@ def create_case(output: Path) -> None:
     pd.DataFrame(load_rows).to_parquet(output / "building_hourly_loads.parquet", index=False)
 
     gas_lhv_kWh_per_Nm3 = 38.931 / 3.6
+    electricity_prices = [
+        0.48 if hour < 6
+        else 1.0 if hour < 12
+        else 0.48 if hour < 14
+        else 1.0 if hour < 16
+        else 1.49 if hour < 20
+        else 2.0 if hour < 22
+        else 1.49
+        for hour in range(24)
+    ]
     external = pd.DataFrame(
         {
             "timestamp": timestamps,
             "outdoor_temperature_C": [-4 + abs(12 - hour) * 0.5 for hour in range(24)],
             "time_weight_h_per_year": [365.0] * 24,
-            "electricity_price_CNY_per_kWh_e": [0.48 if hour < 6 or 12 <= hour < 14 else 1.49 if 16 <= hour < 24 else 1.0 for hour in range(24)],
-            "gas_price_CNY_per_kWh_LHV": [3.8 / gas_lhv_kWh_per_Nm3] * 24,
+            "electricity_price_CNY_per_kWh_e": electricity_prices,
+            "gas_price_CNY_per_kWh_LHV": [3.54 / gas_lhv_kWh_per_Nm3] * 24,
             "electricity_carbon_kgCO2e_per_kWh_e": [0.4044] * 24,
-            "gas_carbon_kgCO2e_per_kWh_LHV": [2.184 / gas_lhv_kWh_per_Nm3] * 24,
+            "gas_carbon_kgCO2e_per_kWh_LHV": [0.05554 * 3.6] * 24,
             "data_version": [version] * 24,
         }
     )

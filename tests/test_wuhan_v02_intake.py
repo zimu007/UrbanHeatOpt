@@ -60,7 +60,8 @@ def _write_delivery(tmp_path: Path) -> None:
     pd.DataFrame({"dataset": ["loads"], "source_file": ["raw"], "processing_step": ["test"], "output_file": ["05.parquet"]}).to_csv(tmp_path / "09.csv", index=False, encoding="utf-8-sig")
     raw = tmp_path / "raw" / "a"
     raw.mkdir(parents=True)
-    for name in ("逐时气象参数.csv", "建筑逐时单位面积负荷.csv", "建筑逐时负荷.csv"):
+    pd.DataFrame({"小时": [0, 1], "干球温度(℃)": [5.0, 6.0]}).to_csv(raw / "逐时气象参数.csv", index=False, encoding="utf-8-sig")
+    for name in ("建筑逐时单位面积负荷.csv", "建筑逐时负荷.csv"):
         pd.DataFrame({"小时": [0, 1], "value": [1.0, 2.0]}).to_csv(raw / name, index=False, encoding="utf-8-sig")
 
 
@@ -102,6 +103,7 @@ def test_wuhan_v02_adapter_writes_canonical_sources_without_mutating_delivery(tm
     buildings = gpd.read_file(result.buildings_path)
     mapping = pd.read_csv(result.archetype_map_path, encoding="utf-8-sig")
     loads = pd.read_parquet(result.loads_path)
+    external = pd.read_parquet(result.external_timeseries_path)
     assert result.data_version == "test-v0.2"
     assert buildings.loc[0, "heated_area_m2"] == 10.0
     assert buildings.loc[0, "terminal_type"] == "fan_coil"
@@ -109,6 +111,9 @@ def test_wuhan_v02_adapter_writes_canonical_sources_without_mutating_delivery(tm
     assert mapping.loc[0, "zone_id"] == "b1-01"
     assert list(loads.columns) == ["timestamp", "building_id", "heating_kW", "data_version"]
     assert loads["heating_kW"].tolist() == [1.0, 2.0]
+    assert external["outdoor_temperature_C"].tolist() == [5.0, 6.0]
+    assert external["gas_price_CNY_per_kWh_LHV"].nunique() == 1
+    assert result.assumptions_path.is_file()
     assert {path: sha256(path.read_bytes()).hexdigest() for path in source.rglob("*") if path.is_file()} == before
 
 

@@ -11,6 +11,7 @@ import pandas as pd
 import yaml
 
 from competition.intake import WuhanV02Report, validate_wuhan_v02_delivery
+from competition.adapters.provisional_v0 import build_provisional_external_timeseries
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,8 @@ class WuhanV02Adaptation:
     source_report_path: Path
     adaptation_report_path: Path
     field_mapping_path: Path
+    external_timeseries_path: Path
+    assumptions_path: Path
     data_version: str
     building_count: int
     hour_count: int
@@ -121,6 +124,17 @@ def adapt_wuhan_v02_sources(
     loads["data_version"] = data_version
     loads = loads.sort_values(["timestamp", "building_id"], kind="stable").reset_index(drop=True)
 
+    raw_root = source / profile["raw_dest"]["root"]
+    weather_path = sorted(raw_root.rglob(f"*{profile['raw_dest']['hourly_weather_suffix']}"))[0]
+    weather = pd.read_csv(weather_path, encoding="utf-8-sig")
+    temperatures = pd.to_numeric(weather["干球温度(℃)"], errors="raise")
+    timestamps = tuple(loads["timestamp"].drop_duplicates())
+    external, assumptions = build_provisional_external_timeseries(
+        timestamps,
+        temperatures,
+        data_version=data_version,
+    )
+
     building_ids = set(buildings["building_id"])
     if set(mapping["building_id"]) != building_ids or set(loads["building_id"]) != building_ids:
         raise ValueError("适配后 buildings、archetype map、loads 建筑 ID 集合不一致")
@@ -136,9 +150,16 @@ def adapt_wuhan_v02_sources(
     source_report_path = output / "source_validation_report.json"
     adaptation_report_path = output / "adaptation_report.json"
     field_mapping_path = output / "field_mapping.csv"
+    external_path = output / "external_timeseries.parquet"
+    assumptions_path = output / "assumptions_used.yaml"
     buildings.to_file(buildings_path, driver="GeoJSON")
     mapping.to_csv(mapping_path, index=False, encoding="utf-8-sig")
     loads.to_parquet(loads_path, index=False)
+    external.to_parquet(external_path, index=False)
+    assumptions_path.write_text(
+        yaml.safe_dump(assumptions, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
     _write_json(source_report_path, report.to_dict())
     _write_json(
         adaptation_report_path,
@@ -160,6 +181,8 @@ def adapt_wuhan_v02_sources(
             "input_files_read_only": True,
             "execution_load_source": source_files["building_hourly_loads"]["path"],
             "raw_dest_role": "provenance_and_cross_check_only",
+            "authoritative_weather_path": str(weather_path.relative_to(source)),
+            "energy_assumption_profile": assumptions["assumption_profile"],
         },
     )
     pd.DataFrame(
@@ -169,6 +192,8 @@ def adapt_wuhan_v02_sources(
             {"source_file": "04_building_archetype_map.csv", "source_field": "zone_* or building archetype fields", "canonical_file": "building_archetype_map.csv", "canonical_field": "zone_*", "rule": "preserve_mixed_zones_and_expand_single_use"},
             {"source_file": "05_building_hourly_loads.parquet", "source_field": "heating_kW", "canonical_file": "building_hourly_loads.parquet", "canonical_field": "heating_kW", "rule": "identity_kW_th_no_fresh_air_addition"},
             {"source_file": "source_profile", "source_field": "data_version", "canonical_file": "all runtime tables", "canonical_field": "data_version", "rule": "stamp_profile_version"},
+            {"source_file": str(weather_path.relative_to(source)), "source_field": "干球温度(℃)", "canonical_file": "external_timeseries.parquet", "canonical_field": "outdoor_temperature_C", "rule": "identity_degC_after_weather_copy_equality_check"},
+            {"source_file": "provisional_v0", "source_field": "raw gas price and LHV", "canonical_file": "external_timeseries.parquet", "canonical_field": "gas_price_CNY_per_kWh_LHV", "rule": "convert_once_at_input_boundary"},
         ]
     ).to_csv(field_mapping_path, index=False, encoding="utf-8-sig")
     return WuhanV02Adaptation(
@@ -179,6 +204,8 @@ def adapt_wuhan_v02_sources(
         source_report_path,
         adaptation_report_path,
         field_mapping_path,
+        external_path,
+        assumptions_path,
         data_version,
         len(buildings),
         int(loads["timestamp"].nunique()),
