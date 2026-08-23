@@ -1,0 +1,70 @@
+source_profile: wuhan_v02
+profile_version: wuhan_v02_intake_v1
+data_version: guanggu-v0.2-20260821
+expected_inventory:
+  total_files: 394
+  extensions:
+    .csv: 376
+    .geojson: 3
+    .json: 1
+    .md: 4
+    .parquet: 2
+    .txt: 5
+    .xlsx: 3
+standard_files:
+  archetypes:
+    path: 01_archetypes.csv
+    format: csv
+    encoding: gb18030
+    expected_rows: 30
+    required_columns: [archetype_id, use_type, conditioned_area_m2]
+  special_models:
+    path: 01B_special_models.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 3
+    required_columns: [special_model_id, building_id, parent_archetype_id]
+  archetype_hourly_loads:
+    path: 02_archetype_hourly_loads.parquet
+    format: parquet
+    expected_rows: 262800
+    required_columns: [timestamp, hour, archetype_id, heating_kW, cooling_kW]
+  buildings:
+    path: 03_buildings.geojson
+    format: geojson
+    expected_rows: 62
+    required_columns: [building_id, building_name, conditioned_area_m2, use_type]
+    crs: EPSG:4326
+  building_archetype_map:
+    path: 04_building_archetype_map.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 68
+    required_columns: [building_id, zone_id, zone_use_type, zone_area_m2, zone_archetype_id, zone_scale_factor]
+  building_hourly_loads:
+    path: 05_building_hourly_loads.parquet
+    format: parquet
+    expected_rows: 543120
+    required_columns: [timestamp, hour, building_id, heating_kW, cooling_kW]
+  source_log:
+    path: 09_source_log.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 6
+    required_columns: [dataset, source_file, processing_step, output_file]
+provenance_files:
+  - 07_data_dictionary.md
+  - 08_qa_report.xlsx
+  - 09_source_log.csv
+  - DeST原型映射与conditioned_area缩放工作簿.xlsx
+raw_dest:
+  root: Wuhan_DeST_Models_映射原型逐时负荷
+  expected_files: 370
+  expected_csv_files: 369
+  expected_hourly_weather_files: 30
+  expected_hourly_load_files: 66
+  hourly_weather_suffix: 逐时气象参数.csv
+  hourly_load_suffixes: [建筑逐时单位面积负荷.csv, 建筑逐时负荷.csv]
+  hour_column: 小时
+  hour_start: 0
+  hour_count: 8760
