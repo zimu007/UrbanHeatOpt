@@ -30,8 +30,9 @@ def create_case(output: Path) -> None:
             "building_id": ["building_1", "building_2"],
             "use_type": ["office", "residential"],
             "heated_area_m2": [1000.0, 800.0],
-            "archetype_id": ["synthetic_office", "synthetic_residential"],
             "terminal_type": ["fan_coil", "floor_radiant"],
+            "ventilation_system": ["dedicated_fresh_air", "dedicated_fresh_air"],
+            "fresh_air_load_included": [True, True],
             "data_version": [version, version],
         },
         geometry=[
@@ -41,6 +42,13 @@ def create_case(output: Path) -> None:
         crs="EPSG:4326",
     )
     buildings.to_file(output / "buildings.geojson", driver="GeoJSON")
+    pd.DataFrame(
+        [
+            ["building_1", "building_1-01", "office", 1000.0, "synthetic_office", 1.0],
+            ["building_2", "building_2-01", "residential", 800.0, "synthetic_residential", 1.0],
+        ],
+        columns=["building_id", "zone_id", "zone_use_type", "zone_area_m2", "zone_archetype_id", "zone_scale_factor"],
+    ).to_csv(output / "building_archetype_map.csv", index=False, encoding="utf-8-sig")
 
     load_rows = []
     for timestamp in timestamps:
@@ -121,19 +129,19 @@ def create_case(output: Path) -> None:
     roads.to_file(output / "roads_or_feasible_space.geojson", driver="GeoJSON")
 
     config = {
-        "contract_version": "competition_input_3.0.0-draft.1", "software_release_track": "test_v0",
+        "contract_version": "competition_input_3.0.0-draft.2", "software_release_track": "test_v0",
         "case_id": "minimal_v3", "scenario_id": "smoke", "data_version": version,
         "data_classification": "synthetic_test",
         "time": {"start": str(timestamps[0].isoformat()), "end": str((timestamps[-1] + pd.Timedelta(hours=1)).isoformat()), "timezone": "Asia/Shanghai", "frequency": "1h", "interval": "start_inclusive_end_exclusive", "complete_heating_season": False},
         "units": {"heating_power": "kW_th", "heating_energy": "kWh_th", "electric_power": "kW_e", "electric_energy": "kWh_e", "gas_energy": "kWh_LHV", "storage_energy": "kWh_th", "currency": "CNY", "annual_cost": "CNY_per_year", "carbon": "kgCO2e_per_year", "electricity_price": "CNY_per_kWh_e", "gas_price": "CNY_per_kWh_LHV", "electricity_carbon_intensity": "kgCO2e_per_kWh_e", "gas_carbon_intensity": "kgCO2e_per_kWh_LHV", "time_weight": "h_per_year", "length": "m", "temperature": "degC"},
         "crs": {"input": "EPSG:4326", "projected": "EPSG:32650"},
-        "files": {"buildings": "buildings.geojson", "building_hourly_loads": "building_hourly_loads.parquet", "technologies": "technologies.csv", "roads_or_feasible_space": "roads_or_feasible_space.geojson", "external_timeseries": "external_timeseries.parquet", "pipe_types": "pipe_types.csv", "candidate_sites": "candidate_sites.geojson", "candidate_network": "candidate_network.geojson"},
+        "files": {"buildings": "buildings.geojson", "building_archetype_map": "building_archetype_map.csv", "building_hourly_loads": "building_hourly_loads.parquet", "technologies": "technologies.csv", "roads_or_feasible_space": "roads_or_feasible_space.geojson", "external_timeseries": "external_timeseries.parquet", "pipe_types": "pipe_types.csv", "candidate_sites": "candidate_sites.geojson", "candidate_network": "candidate_network.geojson"},
         "run": {"profile": "v0-smoke", "modes": ["central", "distributed", "hybrid"]},
         "spatial": {"input_mode": "roads", "candidate_source": "provided", "candidate_site_count_min": 1, "candidate_site_count_max": 10, "max_built_sites": 1},
-        "demand": {"area_scaling_already_applied": True, "includes_dhw": False, "includes_cooling": False},
+        "demand": {"area_scaling_already_applied": True, "includes_dhw": False, "includes_cooling": False, "ventilation_system": "dedicated_fresh_air", "fresh_air_load_included": True},
         "features": {"storage_enabled": True, "temperature_cop_enabled": False, "pipe_loss_enabled": False, "pumping_enabled": False, "waste_heat_enabled": False},
         "network": {"supply_temperature_C": 50, "return_temperature_C": 40, "pipe_level_count": 3, "loss_model": "disabled_for_v0", "pumping_model": "disabled_for_v0"},
-        "planning": {"discount_rate": 0.05, "price_base_year": 2026, "currency": "CNY", "unserved_policy": "penalized_for_v0", "carbon_price_scenarios_CNY_per_tCO2e": [0, 50, 100, 150]},
+        "planning": {"discount_rate": 0.05, "price_base_year": 2026, "currency": "CNY", "unserved_policy": "penalized_for_v0", "peak_capacity_margin_fraction": 0.2, "carbon_price_scenarios_CNY_per_tCO2e": [0, 50, 100, 150]},
         "economics": {"annualization_method": "capital_recovery_factor", "station_fixed_capex_CNY": 10000, "station_lifetime_years": 30, "connection_capex_CNY_per_demand_node": 1000, "connection_lifetime_years": 30, "hns_penalty_CNY_per_kWh_th": 1000000},
         "performance": {"cop_model": "fixed_for_v0", "capacity_derating_model": "disabled_for_v0", "precompute_coefficients": True},
         "pareto": {"method": "epsilon_constraint", "point_count": 5, "second_objective": "annual_operating_physical_carbon", "knee_method": "normalized_max_distance_to_endpoint_chord", "topsis_enabled": False},

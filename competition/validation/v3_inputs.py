@@ -1,4 +1,4 @@
-"""Read-only loader for competition_input_3.0.0-draft.1."""
+"""Read-only loader for competition_input_3.0.0-draft.2."""
 
 from __future__ import annotations
 
@@ -126,7 +126,10 @@ def _configured_files(case_dir: Path, config: dict[str, Any]) -> dict[str, Path]
 
 def _read_buildings(path: Path, config: dict[str, Any]) -> gpd.GeoDataFrame:
     buildings = gpd.read_file(path)
-    required = {"building_id", "use_type", "heated_area_m2", "archetype_id", "terminal_type", "data_version", "geometry"}
+    required = {
+        "building_id", "use_type", "heated_area_m2", "terminal_type",
+        "ventilation_system", "fresh_air_load_included", "data_version", "geometry",
+    }
     missing = sorted(required - set(buildings.columns))
     if missing:
         raise V3InputError(["buildings.geojson 缺少字段：" + ", ".join(missing)])
@@ -140,12 +143,58 @@ def _read_buildings(path: Path, config: dict[str, Any]) -> gpd.GeoDataFrame:
         _clean_id(value, "building_id")
     if not buildings["terminal_type"].isin(["floor_radiant", "fan_coil"]).all():
         raise V3InputError(["terminal_type 只能是 floor_radiant 或 fan_coil"])
+    if set(buildings["ventilation_system"]) != {config["demand"]["ventilation_system"]}:
+        raise V3InputError(["建筑 ventilation_system 必须与案例 demand 配置一致"])
+    if set(buildings["fresh_air_load_included"]) != {config["demand"]["fresh_air_load_included"]}:
+        raise V3InputError(["建筑 fresh_air_load_included 必须与案例 demand 配置一致"])
     if set(buildings["data_version"]) != {config["data_version"]}:
         raise V3InputError(["buildings.geojson data_version 与案例不一致"])
     areas = pd.to_numeric(buildings["heated_area_m2"], errors="coerce")
     if areas.isna().any() or (areas <= 0).any():
         raise V3InputError(["heated_area_m2 必须是有限正数"])
     return buildings
+
+
+def _read_building_archetype_map(
+    path: Path,
+    buildings: gpd.GeoDataFrame,
+) -> tuple[dict[str, Any], ...]:
+    table = pd.read_csv(path, encoding="utf-8-sig")
+    required = {
+        "building_id", "zone_id", "zone_use_type", "zone_area_m2",
+        "zone_archetype_id", "zone_scale_factor",
+    }
+    missing = sorted(required - set(table.columns))
+    if missing:
+        raise V3InputError(["building_archetype_map.csv 缺少字段：" + ", ".join(missing)])
+    if table.empty or table[list(required)].isna().any().any():
+        raise V3InputError(["building_archetype_map.csv 必需字段不得为空"])
+    if table.duplicated(["building_id", "zone_id"]).any():
+        raise V3InputError(["building_archetype_map.csv building_id+zone_id 不得重复"])
+    building_ids = set(buildings["building_id"])
+    if set(table["building_id"]) != building_ids:
+        raise V3InputError(["building_archetype_map.csv 建筑 ID 必须与 buildings.geojson 一致"])
+    for column in ("zone_area_m2", "zone_scale_factor"):
+        values = pd.to_numeric(table[column], errors="coerce")
+        if values.isna().any() or not np.isfinite(values).all() or (values <= 0).any():
+            raise V3InputError([f"building_archetype_map.csv {column} 必须为有限正数"])
+    expected_area = buildings.set_index("building_id")["heated_area_m2"].astype(float)
+    mapped_area = table.groupby("building_id")["zone_area_m2"].sum().astype(float)
+    relative = (mapped_area - expected_area).abs() / expected_area
+    if (relative > 0.001).any():
+        raise V3InputError(["原型分区面积之和与 heated_area_m2 相对误差不得超过 0.1%"])
+    ordered = table.sort_values(["building_id", "zone_id"])
+    return tuple(
+        {
+            "building_id": _clean_id(row.building_id, "mapping.building_id"),
+            "zone_id": _clean_id(row.zone_id, "mapping.zone_id"),
+            "zone_use_type": _clean_id(row.zone_use_type, "mapping.zone_use_type"),
+            "zone_area_m2": float(row.zone_area_m2),
+            "zone_archetype_id": _clean_id(row.zone_archetype_id, "mapping.zone_archetype_id"),
+            "zone_scale_factor": float(row.zone_scale_factor),
+        }
+        for row in ordered.itertuples(index=False)
+    )
 
 
 def _read_time_tables(load_path: Path, external_path: Path, config: dict[str, Any], building_ids: tuple[str, ...]) -> tuple[pd.DataFrame, pd.DataFrame, tuple[pd.Timestamp, ...]]:
@@ -356,6 +405,9 @@ def load_v3_case(
     try:
         buildings = _read_buildings(paths[config["files"]["buildings"]], config)
         building_ids = tuple(sorted(buildings["building_id"].tolist()))
+        building_archetype_map = _read_building_archetype_map(
+            paths[config["files"]["building_archetype_map"]], buildings
+        )
         loads, external, timestamps = _read_time_tables(
             paths[config["files"]["building_hourly_loads"]],
             paths[config["files"]["external_timeseries"]],
@@ -469,4 +521,5 @@ def load_v3_case(
         segments=segments, pipe_types=pipe_types, economics=economics, solver=solver,
         heat_pump_performance=performance,
         input_sha256=before, parameter_versions=parameter_versions, raw_config=config,
+        building_archetype_map=building_archetype_map,
     )

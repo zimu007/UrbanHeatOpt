@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://urbanheatopt.local/schemas/case_config_v3.schema.json",
-  "title": "UrbanHeatOpt competition input 3.0.0 draft 1",
+  "title": "UrbanHeatOpt competition input 3.0.0 draft 2",
   "description": "Test-track contract for the unified source-network-load-storage, cost-carbon and Pareto pipeline.",
   "type": "object",
   "additionalProperties": false,
@@ -12,7 +12,7 @@
     "performance", "pareto", "enabled_technology_ids", "solver", "qa"
   ],
   "properties": {
-    "contract_version": {"const": "competition_input_3.0.0-draft.1"},
+    "contract_version": {"const": "competition_input_3.0.0-draft.2"},
     "software_release_track": {"const": "test_v0"},
     "case_id": {"$ref": "#/$defs/id"},
     "scenario_id": {"$ref": "#/$defs/id"},
@@ -68,12 +68,13 @@
     "files": {
       "type": "object", "additionalProperties": false,
       "required": [
-        "buildings", "building_hourly_loads", "technologies",
+        "buildings", "building_archetype_map", "building_hourly_loads", "technologies",
         "roads_or_feasible_space", "external_timeseries", "pipe_types",
         "candidate_sites", "candidate_network"
       ],
       "properties": {
         "buildings": {"const": "buildings.geojson"},
+        "building_archetype_map": {"const": "building_archetype_map.csv"},
         "building_hourly_loads": {"const": "building_hourly_loads.parquet"},
         "technologies": {"const": "technologies.csv"},
         "roads_or_feasible_space": {"const": "roads_or_feasible_space.geojson"},
@@ -108,11 +109,13 @@
     },
     "demand": {
       "type": "object", "additionalProperties": false,
-      "required": ["area_scaling_already_applied", "includes_dhw", "includes_cooling"],
+      "required": ["area_scaling_already_applied", "includes_dhw", "includes_cooling", "ventilation_system", "fresh_air_load_included"],
       "properties": {
         "area_scaling_already_applied": {"const": true},
         "includes_dhw": {"const": false},
-        "includes_cooling": {"const": false}
+        "includes_cooling": {"const": false},
+        "ventilation_system": {"const": "dedicated_fresh_air"},
+        "fresh_air_load_included": {"const": true}
       }
     },
     "features": {
@@ -139,12 +142,13 @@
     },
     "planning": {
       "type": "object", "additionalProperties": false,
-      "required": ["discount_rate", "price_base_year", "currency", "unserved_policy", "carbon_price_scenarios_CNY_per_tCO2e"],
+      "required": ["discount_rate", "price_base_year", "currency", "unserved_policy", "carbon_price_scenarios_CNY_per_tCO2e", "peak_capacity_margin_fraction"],
       "properties": {
         "discount_rate": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
         "price_base_year": {"type": "integer", "minimum": 1900},
         "currency": {"const": "CNY"},
         "unserved_policy": {"enum": ["penalized_for_v0", "forbidden_for_v1"]},
+        "peak_capacity_margin_fraction": {"type": "number", "minimum": 0, "maximum": 1},
         "carbon_price_scenarios_CNY_per_tCO2e": {
           "type": "array", "prefixItems": [{"const": 0}, {"const": 50}, {"const": 100}, {"const": 150}],
           "items": false, "minItems": 4, "maxItems": 4

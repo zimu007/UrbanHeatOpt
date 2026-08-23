@@ -20,7 +20,7 @@ from competition.physical_interfaces import HeatPumpPerformanceCoefficients
 from competition.solvers import SolverSettings
 
 
-V3_DRAFT_CONTRACT = "competition_input_3.0.0-draft.1"
+V3_DRAFT_CONTRACT = "competition_input_3.0.0-draft.2"
 TEST_RELEASE_TRACK = "test_v0"
 CANONICAL_MODES = ("central", "distributed", "hybrid")
 
@@ -93,6 +93,7 @@ class CanonicalCaseData:
     input_sha256: Mapping[str, str]
     parameter_versions: Mapping[str, str]
     raw_config: Mapping[str, Any]
+    building_archetype_map: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.contract_version != V3_DRAFT_CONTRACT:
@@ -109,6 +110,7 @@ class CanonicalCaseData:
         object.__setattr__(self, "input_sha256", _freeze(dict(self.input_sha256)))
         object.__setattr__(self, "parameter_versions", _freeze(dict(self.parameter_versions)))
         object.__setattr__(self, "raw_config", _freeze(dict(self.raw_config)))
+        object.__setattr__(self, "building_archetype_map", _freeze(self.building_archetype_map))
 
     def to_core_input(self, mode: str) -> CoreModelInput:
         """Project one common canonical snapshot into the existing unified core."""

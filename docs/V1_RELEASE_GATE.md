@@ -28,7 +28,7 @@ python scripts/check_v1_release_gate.py --case <正式案例目录> --run-dir <�
 
 ## 2026-08-21 当前阻塞
 
-- 当前契约仍为 `competition_input_3.0.0-draft.1`；
+- 当前契约仍为 `competition_input_3.0.0-draft.2`；
 - 当前程序轨道仍为 `UrbanHeatOpt-test-V0.x`；
 - 正式温度 COP/容量修正 Provider 未交付；
 - V0 管损、泵耗输入系数均为 0，不能代表工程计算；

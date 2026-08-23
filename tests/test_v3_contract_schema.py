@@ -17,7 +17,7 @@ MACHINE_CONTRACT_PATH = ROOT / "competition" / "schemas" / "input_contract_v3.ya
 def _config(profile: str = "v0-smoke") -> dict[str, object]:
     is_full = profile == "v1-full"
     return {
-        "contract_version": "competition_input_3.0.0-draft.1",
+        "contract_version": "competition_input_3.0.0-draft.2",
         "software_release_track": "test_v0",
         "case_id": "minimal_v3",
         "scenario_id": "smoke",
@@ -45,6 +45,7 @@ def _config(profile: str = "v0-smoke") -> dict[str, object]:
         "crs": {"input": "EPSG:4326", "projected": "EPSG:32650"},
         "files": {
             "buildings": "buildings.geojson",
+            "building_archetype_map": "building_archetype_map.csv",
             "building_hourly_loads": "building_hourly_loads.parquet",
             "technologies": "technologies.csv",
             "roads_or_feasible_space": "roads_or_feasible_space.geojson",
@@ -59,7 +60,13 @@ def _config(profile: str = "v0-smoke") -> dict[str, object]:
             "candidate_site_count_min": 1, "candidate_site_count_max": 10,
             "max_built_sites": 1,
         },
-        "demand": {"area_scaling_already_applied": True, "includes_dhw": False, "includes_cooling": False},
+        "demand": {
+            "area_scaling_already_applied": True,
+            "includes_dhw": False,
+            "includes_cooling": False,
+            "ventilation_system": "dedicated_fresh_air",
+            "fresh_air_load_included": True,
+        },
         "features": {
             "storage_enabled": True, "temperature_cop_enabled": is_full,
             "pipe_loss_enabled": is_full, "pumping_enabled": is_full,
@@ -74,6 +81,7 @@ def _config(profile: str = "v0-smoke") -> dict[str, object]:
         "planning": {
             "discount_rate": 0.05, "price_base_year": 2026, "currency": "CNY",
             "unserved_policy": "forbidden_for_v1" if is_full else "penalized_for_v0",
+            "peak_capacity_margin_fraction": 0.2,
             "carbon_price_scenarios_CNY_per_tCO2e": [0, 50, 100, 150],
         },
         "economics": {
@@ -118,7 +126,7 @@ def test_v3_schema_and_machine_contract_are_parseable() -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     contract = yaml.safe_load(MACHINE_CONTRACT_PATH.read_text(encoding="utf-8"))
-    assert contract["contract_version"] == "competition_input_3.0.0-draft.1"
+    assert contract["contract_version"] == "competition_input_3.0.0-draft.2"
     assert contract["version_policy"]["automatic_migration"] == "prohibited"
 
 

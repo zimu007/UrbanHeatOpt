@@ -7,6 +7,7 @@ from .load_timeseries import (
     adapt_standard_hourly_loads,
     validate_legacy_hour_index,
 )
+from .wuhan_v02 import WuhanV02Adaptation, adapt_wuhan_v02_sources
 
 __all__ = [
     "CANONICAL_TIMEZONE",
@@ -14,4 +15,6 @@ __all__ = [
     "LoadTimeContractError",
     "adapt_standard_hourly_loads",
     "validate_legacy_hour_index",
+    "WuhanV02Adaptation",
+    "adapt_wuhan_v02_sources",
 ]

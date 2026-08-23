@@ -50,7 +50,7 @@ def _canonical() -> CanonicalCaseData:
         leaving_water_temperature_C=50.0,
     )
     return CanonicalCaseData(
-        contract_version="competition_input_3.0.0-draft.1",
+        contract_version="competition_input_3.0.0-draft.2",
         software_release_track="test_v0",
         case_id="canonical", scenario_id="smoke", data_version="synthetic-v3",
         profile="v0-smoke", modes=("central", "distributed", "hybrid"),
@@ -120,7 +120,7 @@ def test_v3_loader_rejects_legacy_contract_before_file_adaptation(tmp_path: Path
     (tmp_path / "case_config.yaml").write_text("contract_version: competition_input_v2_1\n", encoding="utf-8")
     with pytest.raises(V3InputError) as captured:
         load_v3_case(tmp_path)
-    assert "3.0.0-draft.1" in str(captured.value)
+    assert "3.0.0-draft.2" in str(captured.value)
 
 
 def test_v1_full_never_falls_back_to_fixed_v0_performance(tmp_path: Path) -> None:

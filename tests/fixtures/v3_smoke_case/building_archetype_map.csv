@@ -1,0 +1,3 @@
+building_id,zone_id,zone_use_type,zone_area_m2,zone_archetype_id,zone_scale_factor
+building_1,building_1-01,office,1000.0,synthetic_office,1.0
+building_2,building_2-01,residential,800.0,synthetic_residential,1.0

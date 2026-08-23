@@ -76,6 +76,6 @@ def test_v3_smoke_pipeline_is_read_only_complete_and_deterministic(tmp_path: Pat
 
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
     assert manifest["legacy_model_used"] is False
-    assert manifest["contract_version"] == "competition_input_3.0.0-draft.1"
+    assert manifest["contract_version"] == "competition_input_3.0.0-draft.2"
     assert manifest["capability_status"]["storage"] == "linear_core_and_cyclic_soc_implemented"
     assert manifest["capability_status"]["discrete_pipe_capacity"] == "three_levels_implemented"
