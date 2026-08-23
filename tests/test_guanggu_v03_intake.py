@@ -5,9 +5,12 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
+import pytest
 import yaml
 from shapely.geometry import Polygon
 
+from competition.adapters import adapt_guanggu_v03_sources, validate_canonical_season_data
+from competition.canonical import CanonicalSeasonData
 from competition.intake import validate_guanggu_v03_delivery
 
 
@@ -27,7 +30,7 @@ def _write_profile(tmp_path: Path) -> Path:
         "equipment_performance": {"path": "06_equipment_performance.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 2, "required_columns": ["data_version", "technology_id", "technology_type", "operating_mode", "Tout", "Tsource", "Tsupply", "Treturn", "PLR", "SOC", "startup_state", "COP", "efficiency", "capacity_ratio", "is_source_point", "is_interpolated", "is_assumption"]},
         "equipment_metadata": {"path": "06A_equipment_metadata.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 2, "required_columns": ["data_version", "technology_id"]},
         "external_timeseries": {"path": "external_timeseries.parquet", "format": "parquet", "expected_rows": 4, "required_columns": ["timestamp", "hour", "heating_season_flag", "heating_season_hour", "outdoor_temperature_C", "electricity_base_price_CNY_per_kWh_e", "electricity_price_multiplier", "electricity_price_CNY_per_kWh_e", "grid_carbon_factor_kgCO2e_per_kWh_e", "natural_gas_price_CNY_per_Nm3", "natural_gas_carbon_factor_kgCO2e_per_Nm3", "time_weight_h", "data_version"]},
-        "technologies": {"path": "technologies.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 2, "required_columns": ["data_version", "technology_id", "technology_type", "parameter_name", "recommended_value", "unit", "parameter_status"]},
+        "technologies": {"path": "technologies.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 3, "required_columns": ["data_version", "technology_id", "technology_type", "parameter_name", "recommended_value", "unit", "parameter_status"]},
         "scheme_manifest": {"path": "scheme_input_manifest.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 3, "required_columns": ["data_version", "scheme_id", "building_load_file", "building_load_value_hash_sha256", "external_timeseries_file", "terminal_type", "heating_supply_temperature_C", "heating_return_temperature_C", "building_master_file_hash_sha256", "mapping_file_hash_sha256", "building_load_file_hash_sha256", "external_timeseries_file_hash_sha256", "terminal_parameter_hash_sha256"]},
         "building_ts": {"path": "UrbanHeatOpt/Building_TS.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 4, "required_columns": ["hour"]},
     }
@@ -92,7 +95,17 @@ def _write_delivery(root: Path) -> None:
         }
     ).to_csv(root / "00_building_master.csv", index=False, encoding="utf-8-sig")
     gpd.GeoDataFrame(
-        {"data_version": [DATA_VERSION], "building_id": ["b1"], "conditioned_area_m2": [100.0]},
+        {
+            "data_version": [DATA_VERSION],
+            "building_id": ["b1"],
+            "conditioned_area_m2": [100.0],
+            "use_type": ["office"],
+            "terminal_type": ["fan_coil"],
+            "terminal_description": ["fan_coil_plus_fresh_air"],
+            "heating_supply_temperature_C": [45],
+            "heating_return_temperature_C": [40],
+            "terminal_parameter_status": ["teacher_confirmed_baseline"],
+        },
         geometry=[Polygon([(114, 30), (114.001, 30), (114.001, 30.001), (114, 30.001)])],
         crs="EPSG:4326",
     ).to_file(root / "03_buildings.geojson", driver="GeoJSON")
@@ -102,11 +115,15 @@ def _write_delivery(root: Path) -> None:
             "building_id": ["b1"],
             "target_conditioned_area_m2": [100.0],
             "is_mixed_use": [False],
+            "use_type": ["office"],
+            "archetype_id": ["a1"],
+            "scale_factor": [1.0],
             "zone_id": [None],
             "zone_use_type": [None],
             "zone_area_m2": [None],
             "zone_archetype_id": [None],
             "zone_scale_factor": [None],
+            "heating_setpoint_C": [22.0],
         }
     ).to_csv(root / "04_building_archetype_map.csv", index=False, encoding="utf-8-sig")
     timestamps = pd.date_range("2021-01-01", periods=4, freq="h", tz="Asia/Shanghai")
@@ -120,6 +137,7 @@ def _write_delivery(root: Path) -> None:
             "building_id": ["b1"] * 4,
             "heating_kW": [1.0, 2.0, 3.0, 4.0],
             "dhw_included": [False] * 4,
+            "quality_flag": ["scaled"] * 4,
             "data_version": [DATA_VERSION] * 4,
         }
     )
@@ -144,13 +162,17 @@ def _write_delivery(root: Path) -> None:
     external.to_parquet(root / "external_timeseries.parquet", index=False)
     pd.DataFrame(
         {
-            "data_version": [DATA_VERSION, DATA_VERSION],
-            "technology_id": ["GAS_BOILER_BASE_01", "GAS_BOILER_BASE_01"],
-            "technology_type": ["gas_boiler", "gas_boiler"],
-            "parameter_name": ["natural_gas_LHV", "thermal_efficiency_conventional_LHV"],
-            "recommended_value": [38.931, 0.94],
-            "unit": ["MJ/Nm3", "fraction"],
-            "parameter_status": ["source_based", "source_based"],
+            "data_version": [DATA_VERSION] * 3,
+            "technology_id": ["GAS_BOILER_BASE_01"] * 3,
+            "technology_type": ["gas_boiler"] * 3,
+            "parameter_name": [
+                "natural_gas_LHV",
+                "thermal_efficiency_conventional_LHV",
+                "thermal_efficiency_condensing_HHV",
+            ],
+            "recommended_value": [38.931, 0.94, 0.91],
+            "unit": ["MJ/Nm3", "fraction", "fraction"],
+            "parameter_status": ["source_based"] * 3,
         }
     ).to_csv(root / "technologies.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(
@@ -271,3 +293,85 @@ def test_guanggu_v03_full_audit_rejects_unclassified_file(tmp_path: Path) -> Non
 
     assert not report.valid
     assert "UNCLASSIFIED_FILE" in {issue.code for issue in report.issues}
+
+
+def test_guanggu_v03_adapter_builds_immutable_canonical_season(tmp_path: Path) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+    before = {path: _hash(path) for path in delivery.rglob("*") if path.is_file()}
+
+    result = adapt_guanggu_v03_sources(
+        delivery,
+        tmp_path / "adapted",
+        profile_path=profile,
+        full_audit=True,
+    )
+
+    canonical = result.canonical_data
+    assert result.canonical_report.valid
+    assert canonical.to_summary()["building_count"] == 1
+    assert canonical.to_summary()["hour_count"] == 4
+    assert canonical.to_summary()["load_row_count"] == 4
+    assert canonical.timestamp_hour_map["source_hour"].tolist() == [2, 3, 0, 1]
+    assert canonical.timestamp_hour_map["hour"].tolist() == [1, 2, 3, 4]
+    assert canonical.loads["heating_kW"].tolist() == [3.0, 4.0, 1.0, 2.0]
+    external = canonical.external_timeseries
+    lhv_kwh = 38.931 / 3.6
+    assert external["gas_price_CNY_per_kWh_LHV"].iloc[0] == pytest.approx(
+        3.8 / lhv_kwh, rel=0, abs=1e-12
+    )
+    assert external["gas_carbon_kgCO2e_per_kWh_LHV"].iloc[0] == pytest.approx(
+        2.184 / lhv_kwh, rel=0, abs=1e-12
+    )
+    assert external["cop_boundary_clamped"].tolist() == [False, False, True, False]
+    assert external.loc[external["cop_boundary_clamped"], "cop_lookup_temperature_C"].tolist() == [15.0]
+    assert canonical.adaptation_metadata["solver_executed"] is False
+    assert canonical.adaptation_metadata["canonical_validation_passed"] is True
+    returned = canonical.loads
+    returned.loc[0, "heating_kW"] = 999.0
+    assert canonical.loads.loc[0, "heating_kW"] == 3.0
+    assert result.loads_path.is_file()
+    assert result.timestamp_hour_map_path.is_file()
+    assert {path: _hash(path) for path in delivery.rglob("*") if path.is_file()} == before
+
+
+def test_canonical_season_revalidation_rejects_zero_based_model_hour(tmp_path: Path) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+    result = adapt_guanggu_v03_sources(
+        delivery,
+        tmp_path / "adapted",
+        profile_path=profile,
+    )
+    valid = result.canonical_data
+    bad_loads = valid.loads
+    bad_loads["hour"] = bad_loads["hour"] - 1
+    bad = CanonicalSeasonData(
+        source_profile=valid.source_profile,
+        contract_version=valid.contract_version,
+        data_version=valid.data_version,
+        _buildings=valid.buildings,
+        _building_archetype_map=valid.building_archetype_map,
+        _loads=bad_loads,
+        _external_timeseries=valid.external_timeseries,
+        _technology_parameters=valid.technology_parameters,
+        _equipment_performance=valid.equipment_performance,
+        _timestamp_hour_map=valid.timestamp_hour_map,
+        input_sha256=valid.input_sha256,
+        adaptation_metadata=valid.adaptation_metadata,
+    )
+
+    report = validate_canonical_season_data(
+        bad,
+        expected_building_count=1,
+        expected_hour_count=4,
+    )
+
+    assert not report.valid
+    assert "CANONICAL_LOAD_HOUR_COVERAGE_INVALID" in {
+        issue.code for issue in report.issues
+    }

@@ -8,6 +8,12 @@ from .load_timeseries import (
     validate_legacy_hour_index,
 )
 from .wuhan_v02 import WuhanV02Adaptation, adapt_wuhan_v02_sources
+from .guanggu_v03 import (
+    CanonicalSeasonValidationReport,
+    GuangguV03Adaptation,
+    adapt_guanggu_v03_sources,
+    validate_canonical_season_data,
+)
 from .provisional_v0 import (
     build_provisional_external_timeseries,
     electricity_price_by_hour,
@@ -38,6 +44,10 @@ __all__ = [
     "adapt_standard_hourly_loads",
     "validate_legacy_hour_index",
     "WuhanV02Adaptation",
+    "CanonicalSeasonValidationReport",
+    "GuangguV03Adaptation",
+    "adapt_guanggu_v03_sources",
+    "validate_canonical_season_data",
     "adapt_wuhan_v02_sources",
     "build_provisional_external_timeseries",
     "electricity_price_by_hour",

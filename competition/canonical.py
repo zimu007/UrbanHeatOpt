@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -33,6 +33,100 @@ def _freeze(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_freeze(item) for item in value)
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalSeasonData:
+    """Immutable accepted-data snapshot before model-readiness enrichment.
+
+    DataFrames are copied on construction and public accessors return another
+    deep copy.  This keeps source acceptance independent from missing network,
+    storage, economic or other model inputs.
+    """
+
+    source_profile: str
+    contract_version: str
+    data_version: str
+    _buildings: pd.DataFrame = field(repr=False)
+    _building_archetype_map: pd.DataFrame = field(repr=False)
+    _loads: pd.DataFrame = field(repr=False)
+    _external_timeseries: pd.DataFrame = field(repr=False)
+    _technology_parameters: pd.DataFrame = field(repr=False)
+    _equipment_performance: pd.DataFrame = field(repr=False)
+    _timestamp_hour_map: pd.DataFrame = field(repr=False)
+    input_sha256: Mapping[str, str]
+    adaptation_metadata: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "_buildings",
+            "_building_archetype_map",
+            "_loads",
+            "_external_timeseries",
+            "_technology_parameters",
+            "_equipment_performance",
+            "_timestamp_hour_map",
+        ):
+            object.__setattr__(self, field_name, getattr(self, field_name).copy(deep=True))
+        object.__setattr__(self, "input_sha256", _freeze(dict(self.input_sha256)))
+        object.__setattr__(
+            self,
+            "adaptation_metadata",
+            _freeze(dict(self.adaptation_metadata)),
+        )
+
+    @property
+    def buildings(self) -> pd.DataFrame:
+        return self._buildings.copy(deep=True)
+
+    @property
+    def building_archetype_map(self) -> pd.DataFrame:
+        return self._building_archetype_map.copy(deep=True)
+
+    @property
+    def loads(self) -> pd.DataFrame:
+        return self._loads.copy(deep=True)
+
+    @property
+    def external_timeseries(self) -> pd.DataFrame:
+        return self._external_timeseries.copy(deep=True)
+
+    @property
+    def technology_parameters(self) -> pd.DataFrame:
+        return self._technology_parameters.copy(deep=True)
+
+    @property
+    def equipment_performance(self) -> pd.DataFrame:
+        return self._equipment_performance.copy(deep=True)
+
+    @property
+    def timestamp_hour_map(self) -> pd.DataFrame:
+        return self._timestamp_hour_map.copy(deep=True)
+
+    @property
+    def building_count(self) -> int:
+        return len(self._buildings)
+
+    @property
+    def hour_count(self) -> int:
+        return len(self._external_timeseries)
+
+    @property
+    def load_row_count(self) -> int:
+        return len(self._loads)
+
+    def to_summary(self) -> dict[str, Any]:
+        return {
+            "source_profile": self.source_profile,
+            "contract_version": self.contract_version,
+            "data_version": self.data_version,
+            "building_count": self.building_count,
+            "hour_count": self.hour_count,
+            "load_row_count": self.load_row_count,
+            "technology_parameter_count": len(self._technology_parameters),
+            "equipment_performance_point_count": len(self._equipment_performance),
+            "input_file_count": len(self.input_sha256),
+        }
 
 
 @dataclass(frozen=True, slots=True)
