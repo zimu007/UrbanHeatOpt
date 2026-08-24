@@ -64,11 +64,24 @@ def build_case(
     buildings["heated_area_m2"] = buildings["conditioned_area_m2"].astype(float)
     buildings["archetype_id"] = "provisional_v0_from_delivery_use_type"
     buildings["terminal_type"] = "fan_coil"
+    buildings["ventilation_system"] = "dedicated_fresh_air"
+    buildings["fresh_air_load_included"] = True
     buildings["data_version"] = VERSION
     buildings = buildings[
-        ["building_id", "use_type", "heated_area_m2", "archetype_id", "terminal_type", "data_version", "geometry"]
+        ["building_id", "use_type", "heated_area_m2", "archetype_id", "terminal_type",
+         "ventilation_system", "fresh_air_load_included", "data_version", "geometry"]
     ]
     buildings.to_file(output / "buildings.geojson", driver="GeoJSON")
+    pd.DataFrame(
+        {
+            "building_id": buildings["building_id"],
+            "zone_id": [f"{item}_zone_1" for item in buildings["building_id"]],
+            "zone_use_type": buildings["use_type"],
+            "zone_area_m2": buildings["heated_area_m2"],
+            "zone_archetype_id": buildings["archetype_id"],
+            "zone_scale_factor": 1.0,
+        }
+    ).to_csv(output / "building_archetype_map.csv", index=False, encoding="utf-8-sig")
 
     source_loads = pd.read_parquet(DELIVERY / "05_building_hourly_loads.parquet")
     loads = source_loads[
@@ -183,6 +196,12 @@ def build_case(
     # mixed smoke case must use synthetic_test; VERSION and README preserve the
     # finer real-delivery versus synthetic-v0 provenance.
     config["data_classification"] = "synthetic_test"
+    config["contract_version"] = "competition_input_3.0.0-draft.2"
+    config["files"]["building_archetype_map"] = "building_archetype_map.csv"
+    config["demand"]["ventilation_system"] = "dedicated_fresh_air"
+    config["demand"]["fresh_air_load_included"] = True
+    # Regression baseline predates the new optional capacity-margin feature.
+    config["planning"]["peak_capacity_margin_fraction"] = 0.0
     config["time"]["start"] = START.isoformat()
     config["time"]["end"] = END.isoformat()
     config["network"]["loss_model"] = "disabled_for_v0"

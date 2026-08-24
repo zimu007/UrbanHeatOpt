@@ -1,0 +1,7 @@
+﻿building_id,zone_id,zone_use_type,zone_area_m2,zone_archetype_id,zone_scale_factor
+gsr_way_610079716,gsr_way_610079716_zone_1,office,24744.72,provisional_v0_from_delivery_use_type,1.0
+gsr_way_1314562851,gsr_way_1314562851_zone_1,sports_recreation,264.06,provisional_v0_from_delivery_use_type,1.0
+gsr_way_1314562852,gsr_way_1314562852_zone_1,health_service,530.74,provisional_v0_from_delivery_use_type,1.0
+gsr_way_610079720,gsr_way_610079720_zone_1,commercial,317.95,provisional_v0_from_delivery_use_type,1.0
+gsr_way_610079719,gsr_way_610079719_zone_1,office,6329.89,provisional_v0_from_delivery_use_type,1.0
+gsr_way_610079721,gsr_way_610079721_zone_1,office,6408.15,provisional_v0_from_delivery_use_type,1.0

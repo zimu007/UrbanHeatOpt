@@ -84,14 +84,27 @@ def build_case(output: Path = OUTPUT) -> Path:
     buildings["terminal_type"] = buildings["building_id"].map(attrs["terminal_type"])
     buildings["supply_temperature_C"] = buildings["building_id"].map(attrs["heating_supply_temperature_C"])
     buildings["return_temperature_C"] = buildings["building_id"].map(attrs["heating_return_temperature_C"])
+    buildings["ventilation_system"] = "dedicated_fresh_air"
+    buildings["fresh_air_load_included"] = True
     buildings["data_version"] = DATA_VERSION
     if set(buildings["terminal_type"]) != {"fan_coil"} or set(buildings["supply_temperature_C"]) != {45} or set(buildings["return_temperature_C"]) != {40}:
         raise ValueError("V0.1 requires frozen fan_coil 45/40 degC terminal inputs")
     buildings = buildings[[
         "building_id", "use_type", "heated_area_m2", "archetype_id", "terminal_type",
         "supply_temperature_C", "return_temperature_C", "data_version", "geometry",
+        "ventilation_system", "fresh_air_load_included",
     ]].sort_values("building_id").reset_index(drop=True)
     buildings.to_file(output / "buildings.geojson", driver="GeoJSON")
+    pd.DataFrame(
+        {
+            "building_id": buildings["building_id"],
+            "zone_id": [f"{item}_zone_1" for item in buildings["building_id"]],
+            "zone_use_type": buildings["use_type"],
+            "zone_area_m2": buildings["heated_area_m2"],
+            "zone_archetype_id": buildings["archetype_id"],
+            "zone_scale_factor": 1.0,
+        }
+    ).to_csv(output / "building_archetype_map.csv", index=False, encoding="utf-8-sig")
 
     source_load = pd.read_parquet(DELIVERY / "05_building_hourly_loads.parquet")
     loads = source_load[
@@ -251,6 +264,11 @@ def build_case(output: Path = OUTPUT) -> Path:
     config["case_id"] = "v0_guanggu_6b_168h"
     config["scenario_id"] = "v01_2021_01_04_168h"
     config["data_version"] = DATA_VERSION
+    config["contract_version"] = "competition_input_3.0.0-draft.2"
+    config["files"]["building_archetype_map"] = "building_archetype_map.csv"
+    config["demand"]["ventilation_system"] = "dedicated_fresh_air"
+    config["demand"]["fresh_air_load_included"] = True
+    config["planning"]["peak_capacity_margin_fraction"] = 0.0
     config["time"]["start"] = SOURCE_START.isoformat()
     config["time"]["end"] = SOURCE_END.isoformat()
     config["features"]["temperature_cop_enabled"] = True
