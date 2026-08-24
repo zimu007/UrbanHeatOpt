@@ -106,6 +106,8 @@ class ThermalStorageSpec:
     power_capex_CNY_per_kW_th: float
     fixed_capex_CNY: float
     lifetime_years: int
+    max_charge_ratio_per_hour: float | None = None
+    max_discharge_ratio_per_hour: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,6 +490,12 @@ def _validate_storage(storage: object) -> None:
     ):
         if _finite_real(getattr(storage, field), f"storage.{field}") < 0:
             raise CoreModelInputError(f"storage.{field} 不得为负")
+    for ratio_field in ("max_charge_ratio_per_hour", "max_discharge_ratio_per_hour"):
+        ratio_value = getattr(storage, ratio_field)
+        if ratio_value is not None and not 0 < _finite_real(
+            ratio_value, f"storage.{ratio_field}"
+        ) <= 1:
+            raise CoreModelInputError(f"storage.{ratio_field} must be in (0, 1]")
     if isinstance(storage.lifetime_years, bool) or not isinstance(storage.lifetime_years, Integral) or storage.lifetime_years < 1:
         raise CoreModelInputError("storage.lifetime_years 必须是正整数")
 
@@ -982,6 +990,14 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     model.storage_standing_loss_fraction_per_hour = Param(
         initialize=storage.standing_loss_fraction_per_hour
     )
+    model.storage_max_charge_ratio_per_hour = Param(
+        initialize=float(storage.max_charge_ratio_per_hour or 0.0),
+        within=NonNegativeReals,
+    )
+    model.storage_max_discharge_ratio_per_hour = Param(
+        initialize=float(storage.max_discharge_ratio_per_hour or 0.0),
+        within=NonNegativeReals,
+    )
     model.storage_capex_CNY_per_kWh = Param(
         initialize=storage.capex_CNY_per_kWh_th, within=NonNegativeReals
     )
@@ -1222,6 +1238,18 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         expr=model.storage_discharge_capacity_kW
         <= model.storage_discharge_capacity_max_kW * model.storage_installed
     )
+    if storage.max_charge_ratio_per_hour is not None:
+        model.storage_charge_energy_ratio = Constraint(
+            expr=model.storage_charge_capacity_kW
+            <= model.storage_max_charge_ratio_per_hour
+            * model.storage_energy_capacity_kWh
+        )
+    if storage.max_discharge_ratio_per_hour is not None:
+        model.storage_discharge_energy_ratio = Constraint(
+            expr=model.storage_discharge_capacity_kW
+            <= model.storage_max_discharge_ratio_per_hour
+            * model.storage_energy_capacity_kWh
+        )
     model.storage_power_cost_charge = Constraint(
         expr=model.storage_power_cost_capacity_kW >= model.storage_charge_capacity_kW
     )

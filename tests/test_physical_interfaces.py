@@ -10,6 +10,7 @@ from competition.physical_interfaces import (
     FixedV0PerformanceProvider,
     HeatPumpPerformanceCoefficients,
     PhysicalInterfaceError,
+    TabularASHPPerformanceProvider,
     validate_performance_coefficients,
 )
 
@@ -82,3 +83,31 @@ def test_performance_interface_rejects_incomplete_or_over_unity_derating() -> No
     )
     with pytest.raises(PhysicalInterfaceError, match="capacity_ratio"):
         validate_performance_coefficients(invalid_ratio, technology_ids=("hp",), hours=(1,))
+
+
+def test_tabular_provider_interpolates_without_extrapolation(tmp_path) -> None:
+    curve = pd.DataFrame(
+        {
+            "technology_id": ["ASHP_BASE_01"] * 3,
+            "Tout": [-5.0, 0.0, 5.0],
+            "Tsupply": [45.0] * 3,
+            "PLR": [1.0] * 3,
+            "COP": [2.0, 3.0, 4.0],
+            "capacity_ratio": [0.8, 0.9, 1.0],
+        }
+    )
+    path = tmp_path / "curve.csv"
+    curve.to_csv(path, index=False)
+    provider = TabularASHPPerformanceProvider(path)
+    result = provider.precompute(
+        technologies=(_heat_pump("central_hp", "central", 3.2),),
+        hours=(1, 2),
+        timestamps=(pd.Timestamp("2021-01-01"), pd.Timestamp("2021-01-01 01:00")),
+        outdoor_temperature_C=(-2.5, 5.0),
+        leaving_water_temperature_C=45.0,
+    )
+    assert result.cop_by_technology_hour["central_hp", 1] == pytest.approx(2.5)
+    assert result.capacity_ratio_by_technology_hour["central_hp", 1] == pytest.approx(0.85)
+    assert result.cop_by_technology_hour["central_hp", 2] == pytest.approx(4.0)
+    with pytest.raises(PhysicalInterfaceError, match="extrapolation forbidden"):
+        provider.interpolate((5.1,))

@@ -379,6 +379,46 @@ def test_storage_cyclic_soc_moves_heat_between_two_hours() -> None:
     assert value(model.storage_discharge_kW[1]) == pytest.approx(0)
     for hour in model.HOURS:
         assert value(model.storage_charge_kW[hour]) * value(model.storage_discharge_kW[hour]) == pytest.approx(0)
+
+
+def test_storage_ratio_loss_and_cyclic_boundary_hand_case() -> None:
+    storage = ThermalStorageSpec(
+        technology_id="tes", energy_capacity_max_kWh_th=500,
+        charge_capacity_max_kW_th=500, discharge_capacity_max_kW_th=500,
+        charge_efficiency=0.95, discharge_efficiency=0.95,
+        standing_loss_fraction_per_hour=0.0060774,
+        capex_CNY_per_kWh_th=0, power_capex_CNY_per_kW_th=0,
+        fixed_capex_CNY=0, lifetime_years=15,
+        max_charge_ratio_per_hour=0.25,
+        max_discharge_ratio_per_hour=0.25,
+    )
+    economics = _economics(
+        hours=(1, 2), weights={1: 1, 2: 1},
+        electricity_prices={1: 0, 2: 10}, gas_prices={1: 100, 2: 100},
+    )
+    model = solve_core_model(
+        _core_input(
+            hours=(1, 2),
+            heat_demand_kW={("demand_1", 1): 0, ("demand_1", 2): 50},
+            economics=economics,
+            technologies=_technologies(
+                central_ashp={"capacity_max_kW": 500},
+                central_gas_boiler={"capacity_max_kW": 500},
+            ),
+            storage=storage,
+        )
+    ).model
+    assert value(model.storage_installed) == pytest.approx(1)
+    assert value(model.storage_charge_kW[1]) > 0
+    assert value(model.storage_discharge_kW[2]) > 0
+    assert value(model.storage_charge_capacity_kW) <= (
+        0.25 * value(model.storage_energy_capacity_kWh) + 1e-7
+    )
+    assert value(model.storage_discharge_capacity_kW) <= (
+        0.25 * value(model.storage_energy_capacity_kWh) + 1e-7
+    )
+    for constraint in model.storage_soc_balance.values():
+        assert value(constraint.body) == pytest.approx(0, abs=1e-7)
     with pytest.raises(CoreModelInputError, match="discount_rate"):
         validate_core_input(
             _core_input(economics=replace(_economics(), discount_rate=1.0))

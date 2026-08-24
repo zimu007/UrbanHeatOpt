@@ -173,7 +173,11 @@
       "properties": {
         "cop_model": {"enum": ["fixed_for_v0", "temperature_interpolated"]},
         "capacity_derating_model": {"enum": ["disabled_for_v0", "temperature_interpolated"]},
-        "precompute_coefficients": {"const": true}
+        "precompute_coefficients": {"const": true},
+        "curve_file": {"type": "string", "minLength": 1},
+        "performance_technology_id": {"type": "string", "minLength": 1},
+        "plr_layer": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "parameter_version": {"type": "string", "minLength": 1}
       }
     },
     "pareto": {

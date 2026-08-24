@@ -1,0 +1,18 @@
+{
+"type": "FeatureCollection",
+"name": "roads_or_feasible_space",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_01", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.401060863906011, 30.476736042451908 ], [ 114.401392860270306, 30.47681352536792 ] ] } },
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_02", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.401060863906011, 30.476736042451908 ], [ 114.401079063517898, 30.47638286701083 ] ] } },
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_03", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.401778420756614, 30.476764976096561 ], [ 114.401392860270306, 30.47681352536792 ] ] } },
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_04", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.401778420756614, 30.476764976096561 ], [ 114.401788136557826, 30.476411805404808 ] ] } },
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_05", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.401392860270306, 30.47681352536792 ], [ 114.401079063517898, 30.47638286701083 ] ] } },
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_06", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.401392860270306, 30.47681352536792 ], [ 114.401438996384755, 30.476323642295583 ] ] } },
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_07", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.401392860270306, 30.47681352536792 ], [ 114.401788136557826, 30.476411805404808 ] ] } },
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_08", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.401079063517898, 30.47638286701083 ], [ 114.401438996384755, 30.476323642295583 ] ] } },
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_09", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.401438996384755, 30.476323642295583 ], [ 114.401788136557826, 30.476411805404808 ] ] } },
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_10", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.40038228719493, 30.476551388725632 ], [ 114.401060863906011, 30.476736042451908 ] ] } },
+{ "type": "Feature", "properties": { "feature_id": "synthetic_v01_edge_11", "data_version": "guanggu-v0.3-20260823", "spatial_role": "synthetic_v0.1_feasible_space" }, "geometry": { "type": "LineString", "coordinates": [ [ 114.40038228719493, 30.476551388725632 ], [ 114.401079063517898, 30.47638286701083 ] ] } }
+]
+}

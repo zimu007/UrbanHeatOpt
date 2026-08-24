@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "candidate_sites",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "site_id": "synthetic_v0_station", "candidate_rank": 1, "data_version": "synthetic_v0", "data_classification": "synthetic_v0" }, "geometry": { "type": "Point", "coordinates": [ 114.40038228719493, 30.476551388725632 ] } }
+]
+}

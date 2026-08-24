@@ -1,0 +1,115 @@
+contract_version: competition_input_3.0.0-draft.1
+software_release_track: test_v0
+case_id: v0_guanggu_6b_24h
+scenario_id: smoke_2021_01_08
+data_version: guanggu-real-loads-synthetic-v0-2021-01-08
+data_classification: synthetic_test
+time:
+  start: '2021-01-08T00:00:00+08:00'
+  end: '2021-01-09T00:00:00+08:00'
+  timezone: Asia/Shanghai
+  frequency: 1h
+  interval: start_inclusive_end_exclusive
+  complete_heating_season: false
+units:
+  heating_power: kW_th
+  heating_energy: kWh_th
+  electric_power: kW_e
+  electric_energy: kWh_e
+  gas_energy: kWh_LHV
+  storage_energy: kWh_th
+  currency: CNY
+  annual_cost: CNY_per_year
+  carbon: kgCO2e_per_year
+  electricity_price: CNY_per_kWh_e
+  gas_price: CNY_per_kWh_LHV
+  electricity_carbon_intensity: kgCO2e_per_kWh_e
+  gas_carbon_intensity: kgCO2e_per_kWh_LHV
+  time_weight: h_per_year
+  length: m
+  temperature: degC
+crs:
+  input: EPSG:4326
+  projected: EPSG:32650
+files:
+  buildings: buildings.geojson
+  building_hourly_loads: building_hourly_loads.parquet
+  technologies: technologies.csv
+  roads_or_feasible_space: roads_or_feasible_space.geojson
+  external_timeseries: external_timeseries.parquet
+  pipe_types: pipe_types.csv
+  candidate_sites: candidate_sites.geojson
+  candidate_network: candidate_network.geojson
+run:
+  profile: v0-smoke
+  modes:
+  - central
+  - distributed
+  - hybrid
+spatial:
+  input_mode: roads
+  candidate_source: provided
+  candidate_site_count_min: 1
+  candidate_site_count_max: 10
+  max_built_sites: 1
+demand:
+  area_scaling_already_applied: true
+  includes_dhw: false
+  includes_cooling: false
+features:
+  storage_enabled: true
+  temperature_cop_enabled: false
+  pipe_loss_enabled: false
+  pumping_enabled: false
+  waste_heat_enabled: false
+network:
+  supply_temperature_C: 50
+  return_temperature_C: 40
+  pipe_level_count: 3
+  loss_model: disabled_for_v0
+  pumping_model: disabled_for_v0
+planning:
+  discount_rate: 0.05
+  price_base_year: 2026
+  currency: CNY
+  unserved_policy: penalized_for_v0
+  carbon_price_scenarios_CNY_per_tCO2e:
+  - 0
+  - 50
+  - 100
+  - 150
+economics:
+  annualization_method: capital_recovery_factor
+  station_fixed_capex_CNY: 10000
+  station_lifetime_years: 30
+  connection_capex_CNY_per_demand_node: 1000
+  connection_lifetime_years: 30
+  hns_penalty_CNY_per_kWh_th: 1000000
+performance:
+  cop_model: fixed_for_v0
+  capacity_derating_model: disabled_for_v0
+  precompute_coefficients: true
+pareto:
+  method: epsilon_constraint
+  point_count: 5
+  second_objective: annual_operating_physical_carbon
+  knee_method: normalized_max_distance_to_endpoint_chord
+  topsis_enabled: false
+enabled_technology_ids:
+- central_hp
+- central_boiler
+- local_hp
+- central_tes
+solver:
+  name: highs
+  threads: 1
+  time_limit_seconds: 60
+  mip_gap: 0
+  random_seed: 202611
+  load_solution_only_if_optimal: true
+qa:
+  balance_tolerance_kW: 1.0e-06
+  unserved_tolerance_kWh: 1.0e-06
+  cost_tolerance_CNY_per_year: 1.0e-06
+  carbon_tolerance_kgCO2e_per_year: 1.0e-06
+  deterministic_tolerance: 1.0e-09

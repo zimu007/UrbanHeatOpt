@@ -52,6 +52,8 @@ class StorageSpec:
     lifetime_years: int
     source: str
     parameter_version: str
+    max_charge_ratio_per_hour: float | None = None
+    max_discharge_ratio_per_hour: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +138,8 @@ class CanonicalCaseData:
                 power_capex_CNY_per_kW_th=self.storage.power_capex_CNY_per_kW_th,
                 fixed_capex_CNY=self.storage.fixed_capex_CNY,
                 lifetime_years=self.storage.lifetime_years,
+                max_charge_ratio_per_hour=self.storage.max_charge_ratio_per_hour,
+                max_discharge_ratio_per_hour=self.storage.max_discharge_ratio_per_hour,
             ),
             pipe_levels=tuple(
                 PipeLevelSpec(

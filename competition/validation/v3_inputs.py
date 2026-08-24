@@ -26,6 +26,7 @@ from competition.physical_interfaces import (
     FixedV0PerformanceProvider,
     HeatPumpPerformanceProvider,
     PhysicalInterfaceError,
+    TabularASHPPerformanceProvider,
     validate_performance_coefficients,
 )
 from competition.solvers import SolverSettings
@@ -118,6 +119,9 @@ def _configured_files(case_dir: Path, config: dict[str, Any]) -> dict[str, Path]
     for value in config["files"].values():
         if isinstance(value, str):
             paths[value] = case_dir / value
+    curve_file = config.get("performance", {}).get("curve_file")
+    if isinstance(curve_file, str):
+        paths[curve_file] = case_dir / curve_file
     missing = [name for name, path in paths.items() if not path.is_file()]
     if missing:
         raise V3InputError(["缺少配置文件：" + ", ".join(sorted(missing))])
@@ -271,6 +275,26 @@ def _read_technologies(path: Path, config: dict[str, Any]) -> tuple[tuple[Techno
         lifetime_years=int(_finite(storage_row["lifetime_years"], "storage.lifetime_years", positive=True)),
         source=_clean_id(storage_row["source"], "storage.source"),
         parameter_version=_clean_id(storage_row["parameter_version"], "storage.parameter_version"),
+        max_charge_ratio_per_hour=(
+            None
+            if "storage_max_charge_ratio_per_hour" not in table.columns
+            or storage_row["storage_max_charge_ratio_per_hour"] == ""
+            else _finite(
+                storage_row["storage_max_charge_ratio_per_hour"],
+                "storage.max_charge_ratio",
+                positive=True,
+            )
+        ),
+        max_discharge_ratio_per_hour=(
+            None
+            if "storage_max_discharge_ratio_per_hour" not in table.columns
+            or storage_row["storage_max_discharge_ratio_per_hour"] == ""
+            else _finite(
+                storage_row["storage_max_discharge_ratio_per_hour"],
+                "storage.max_discharge_ratio",
+                positive=True,
+            )
+        ),
     )
     versions[storage_id] = storage.parameter_version
     return tuple(specs), storage, versions
@@ -381,7 +405,16 @@ def load_v3_case(
         raise V3InputError([
             "v1-full 必须显式提供经过验收的温度 COP/容量修正 provider；不得使用 V0 固定 COP"
         ])
-    provider = performance_provider or FixedV0PerformanceProvider()
+    provider = performance_provider
+    if provider is None and config["performance"]["cop_model"] == "temperature_interpolated":
+        provider = TabularASHPPerformanceProvider(
+            curve_path=root / config["performance"]["curve_file"],
+            performance_technology_id=config["performance"]["performance_technology_id"],
+            supply_temperature_C=float(config["network"]["supply_temperature_C"]),
+            plr_layer=float(config["performance"]["plr_layer"]),
+            parameter_version=config["performance"]["parameter_version"],
+        )
+    provider = provider or FixedV0PerformanceProvider()
     try:
         performance = provider.precompute(
             technologies=technologies,
