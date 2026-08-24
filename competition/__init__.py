@@ -14,7 +14,7 @@ from competition.core_model import (
     solve_core_model,
     validate_core_input,
 )
-from competition.canonical import CanonicalCaseData, PipeTypeSpec, StorageSpec
+from competition.canonical import CanonicalCaseData, CanonicalSeasonData, PipeTypeSpec, StorageSpec
 from competition.economics import (
     EconomicStandardizationError,
     standardize_gas_price_CNY_per_kWh_LHV,
@@ -29,6 +29,7 @@ from competition.pareto import ParetoPoint, ParetoRun, ParetoSpec, solve_case_pa
 __all__ = [
     "CoreModelInput",
     "CanonicalCaseData",
+    "CanonicalSeasonData",
     "CoreModelInputError",
     "CoreSolveResult",
     "EconomicInput",

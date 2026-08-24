@@ -171,6 +171,7 @@ class CoreModelInput:
     heat_pump_cop_by_hour: Mapping[tuple[str, int], float] = field(default_factory=dict)
     heat_pump_capacity_ratio_by_hour: Mapping[tuple[str, int], float] = field(default_factory=dict)
     allow_unserved: bool = True
+    peak_capacity_margin_fraction: float = 0.0
 
     def __post_init__(self) -> None:
         """复制并冻结负荷映射，阻断调用方在构模前后篡改输入。"""
@@ -692,6 +693,12 @@ def validate_core_input(data: CoreModelInput) -> None:
         raise CoreModelInputError("mode 只能是 'central'、'distributed' 或 'hybrid'")
     if not isinstance(data.allow_unserved, bool):
         raise CoreModelInputError("allow_unserved 必须是 boolean")
+    peak_margin = _finite_real(
+        data.peak_capacity_margin_fraction,
+        "peak_capacity_margin_fraction",
+    )
+    if peak_margin < 0 or peak_margin > 1:
+        raise CoreModelInputError("peak_capacity_margin_fraction 必须位于 [0, 1]")
     hours = _validate_hours(data.hours)
     demand_nodes = _validate_nodes(data)
     central_ashp, _, local_ashp = _resolve_technology_roles(data.technologies)
@@ -1194,6 +1201,42 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         model.HOURS,
         rule=lambda m, node, hour: m.local_heat_output_kW[node, hour]
         <= m.local_capacity_kW[node] * m.local_ashp_capacity_ratio[hour],
+    )
+    model.peak_capacity_margin_fraction = Param(
+        initialize=float(data.peak_capacity_margin_fraction),
+        within=NonNegativeReals,
+    )
+    # 峰值容量裕度是规划容量校核，不是 N-1，也不指定锅炉份额。储热充放功率
+    # 不进入可用供热设备容量；热泵逐时低温能力衰减通过 capacity_ratio 扣减。
+    model.central_peak_capacity_margin = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: Constraint.Skip
+        if data.peak_capacity_margin_fraction <= 0
+        else sum(
+            m.central_capacity_kW[technology_id]
+            * (
+                m.central_ashp_capacity_ratio[technology_id, hour]
+                if technology_id in m.CENTRAL_AIR_SOURCE_HEAT_PUMPS
+                else 1.0
+            )
+            for technology_id in m.CENTRAL_TECHNOLOGIES
+        )
+        >= (1 + m.peak_capacity_margin_fraction)
+        * sum(
+            m.heat_demand_kW[node, hour] * m.connected[node]
+            for node in m.DEMAND_NODES
+        ),
+    )
+    model.local_peak_capacity_margin = Constraint(
+        model.DEMAND_NODES,
+        model.HOURS,
+        rule=lambda m, node, hour: Constraint.Skip
+        if data.peak_capacity_margin_fraction <= 0
+        else m.local_capacity_kW[node]
+        * m.local_ashp_capacity_ratio[hour]
+        >= (1 + m.peak_capacity_margin_fraction)
+        * m.heat_demand_kW[node, hour]
+        * (1 - m.connected[node]),
     )
     model.service_exclusive = Constraint(
         model.DEMAND_NODES,

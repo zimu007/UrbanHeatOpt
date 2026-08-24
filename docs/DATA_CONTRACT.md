@@ -273,6 +273,12 @@ YAML 载入后必须通过 Draft 2020-12 JSON Schema，未知键失败。所有�
 
 合成 fixture 固定 `solver.name: highs`、`threads: 1`、`time_limit_seconds: 60`、`random_seed: 202611`。正式供回水温度、规划期、折现率、价格基年和 gap 必须由项目输入明确给出，契约不提供武汉默认值；但在当前附件口径中，规划期和折现率只作追溯，不能暗中改成 CRF、折现、更换或残值公式。责任方与关闭条件见 `questions_for_project_team.md`。
 
+draft.2 的 `planning.peak_capacity_margin_fraction` 是可配置峰值容量裕度，V0
+使用 `0.20`。它不是 N-1，不规定燃气锅炉固定份额：中央热泵与锅炉的逐时
+可用供热能力之和必须不小于 `1.20 × 当时全部接网热负荷`；未接网节点的本地
+热泵逐节点满足同样校核。热泵低温容量修正参与可用能力，水蓄热容量不参与该
+规划裕度。
+
 ### 6.8 年化成本公式
 
 令 `w_t=time_weight_h_per_year[t]`，其单位为 h/year。当前唯一正式目标按下式建立：

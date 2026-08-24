@@ -1,4 +1,4 @@
-contract_version: competition_input_3.0.0-draft.1
+contract_version: competition_input_3.0.0-draft.2
 software_release_track: test_v0
 case_id: minimal_v3
 scenario_id: smoke
@@ -33,6 +33,7 @@ crs:
   projected: EPSG:32650
 files:
   buildings: buildings.geojson
+  building_archetype_map: building_archetype_map.csv
   building_hourly_loads: building_hourly_loads.parquet
   technologies: technologies.csv
   roads_or_feasible_space: roads_or_feasible_space.geojson
@@ -56,6 +57,8 @@ demand:
   area_scaling_already_applied: true
   includes_dhw: false
   includes_cooling: false
+  ventilation_system: dedicated_fresh_air
+  fresh_air_load_included: true
 features:
   storage_enabled: true
   temperature_cop_enabled: false
@@ -73,6 +76,7 @@ planning:
   price_base_year: 2026
   currency: CNY
   unserved_policy: penalized_for_v0
+  peak_capacity_margin_fraction: 0.2
   carbon_price_scenarios_CNY_per_tCO2e:
   - 0
   - 50

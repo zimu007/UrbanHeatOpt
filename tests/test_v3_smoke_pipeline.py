@@ -55,6 +55,10 @@ def _assert_standard_outputs(run_dir: Path) -> pd.DataFrame:
         assert report["max_heat_balance_error_kW"] <= 1e-6
         assert report["max_storage_soc_residual_kWh"] <= 1e-6
         assert report["network_connectivity_ok"] is True
+        assert report["peak_capacity_margin_fraction"] == 0.2
+        assert report["peak_capacity_margin_ok"] is True
+        assert report["minimum_peak_capacity_margin_slack_kW"] >= -1e-6
+        assert report["storage_counted_in_peak_capacity_margin"] is False
     return points
 
 
@@ -76,6 +80,6 @@ def test_v3_smoke_pipeline_is_read_only_complete_and_deterministic(tmp_path: Pat
 
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
     assert manifest["legacy_model_used"] is False
-    assert manifest["contract_version"] == "competition_input_3.0.0-draft.1"
+    assert manifest["contract_version"] == "competition_input_3.0.0-draft.2"
     assert manifest["capability_status"]["storage"] == "linear_core_and_cyclic_soc_implemented"
     assert manifest["capability_status"]["discrete_pipe_capacity"] == "three_levels_implemented"

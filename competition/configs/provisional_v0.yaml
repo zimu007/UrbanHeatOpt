@@ -1,0 +1,103 @@
+assumption_profile: provisional_v0
+parameter_version: provisional-v0-20260823
+classification: scenario_assumption
+timezone: Asia/Shanghai
+electricity_tariff:
+  unit: CNY_per_kWh_e
+  tax_included: false
+  source: user_confirmed_recommended_tariff_2026-08-23
+  periods:
+    - {start_hour: 0, end_hour: 6, label: valley, price: 0.48}
+    - {start_hour: 6, end_hour: 12, label: flat, price: 1.0}
+    - {start_hour: 12, end_hour: 14, label: valley, price: 0.48}
+    - {start_hour: 14, end_hour: 16, label: flat, price: 1.0}
+    - {start_hour: 16, end_hour: 20, label: peak, price: 1.49}
+    - {start_hour: 20, end_hour: 22, label: sharp, price: 2.0}
+    - {start_hour: 22, end_hour: 24, label: peak, price: 1.49}
+natural_gas:
+  raw_price_CNY_per_Nm3: 3.54
+  tax_included: false
+  LHV_MJ_per_Nm3: 38.931
+  model_unit: CNY_per_kWh_LHV
+  price_source: user_confirmed_recommended_price_2026-08-23
+  lhv_source: MEE_enterprise_GHG_reporting_default_2023
+  lhv_source_url: https://www.mee.gov.cn/xxgk2018/xxgk/xxgk06/202310/W020231018422353335935.pdf
+carbon:
+  electricity_kgCO2e_per_kWh_e: 0.4044
+  electricity_scope: Hubei_2023_average_electricity_CO2_factor
+  electricity_source_url: https://www.mee.gov.cn/xxgk2018/xxgk/xxgk01/202512/W020251231726284332528.pdf
+  gas_tCO2_per_GJ_LHV: 0.05554
+  gas_scope: direct_combustion_CO2_only
+  gas_source_url: https://www.mee.gov.cn/xxgk2018/xxgk/xxgk06/202511/W020251121563766583831.pdf
+terminal:
+  terminal_type: fan_coil
+  ventilation_system: dedicated_fresh_air
+  fresh_air_load_included: true
+  supply_temperature_C: 45.0
+  return_temperature_C: 40.0
+planning:
+  peak_capacity_margin_fraction: 0.20
+  capacity_rule: peak_margin_not_N_minus_1
+  boiler_fixed_share_required: false
+  storage_counts_toward_peak_margin: false
+  discount_rate: 0.05
+  price_base_year: 2026
+technologies:
+  central_heat_pump:
+    technology_id: central_hp
+    fixed_COP: 3.2
+    capacity_max_multiplier_of_margin_peak: 1.5
+    capex_CNY_per_kW_th: 3000.0
+    fixed_om_fraction_per_year: 0.02
+    variable_om_CNY_per_kWh_th: 0.0
+    lifetime_years: 15
+  central_gas_boiler:
+    technology_id: central_boiler
+    efficiency_LHV: 0.94
+    capacity_max_multiplier_of_margin_peak: 1.5
+    capex_CNY_per_kW_th: 800.0
+    fixed_om_fraction_per_year: 0.02
+    variable_om_CNY_per_kWh_th: 0.0
+    lifetime_years: 15
+  distributed_heat_pump:
+    technology_id: local_hp
+    fixed_COP: 3.0
+    capacity_max_multiplier_of_margin_peak: 1.5
+    capex_CNY_per_kW_th: 2600.0
+    fixed_om_fraction_per_year: 0.02
+    variable_om_CNY_per_kWh_th: 0.0
+    lifetime_years: 15
+storage:
+  technology_id: central_tes
+  energy_hours_at_selected_peak: 6.0
+  charge_power_multiplier_of_selected_peak: 1.0
+  discharge_power_multiplier_of_selected_peak: 1.0
+  charge_efficiency: 0.95
+  discharge_efficiency: 0.95
+  standing_loss_fraction_per_hour: 0.0
+  capex_CNY_per_kWh_th: 50.0
+  power_capex_CNY_per_kW_th: 100.0
+  fixed_capex_CNY: 1000.0
+  lifetime_years: 15
+pipe_types:
+  - {pipe_type_id: dn_small, level: 1, capacity_multiplier_of_margin_peak: 0.6, capex_CNY_per_m: 500.0, lifetime_years: 30}
+  - {pipe_type_id: dn_medium, level: 2, capacity_multiplier_of_margin_peak: 1.0, capex_CNY_per_m: 700.0, lifetime_years: 30}
+  - {pipe_type_id: dn_large, level: 3, capacity_multiplier_of_margin_peak: 1.5, capex_CNY_per_m: 900.0, lifetime_years: 30}
+economics:
+  annualization_method: capital_recovery_factor
+  station_fixed_capex_CNY: 10000.0
+  station_lifetime_years: 30
+  connection_capex_CNY_per_demand_node: 1000.0
+  connection_lifetime_years: 30
+  hns_penalty_CNY_per_kWh_th: 1000000.0
+solver:
+  name: highs
+  threads: 1
+  time_limit_seconds: 60
+  mip_gap: 0.0
+  random_seed: 202611
+pareto:
+  v0_point_count: 5
+formal_use:
+  allowed: false
+  reason: V0临时参数；正式价格、气质和碳核算范围尚未签认

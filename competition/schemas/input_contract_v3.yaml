@@ -1,4 +1,4 @@
-contract_version: competition_input_3.0.0-draft.1
+contract_version: competition_input_3.0.0-draft.2
 software_release_track: test_v0
 status: draft_interfaces_frozen_implementation_pending
 canonical_units:
@@ -14,8 +14,12 @@ canonical_units:
 files:
   buildings.geojson:
     geometry: [Polygon, MultiPolygon]
-    required: [building_id, use_type, heated_area_m2, archetype_id, terminal_type, data_version]
+    required: [building_id, use_type, heated_area_m2, terminal_type, ventilation_system, fresh_air_load_included, data_version]
     terminal_type: [floor_radiant, fan_coil]
+    ventilation_system: [dedicated_fresh_air]
+  building_archetype_map.csv:
+    required: [building_id, zone_id, zone_use_type, zone_area_m2, zone_archetype_id, zone_scale_factor]
+    rules: [one_or_more_rows_per_building, building_and_zone_key_unique, zone_area_sum_matches_building]
   building_hourly_loads.parquet:
     required: [timestamp, building_id, heating_kW, data_version]
     rules: [timezone_aware_Asia_Shanghai, strictly_hourly, no_dhw, no_cooling, nonnegative]
@@ -110,6 +114,11 @@ economics_interface:
     - connection_lifetime_years
     - hns_penalty_CNY_per_kWh_th
   rule: missing_values_block_execution_and_are_never_defaulted
+planning_interface:
+  peak_capacity_margin_fraction:
+    unit: fraction
+    default_for_v0: 0.20
+    rule: storage_capacity_is_excluded
 version_policy:
   old_contracts: explicit_legacy_only
   automatic_migration: prohibited

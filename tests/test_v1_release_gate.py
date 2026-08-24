@@ -16,7 +16,7 @@ def test_v0_smoke_artifacts_cannot_be_mislabeled_as_v1(tmp_path: Path) -> None:
         json.dumps(
             {
                 "software_release": "UrbanHeatOpt-test-V0.x",
-                "contract_version": "competition_input_3.0.0-draft.1",
+                "contract_version": "competition_input_3.0.0-draft.2",
                 "legacy_model_used": False,
                 "capability_status": {
                     "temperature_cop": "hourly_provider_interface_implemented_v0_fixed_provider",

@@ -1,0 +1,172 @@
+source_profile: guanggu_v03
+profile_version: guanggu_v03_intake_v1
+data_version: guanggu-v0.3-20260823
+expected_inventory:
+  total_files: 412
+  extensions:
+    .csv: 387
+    .geojson: 3
+    .json: 3
+    .md: 7
+    .parquet: 3
+    .txt: 5
+    .xlsx: 4
+excluded_building_ids: [gsr_way_610079670]
+heating_season:
+  full_year_hour_start: 0
+  full_year_hour_count: 8760
+  source_segments:
+    - {start: 8016, end: 8759, season_start: 0}
+    - {start: 0, end: 1415, season_start: 744}
+  season_hour_count: 2160
+  timezone: Asia/Shanghai
+standard_files:
+  building_master:
+    path: 00_building_master.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 62
+    required_columns: [data_version, building_id, conditioned_area_m2, use_type, terminal_type, terminal_description, heating_supply_temperature_C, heating_return_temperature_C, terminal_parameter_status, load_included]
+  archetypes:
+    path: 01_archetypes.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 30
+    required_columns: [data_version, archetype_id, use_type, conditioned_area_m2]
+  special_models:
+    path: 01B_special_models.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 3
+    required_columns: [data_version, special_model_id, building_id, parent_archetype_id]
+  archetype_hourly_loads:
+    path: 02_archetype_hourly_loads.parquet
+    format: parquet
+    expected_rows: 262800
+    required_columns: [timestamp, hour, archetype_id, heating_kW, cooling_kW, data_version]
+  buildings:
+    path: 03_buildings.geojson
+    format: geojson
+    expected_rows: 62
+    required_columns: [data_version, building_id, conditioned_area_m2, use_type, terminal_type, heating_supply_temperature_C, heating_return_temperature_C]
+    crs: EPSG:4326
+  building_archetype_map:
+    path: 04_building_archetype_map.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 68
+    required_columns: [data_version, building_id, target_conditioned_area_m2, is_mixed_use, archetype_id, zone_id, zone_use_type, zone_area_m2, zone_archetype_id, zone_scale_factor]
+  building_hourly_loads:
+    path: 05_building_hourly_loads.parquet
+    format: parquet
+    expected_rows: 543120
+    required_columns: [timestamp, hour, heating_season_flag, heating_season_hour, building_id, heating_kW, cooling_kW, dhw_included, quality_flag, data_version]
+  equipment_performance:
+    path: 06_equipment_performance.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 179
+    required_columns: [data_version, technology_id, technology_type, application_scope, operating_mode, Tout, Tsupply, PLR, COP, efficiency, capacity_ratio, is_source_point, is_interpolated, is_assumption, source_id]
+  equipment_metadata:
+    path: 06A_equipment_metadata.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 6
+    required_columns: [data_version, technology_id, technology_type, application_scope, curve_status, approval_status, replacement_required]
+  equipment_sources:
+    path: 06B_equipment_sources.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 16
+    required_columns: [data_version, source_id, technology_id, source_type, source_file_or_url]
+  external_timeseries:
+    path: external_timeseries.parquet
+    format: parquet
+    expected_rows: 8760
+    required_columns: [timestamp, hour, heating_season_flag, heating_season_hour, outdoor_temperature_C, electricity_base_price_CNY_per_kWh_e, electricity_price_multiplier, electricity_price_CNY_per_kWh_e, grid_carbon_factor_kgCO2e_per_kWh_e, natural_gas_price_CNY_per_Nm3, natural_gas_carbon_factor_kgCO2e_per_Nm3, time_weight_h, data_version]
+  technologies:
+    path: technologies.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 45
+    required_columns: [data_version, technology_id, technology_type, parameter_name, recommended_value, alternative_low, alternative_high, unit, source_id, parameter_status, applicable_schemes]
+  scheme_manifest:
+    path: scheme_input_manifest.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 3
+    required_columns: [data_version, scheme_id, building_load_file, building_load_value_hash_sha256, external_timeseries_file, terminal_type, heating_supply_temperature_C, heating_return_temperature_C, building_master_file_hash_sha256, mapping_file_hash_sha256, building_load_file_hash_sha256, external_timeseries_file_hash_sha256, terminal_parameter_hash_sha256]
+  source_log:
+    path: 09_source_log.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 16
+    required_columns: [data_version, dataset, source_file, processing_step, output_file]
+  building_ts:
+    path: UrbanHeatOpt/Building_TS.csv
+    format: csv
+    encoding: utf-8-sig
+    expected_rows: 8760
+    required_columns: [hour]
+classified_root_files:
+  - 00_building_master.csv
+  - 01_archetypes.csv
+  - 01B_special_models.csv
+  - 02_archetype_hourly_loads.parquet
+  - 03_buildings.geojson
+  - 04_building_archetype_map.csv
+  - 05_building_hourly_loads.parquet
+  - 06_设备性能参数暂行交付说明.md
+  - 06_equipment_performance.csv
+  - 06A_equipment_metadata.csv
+  - 06B_equipment_sources.csv
+  - 06C_equipment_curve_method.md
+  - 06D_equipment_curve_QA.xlsx
+  - 07_data_dictionary.md
+  - 08_qa_report.xlsx
+  - 09_source_log.csv
+  - 交付验证结果.txt
+  - 专项CSV转换检查.txt
+  - CHANGELOG.md
+  - external_timeseries_heating_season_preview.csv
+  - external_timeseries.parquet
+  - final_verification.json
+  - qa_building_heating_season_metrics.csv
+  - qa_representative_buildings.csv
+  - qa_typical_heating_season_curves.csv
+  - qa_typical_peak_day_curves.csv
+  - qa_v0.3_summary.json
+  - README.md
+  - scheme_input_manifest.csv
+  - technologies.csv
+classified_directories:
+  Wuhan_DeST_Models_映射原型逐时负荷: dest_provenance
+  DeST原型映射与conditioned_area缩放工作簿: mapping_provenance
+  光谷软件园GIS成果: gis_provenance
+  光谷软件园真实属性补充: attribute_provenance
+  UrbanHeatOpt: legacy_compatibility
+provenance_files:
+  - README.md
+  - 07_data_dictionary.md
+  - 08_qa_report.xlsx
+  - 交付验证结果.txt
+  - final_verification.json
+  - DeST原型映射与conditioned_area缩放工作簿/DeST原型映射与conditioned_area缩放工作簿.xlsx
+  - UrbanHeatOpt/Building_TS_metadata.json
+raw_dest:
+  root: Wuhan_DeST_Models_映射原型逐时负荷
+  expected_files: 370
+  expected_csv_files: 369
+  expected_hourly_weather_files: 30
+  expected_hourly_load_files: 66
+  hourly_weather_suffix: 逐时气象参数.csv
+  hourly_load_suffixes: [建筑逐时单位面积负荷.csv, 建筑逐时负荷.csv]
+  hour_column: 小时
+  hour_start: 0
+  hour_count: 8760
+technology_rules:
+  allowed_parameter_status: [source_based, provisional, frozen_project_parameter, required_update, teacher_approved_provisional, pending_confirmation]
+  natural_gas_lhv_MJ_per_Nm3: 38.931
+  boiler_efficiency_LHV: 0.94
+  ashp_curve_max_temperature_C: 15.0
+  ashp_upper_boundary_policy: clamp_to_upper_boundary
