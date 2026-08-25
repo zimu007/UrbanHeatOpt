@@ -33,6 +33,7 @@ def _assert_standard_outputs(run_dir: Path) -> pd.DataFrame:
     assert (points["unserved_heat_kWh"].abs() <= 1e-6).all()
 
     required = {
+        "station_decisions.csv",
         "capacity_decisions.csv",
         "building_connection.csv",
         "storage_decisions.csv",

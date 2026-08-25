@@ -3,13 +3,17 @@ from __future__ import annotations
 import hashlib
 
 import geopandas as gpd
+import networkx as nx
 import pandas as pd
 import pytest
 from shapely.geometry import Point
 
 from competition.provisional_spatial import (
     CANDIDATE_SOURCE,
+    MULTI_CANDIDATE_SOURCE,
+    MULTI_CANDIDATE_STATUS,
     ProvisionalSpatialError,
+    build_multi_candidate_provisional_network,
     build_provisional_geometric_network,
     write_provisional_spatial_outputs,
 )
@@ -73,6 +77,90 @@ def test_single_building_uses_disclosed_one_metre_separation() -> None:
     )
     assert result.load_center_adjustment_m == 1.0
     assert result.network.to_crs("EPSG:32650")["length_m"].iloc[0] == pytest.approx(1.0)
+
+
+def test_deterministic_local_extra_edges_extend_but_do_not_replace_mst() -> None:
+    buildings = gpd.GeoDataFrame(
+        {"building_id": ["a", "b", "c", "d"]},
+        geometry=[Point(0, 0), Point(10, 0), Point(10, 10), Point(0, 10)],
+        crs="EPSG:32650",
+    )
+    loads = pd.DataFrame({"building_id": ["a", "b", "c", "d"], "heating_kW": [1, 1, 1, 1]})
+    result = build_provisional_geometric_network(
+        buildings,
+        loads,
+        data_version="synthetic-v02",
+        local_extra_edge_count=2,
+    )
+    assert len(result.network) == 6  # 5-node MST plus two local extra edges.
+    assert result.network[["node_from", "node_to"]].duplicated().sum() == 0
+
+
+def test_multi_candidate_generator_is_deterministic_connected_and_provisional(
+    tmp_path,
+) -> None:
+    buildings = gpd.GeoDataFrame(
+        {"building_id": [f"building_{index}" for index in range(1, 7)]},
+        geometry=[
+            Point(500000, 3374000), Point(500100, 3374000),
+            Point(500200, 3374050), Point(500150, 3374150),
+            Point(500050, 3374150), Point(499950, 3374075),
+        ],
+        crs="EPSG:32650",
+    )
+    loads = pd.DataFrame({
+        "building_id": buildings["building_id"],
+        "heating_kW": [10, 20, 30, 40, 50, 60],
+    })
+    original = tuple(buildings.geometry.to_wkb())
+    first = build_multi_candidate_provisional_network(
+        buildings, loads, data_version="synthetic-multi", candidate_count=5
+    )
+    second = build_multi_candidate_provisional_network(
+        buildings.iloc[::-1].reset_index(drop=True),
+        loads.iloc[::-1].reset_index(drop=True),
+        data_version="synthetic-multi",
+        candidate_count=5,
+    )
+    first_paths = write_provisional_spatial_outputs(first, tmp_path / "first")
+    second_paths = write_provisional_spatial_outputs(second, tmp_path / "second")
+
+    assert len(first.sites) == 5
+    assert first.sites.crs == buildings.crs
+    assert first.sites["site_id"].is_unique
+    assert not set(first.sites["site_id"]).intersection(buildings["building_id"])
+    assert first.sites.geometry.is_valid.all() and not first.sites.geometry.has_z.any()
+    assert first.sites.geometry.to_wkb().is_unique
+    assert first.sites["candidate_source"].eq(MULTI_CANDIDATE_SOURCE).all()
+    assert first.sites["spatial_status"].eq(MULTI_CANDIDATE_STATUS).all()
+    assert first.sites["parameter_status"].eq("provisional").all()
+    assert not first.sites["road_constrained"].any()
+    assert not first.sites["construction_feasibility_verified"].any()
+
+    graph = nx.Graph()
+    graph.add_edges_from(first.network[["node_from", "node_to"]].itertuples(index=False, name=None))
+    assert nx.is_connected(graph)
+    access = first.network[first.network["edge_type"].eq("station_access")]
+    assert len(access) == 5
+    assert set(access["node_from"]) == set(first.sites["site_id"])
+    assert all(graph.degree[station] == 1 for station in first.sites["site_id"])
+    assert (first.network["length_m"] > 0).all()
+    assert first.network["segment_id"].is_unique
+    assert first.network["parameter_status"].eq("provisional").all()
+    assert [_sha256(path) for path in first_paths] == [_sha256(path) for path in second_paths]
+    assert tuple(buildings.geometry.to_wkb()) == original
+
+
+@pytest.mark.parametrize("candidate_count", [0, 11, True])
+def test_multi_candidate_generator_rejects_out_of_scope_counts(candidate_count) -> None:
+    buildings, loads = _inputs()
+    with pytest.raises(ProvisionalSpatialError, match=r"\[1, 10\]"):
+        build_multi_candidate_provisional_network(
+            buildings,
+            loads,
+            data_version="synthetic-multi",
+            candidate_count=candidate_count,
+        )
 
 
 @pytest.mark.parametrize(

@@ -16,6 +16,7 @@ import yaml
 
 from competition.canonical import CanonicalSeasonData, V3_DRAFT_CONTRACT
 from competition.intake import GuangguV03Report, validate_guanggu_v03_delivery
+from competition.intake.guanggu_v03 import EQUIPMENT_PATCH_FILES
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,8 +304,13 @@ def _canonical_technology_parameters(source: pd.DataFrame) -> pd.DataFrame:
 def _canonical_equipment_performance(source: pd.DataFrame) -> pd.DataFrame:
     result = source.copy()
     gas = result["technology_type"].eq("gas_boiler")
-    result["energy_basis"] = np.where(gas, "HHV_provenance_only", "not_applicable")
-    result["executable_in_lhv_core"] = ~gas
+    gas_lhv = gas & result.get(
+        "applicable_range", pd.Series(index=result.index, dtype=object)
+    ).astype(str).str.contains("LHV", case=False, na=False)
+    result["energy_basis"] = np.where(
+        gas_lhv, "LHV", np.where(gas, "HHV_provenance_only", "not_applicable")
+    )
+    result["executable_in_lhv_core"] = ~gas | gas_lhv
     result["cop_upper_boundary_policy"] = np.where(
         result["technology_type"].eq("air_source_heat_pump"),
         "clamp_to_15C_no_extrapolation",
@@ -401,11 +407,17 @@ def validate_canonical_season_data(
         _issue(report, "CANONICAL_MAPPING_ID_INVALID", "标准原型映射ID集合或主键无效")
     if not set(data.technology_parameters.get("energy_basis", [])) >= {"LHV", "HHV"}:
         _issue(report, "CANONICAL_TECHNOLOGY_BASIS_MISSING", "技术参数登记表未区分LHV与HHV")
-    if not data.equipment_performance.loc[
-        data.equipment_performance["technology_type"].eq("gas_boiler"),
-        "executable_in_lhv_core",
-    ].eq(False).all():
-        _issue(report, "CANONICAL_HHV_CURVE_EXECUTABLE", "HHV锅炉曲线不得标为LHV Core可执行")
+    gas_equipment = data.equipment_performance.loc[
+        data.equipment_performance["technology_type"].eq("gas_boiler")
+    ]
+    if len(gas_equipment):
+        expected = gas_equipment["energy_basis"].eq("LHV")
+        if not gas_equipment["executable_in_lhv_core"].map(bool).equals(expected):
+            _issue(
+                report,
+                "CANONICAL_GAS_CURVE_BASIS_INVALID",
+                "Only LHV gas-boiler rows may be executable in the LHV core",
+            )
     return report
 
 
@@ -415,6 +427,7 @@ def adapt_guanggu_v03_sources(
     *,
     profile_path: str | Path | None = None,
     full_audit: bool = True,
+    equipment_patch_root: str | Path | None = None,
 ) -> GuangguV03Adaptation:
     """Validate and standardize the complete heating season without solving."""
 
@@ -425,6 +438,7 @@ def adapt_guanggu_v03_sources(
         source,
         full_audit=full_audit,
         profile_path=profile_path,
+        equipment_patch_root=equipment_patch_root,
     )
     if not source_report.valid:
         errors = [issue.message for issue in source_report.issues if issue.severity == "error"]
@@ -442,9 +456,13 @@ def adapt_guanggu_v03_sources(
     technologies_source = pd.read_csv(
         source / files["technologies"]["path"], encoding="utf-8-sig"
     )
-    equipment_source = pd.read_csv(
-        source / files["equipment_performance"]["path"], encoding="utf-8-sig"
+    patch = Path(equipment_patch_root).resolve() if equipment_patch_root is not None else None
+    equipment_source_path = (
+        patch / "06_equipment_performance.csv"
+        if patch is not None
+        else source / files["equipment_performance"]["path"]
     )
+    equipment_source = pd.read_csv(equipment_source_path, encoding="utf-8-sig")
     source_hours = _source_hour_order(profile)
     time_map = _build_timestamp_map(
         external_source,
@@ -491,6 +509,20 @@ def adapt_guanggu_v03_sources(
         "ashp_upper_boundary_policy": "clamp_to_15C_no_extrapolation",
         "ashp_upper_boundary_clamped_hour_count": int(external["cop_boundary_clamped"].sum()),
         "gas_energy_basis": "LHV",
+        "base_data_version": data_version,
+        "base_root_identifier": source.name,
+        "equipment_patch_applied": patch is not None,
+        "equipment_patch_identifier": patch.name if patch is not None else None,
+        "equipment_patch_files_sha256": (
+            {
+                name: _sha256(patch / name)
+                for name in EQUIPMENT_PATCH_FILES
+            }
+            if patch is not None else {}
+        ),
+        "equipment_patch_provenance_only_files": (
+            ["06C_equipment_curve_method.md"] if patch is not None else []
+        ),
         **gas_metadata,
     }
     canonical = CanonicalSeasonData(
@@ -557,7 +589,12 @@ def adapt_guanggu_v03_sources(
     ).to_csv(field_mapping_path, index=False, encoding="utf-8-sig")
 
     for relative, digest in source_report.file_sha256.items():
-        path = source / Path(relative)
+        if relative.startswith("equipment_patch/"):
+            if patch is None:
+                raise RuntimeError("patch provenance exists without equipment_patch_root")
+            path = patch / relative.removeprefix("equipment_patch/")
+        else:
+            path = source / Path(relative)
         if not path.is_file() or _sha256(path) != digest:
             raise RuntimeError(f"适配过程修改了源文件: {relative}")
     return GuangguV03Adaptation(

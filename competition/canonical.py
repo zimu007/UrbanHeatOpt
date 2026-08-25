@@ -161,6 +161,7 @@ class PipeTypeSpec:
     lifetime_years: int
     source: str
     parameter_version: str
+    heat_loss_fraction_per_m: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,7 +177,7 @@ class CanonicalCaseData:
     modes: tuple[str, ...]
     timestamps: tuple[pd.Timestamp, ...]
     hours: tuple[int, ...]
-    site_node: str
+    site_node: str | None
     demand_nodes: tuple[str, ...]
     heat_demand_kW_th: Mapping[tuple[str, int], float]
     technologies: tuple[TechnologySpec, ...]
@@ -191,6 +192,8 @@ class CanonicalCaseData:
     raw_config: Mapping[str, Any]
     building_archetype_map: tuple[Mapping[str, Any], ...] = ()
     peak_capacity_margin_fraction: float = 0.0
+    candidate_station_nodes: tuple[str, ...] = ()
+    max_built_stations: int = 1
 
     def __post_init__(self) -> None:
         if self.contract_version != V3_DRAFT_CONTRACT:
@@ -203,6 +206,22 @@ class CanonicalCaseData:
             raise ValueError("hours 必须与 timestamps 一一映射为 1...N")
         if len(set(self.demand_nodes)) != len(self.demand_nodes):
             raise ValueError("demand_nodes 不得重复")
+        stations = self.candidate_station_nodes or (
+            (self.site_node,) if self.site_node is not None else ()
+        )
+        if not stations or len(set(stations)) != len(stations):
+            raise ValueError("candidate_station_nodes must be non-empty and unique")
+        if set(stations).intersection(self.demand_nodes):
+            raise ValueError("candidate station IDs must not overlap demand_nodes")
+        if len(stations) == 1:
+            if self.site_node is not None and self.site_node != stations[0]:
+                raise ValueError("singleton site_node must match candidate_station_nodes")
+            object.__setattr__(self, "site_node", stations[0])
+        elif self.site_node is not None:
+            raise ValueError("site_node must be None for multiple candidate stations")
+        if self.max_built_stations != 1:
+            raise ValueError("MULTI_STATION_OPERATION_OUT_OF_SCOPE_FOR_V1")
+        object.__setattr__(self, "candidate_station_nodes", tuple(stations))
         object.__setattr__(self, "heat_demand_kW_th", _freeze(dict(self.heat_demand_kW_th)))
         object.__setattr__(self, "input_sha256", _freeze(dict(self.input_sha256)))
         object.__setattr__(self, "parameter_versions", _freeze(dict(self.parameter_versions)))
@@ -249,6 +268,7 @@ class CanonicalCaseData:
                     pumping_kWh_e_per_kWh_th_transferred=(
                         item.pumping_kWh_e_per_kWh_th_transferred
                     ),
+                    heat_loss_fraction_per_m=item.heat_loss_fraction_per_m,
                 )
                 for item in self.pipe_types
             ),
@@ -258,4 +278,6 @@ class CanonicalCaseData:
             ),
             allow_unserved=self.profile != "v1-full",
             peak_capacity_margin_fraction=self.peak_capacity_margin_fraction,
+            candidate_station_nodes=self.candidate_station_nodes,
+            max_built_stations=self.max_built_stations,
         )

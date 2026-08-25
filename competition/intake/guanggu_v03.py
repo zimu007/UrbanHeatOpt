@@ -21,6 +21,14 @@ import pandas as pd
 import yaml
 
 
+EQUIPMENT_PATCH_FILES = (
+    "06_equipment_performance.csv",
+    "06A_equipment_metadata.csv",
+    "06B_equipment_sources.csv",
+    "06C_equipment_curve_method.md",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class GuangguV03Issue:
     code: str
@@ -180,10 +188,12 @@ def _validate_standard_files(
     report: GuangguV03Report,
     root: Path,
     profile: dict[str, Any],
+    path_overrides: dict[str, Path] | None = None,
+    expected_row_overrides: dict[str, int] | None = None,
 ) -> dict[str, pd.DataFrame]:
     frames: dict[str, pd.DataFrame] = {}
     for name, spec in profile["standard_files"].items():
-        path = root / spec["path"]
+        path = (path_overrides or {}).get(name, root / spec["path"])
         if not path.is_file():
             _issue(report, "FILE_MISSING", f"缺少标准交付文件 {spec['path']}", path)
             continue
@@ -196,7 +206,7 @@ def _validate_standard_files(
         missing = sorted(set(spec.get("required_columns", [])) - set(frame.columns))
         if missing:
             _issue(report, "FIELD_MISSING", f"缺少字段: {', '.join(missing)}", path)
-        expected_rows = spec.get("expected_rows")
+        expected_rows = (expected_row_overrides or {}).get(name, spec.get("expected_rows"))
         if expected_rows is not None and len(frame) != int(expected_rows):
             _issue(
                 report,
@@ -231,6 +241,8 @@ def _validate_standard_files(
                 _issue(report, "GEOMETRY_TYPE_INVALID", "建筑几何必须为 Polygon/MultiPolygon", path)
         report.datasets[name] = {
             "path": spec["path"],
+            "logical_path": spec["path"],
+            "effective_source_path": str(path),
             "row_count": len(frame),
             "columns": list(frame.columns),
             "encoding": encoding,
@@ -593,18 +605,28 @@ def _validate_technologies(
                 _issue(report, "ASHP_COP_INVALID", "空气源热泵 COP 必须为有限正数", path)
             if ashp["capacity_ratio"].isna().any() or (ashp["capacity_ratio"] <= 0).any():
                 _issue(report, "ASHP_CAPACITY_RATIO_INVALID", "空气源热泵 capacity_ratio 必须为有限正数", path)
+        if len(ashp) and ashp["efficiency"].notna().any():
+            _issue(report, "ASHP_EFFICIENCY_MUST_BE_BLANK", "ASHP efficiency must remain blank", path)
         gas = performance[performance["technology_type"].eq("gas_boiler")]
         if len(gas):
             efficiency = pd.to_numeric(gas["efficiency"], errors="coerce")
             if efficiency.isna().any() or (efficiency <= 0).any() or (efficiency > 1).any():
                 _issue(report, "GAS_CURVE_EFFICIENCY_INVALID", "06 燃气锅炉效率必须在 (0,1]", path)
-            _issue(
-                report,
-                "GAS_HHV_CURVE_PROVENANCE_ONLY",
-                "06 燃气锅炉曲线为 HHV 口径，仅作追溯；执行参数使用 technologies.csv 的 LHV 效率0.94",
-                path,
-                "warning",
-            )
+            if gas["COP"].notna().any():
+                _issue(report, "GAS_BOILER_COP_MUST_BE_BLANK", "Gas-boiler COP must remain blank", path)
+            lhv_rows = gas.get(
+                "applicable_range", pd.Series(index=gas.index, dtype=object)
+            ).astype(str).str.contains("LHV", case=False, na=False)
+            if lhv_rows.all() and not np.allclose(efficiency, 0.94, rtol=0, atol=1e-12):
+                _issue(report, "GAS_LHV_CURVE_EFFICIENCY_INVALID", "LHV gas-boiler efficiency must equal 0.94", path)
+            if not lhv_rows.all():
+                _issue(
+                    report,
+                    "GAS_HHV_CURVE_PROVENANCE_ONLY",
+                    "06 燃气锅炉曲线为 HHV 口径，仅作追溯；执行参数使用 technologies.csv 的 LHV 效率0.94",
+                    path,
+                    "warning",
+                )
         if metadata is not None and "technology_id" in metadata:
             if set(performance["technology_id"].dropna()) != set(metadata["technology_id"].dropna()):
                 _issue(report, "EQUIPMENT_METADATA_ID_MISMATCH", "06 与 06A 技术 ID 集合不一致", path)
@@ -852,6 +874,7 @@ def validate_guanggu_v03_delivery(
     *,
     full_audit: bool = False,
     profile_path: str | Path | None = None,
+    equipment_patch_root: str | Path | None = None,
 ) -> GuangguV03Report:
     """Validate and hash a v0.3 delivery without modifying source files."""
 
@@ -873,8 +896,74 @@ def validate_guanggu_v03_delivery(
     report.file_sha256 = {
         path.relative_to(root).as_posix(): digest for path, digest in before.items()
     }
+    overrides: dict[str, Path] = {}
+    expected_row_overrides: dict[str, int] = {}
+    report.datasets["effective_input_provenance"] = {
+        "base_data_version": profile["data_version"],
+        "base_root_identifier": root.name,
+        "equipment_patch_applied": equipment_patch_root is not None,
+        "equipment_patch_identifier": None,
+        "equipment_patch_files": {},
+    }
+    if equipment_patch_root is not None:
+        patch = Path(equipment_patch_root).resolve()
+        if not patch.is_dir():
+            raise ValueError(f"equipment patch directory does not exist: {patch}")
+        missing_patch = [name for name in EQUIPMENT_PATCH_FILES if not (patch / name).is_file()]
+        if missing_patch:
+            raise ValueError("equipment patch missing required files: " + ", ".join(missing_patch))
+        standard_by_filename = {
+            Path(spec["path"]).name: name
+            for name, spec in profile["standard_files"].items()
+        }
+        for filename in EQUIPMENT_PATCH_FILES[:3]:
+            if filename in standard_by_filename:
+                overrides[standard_by_filename[filename]] = patch / filename
+        equipment_sources_name = standard_by_filename.get("06B_equipment_sources.csv")
+        if equipment_sources_name is not None:
+            expected_row_overrides[equipment_sources_name] = 17
+        patch_hashes = {
+            filename: _sha256(patch / filename) for filename in EQUIPMENT_PATCH_FILES
+        }
+        report.file_sha256.update(
+            {f"equipment_patch/{name}": digest for name, digest in patch_hashes.items()}
+        )
+        report.datasets["equipment_patch_overlay"] = {
+            "patch_identifier": patch.name,
+            "patch_path": str(patch),
+            "target_data_version": profile["data_version"],
+            "files": patch_hashes,
+            "provenance_only_files": ["06C_equipment_curve_method.md"],
+        }
+        report.datasets["effective_input_provenance"].update(
+            {
+                "equipment_patch_identifier": patch.name,
+                "equipment_patch_files": patch_hashes,
+            }
+        )
     _validate_inventory(report, root, files, profile)
-    frames = _validate_standard_files(report, root, profile)
+    frames = _validate_standard_files(
+        report, root, profile, overrides, expected_row_overrides
+    )
+    if equipment_patch_root is not None:
+        sources = frames.get("equipment_sources")
+        if sources is not None and "source_id" in sources:
+            source_ids = sources["source_id"].dropna().astype(str)
+            if source_ids.duplicated().any():
+                _issue(
+                    report,
+                    "EQUIPMENT_PATCH_SOURCE_ID_DUPLICATE",
+                    "patched 06B source_id values must be unique",
+                    Path(equipment_patch_root).resolve() / "06B_equipment_sources.csv",
+                )
+            required_source = "SRC_PROJECT_LHV_BASELINE_20260823"
+            if int(source_ids.eq(required_source).sum()) != 1:
+                _issue(
+                    report,
+                    "EQUIPMENT_PATCH_LHV_SOURCE_INVALID",
+                    f"patched 06B must contain {required_source} exactly once",
+                    Path(equipment_patch_root).resolve() / "06B_equipment_sources.csv",
+                )
     _validate_buildings_and_mapping(report, frames, root, profile)
     _validate_loads_and_external(report, frames, root, profile)
     _validate_technologies(report, frames, root, profile)

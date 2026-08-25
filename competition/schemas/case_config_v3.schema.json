@@ -181,7 +181,11 @@
         "curve_file": {"type": "string", "minLength": 1},
         "performance_technology_id": {"type": "string", "minLength": 1},
         "plr_layer": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
-        "parameter_version": {"type": "string", "minLength": 1}
+        "parameter_version": {"type": "string", "minLength": 1},
+        "performance_boundary_policy": {
+          "enum": ["strict", "clip_with_flag"],
+          "default": "strict"
+        }
       }
     },
     "pareto": {

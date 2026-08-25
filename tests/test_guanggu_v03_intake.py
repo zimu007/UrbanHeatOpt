@@ -20,6 +20,76 @@ from competition.readiness import run_guanggu_v03_input_validation
 DATA_VERSION = "guanggu-v0.3-test"
 
 
+def _write_lhv_patch_fixture(delivery: Path, patch: Path, profile_path: Path) -> None:
+    """Expand the tiny fixture to ASHP + TES + four boiler points and overlay it."""
+    base = pd.read_csv(delivery / "06_equipment_performance.csv", encoding="utf-8-sig")
+    ashp = base.loc[base["technology_id"].eq("ASHP_BASE_01")].iloc[0].to_dict()
+    tes = {column: None for column in base.columns}
+    tes.update(
+        data_version=DATA_VERSION,
+        technology_id="SHORT_TERM_STORAGE_BASE_01",
+        technology_type="short_term_thermal_storage",
+        operating_mode="storage",
+        SOC=0.5,
+        startup_state=1,
+        is_source_point=0,
+        is_interpolated=0,
+        is_assumption=1,
+    )
+    old_gas = base.loc[base["technology_id"].eq("GAS_BOILER_BASE_01")].iloc[0].to_dict()
+    old_rows = []
+    patch_rows = []
+    for plr, old_efficiency in zip((0.25, 0.5, 0.75, 1.0), (0.973, 0.944429, 0.908714, 0.873), strict=True):
+        old = dict(old_gas, PLR=plr, efficiency=old_efficiency, COP=None, applicable_range="HHV basis")
+        new = dict(
+            old,
+            efficiency=0.94,
+            COP=None,
+            applicable_range="fixed efficiency; LHV basis",
+            source_id="SRC_PROJECT_LHV_BASELINE_20260823",
+            is_source_point=0,
+            is_interpolated=0,
+            is_assumption=1,
+        )
+        old_rows.append(old)
+        patch_rows.append(new)
+    pd.DataFrame([ashp, tes, *old_rows]).to_csv(
+        delivery / "06_equipment_performance.csv", index=False, encoding="utf-8-sig"
+    )
+    metadata = pd.DataFrame(
+        {
+            "data_version": [DATA_VERSION] * 3,
+            "technology_id": ["ASHP_BASE_01", "SHORT_TERM_STORAGE_BASE_01", "GAS_BOILER_BASE_01"],
+        }
+    )
+    metadata.to_csv(delivery / "06A_equipment_metadata.csv", index=False, encoding="utf-8-sig")
+    patch.mkdir()
+    pd.DataFrame([ashp, tes, *patch_rows]).to_csv(
+        patch / "06_equipment_performance.csv", index=False, encoding="utf-8-sig"
+    )
+    metadata.to_csv(patch / "06A_equipment_metadata.csv", index=False, encoding="utf-8-sig")
+    sources = pd.read_csv(delivery / "06B_equipment_sources.csv", encoding="utf-8-sig")
+    sources = pd.concat(
+        [
+            sources,
+            pd.DataFrame(
+                {
+                    "data_version": [DATA_VERSION],
+                    "source_id": ["SRC_PROJECT_LHV_BASELINE_20260823"],
+                    "technology_id": ["GAS_BOILER_BASE_01"],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    sources.to_csv(patch / "06B_equipment_sources.csv", index=False, encoding="utf-8-sig")
+    (patch / "06C_equipment_curve_method.md").write_text("LHV efficiency 0.94", encoding="utf-8")
+    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    profile["standard_files"]["equipment_performance"]["expected_rows"] = 6
+    profile["standard_files"]["equipment_metadata"]["expected_rows"] = 3
+    profile_path.write_text(yaml.safe_dump(profile, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
 def _hash(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
 
@@ -32,6 +102,7 @@ def _write_profile(tmp_path: Path) -> Path:
         "building_hourly_loads": {"path": "05_building_hourly_loads.parquet", "format": "parquet", "expected_rows": 4, "required_columns": ["timestamp", "hour", "heating_season_flag", "heating_season_hour", "building_id", "heating_kW", "dhw_included", "data_version"]},
         "equipment_performance": {"path": "06_equipment_performance.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 2, "required_columns": ["data_version", "technology_id", "technology_type", "operating_mode", "Tout", "Tsource", "Tsupply", "Treturn", "PLR", "SOC", "startup_state", "COP", "efficiency", "capacity_ratio", "is_source_point", "is_interpolated", "is_assumption"]},
         "equipment_metadata": {"path": "06A_equipment_metadata.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 2, "required_columns": ["data_version", "technology_id"]},
+        "equipment_sources": {"path": "06B_equipment_sources.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 16, "required_columns": ["data_version", "source_id", "technology_id"]},
         "external_timeseries": {"path": "external_timeseries.parquet", "format": "parquet", "expected_rows": 4, "required_columns": ["timestamp", "hour", "heating_season_flag", "heating_season_hour", "outdoor_temperature_C", "electricity_base_price_CNY_per_kWh_e", "electricity_price_multiplier", "electricity_price_CNY_per_kWh_e", "grid_carbon_factor_kgCO2e_per_kWh_e", "natural_gas_price_CNY_per_Nm3", "natural_gas_carbon_factor_kgCO2e_per_Nm3", "time_weight_h", "data_version"]},
         "technologies": {"path": "technologies.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 3, "required_columns": ["data_version", "technology_id", "technology_type", "parameter_name", "recommended_value", "unit", "parameter_status"]},
         "scheme_manifest": {"path": "scheme_input_manifest.csv", "format": "csv", "encoding": "utf-8-sig", "expected_rows": 3, "required_columns": ["data_version", "scheme_id", "building_load_file", "building_load_value_hash_sha256", "external_timeseries_file", "terminal_type", "heating_supply_temperature_C", "heating_return_temperature_C", "building_master_file_hash_sha256", "mapping_file_hash_sha256", "building_load_file_hash_sha256", "external_timeseries_file_hash_sha256", "terminal_parameter_hash_sha256"]},
@@ -42,7 +113,7 @@ def _write_profile(tmp_path: Path) -> Path:
         "source_profile": "guanggu_v03",
         "profile_version": "test-v1",
         "data_version": DATA_VERSION,
-        "expected_inventory": {"total_files": 13, "extensions": {".csv": 10, ".geojson": 1, ".parquet": 2}},
+        "expected_inventory": {"total_files": 14, "extensions": {".csv": 11, ".geojson": 1, ".parquet": 2}},
         "excluded_building_ids": ["excluded"],
         "heating_season": {
             "full_year_hour_start": 0,
@@ -202,6 +273,13 @@ def _write_delivery(root: Path) -> None:
     pd.DataFrame(
         {"data_version": [DATA_VERSION, DATA_VERSION], "technology_id": ["ASHP_BASE_01", "GAS_BOILER_BASE_01"]}
     ).to_csv(root / "06A_equipment_metadata.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame(
+        {
+            "data_version": [DATA_VERSION] * 16,
+            "source_id": [f"SRC_BASE_{index:02d}" for index in range(16)],
+            "technology_id": ["ASHP_BASE_01"] * 16,
+        }
+    ).to_csv(root / "06B_equipment_sources.csv", index=False, encoding="utf-8-sig")
     legacy = root / "UrbanHeatOpt"
     legacy.mkdir()
     pd.DataFrame({"hour": range(4), "b1": [1.0, 2.0, 3.0, 4.0]}).to_csv(
@@ -338,6 +416,122 @@ def test_guanggu_v03_adapter_builds_immutable_canonical_season(tmp_path: Path) -
     assert result.loads_path.is_file()
     assert result.timestamp_hour_map_path.is_file()
     assert {path: _hash(path) for path in delivery.rglob("*") if path.is_file()} == before
+
+
+def test_guanggu_v03_equipment_patch_reaches_adapter_and_preserves_other_technologies(
+    tmp_path: Path,
+) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+    patch = tmp_path / "equipment_patch"
+    _write_lhv_patch_fixture(delivery, patch, profile)
+
+    base_result = adapt_guanggu_v03_sources(
+        delivery, tmp_path / "base_adapted", profile_path=profile, full_audit=False
+    )
+    patched_result = adapt_guanggu_v03_sources(
+        delivery,
+        tmp_path / "patched_adapted",
+        profile_path=profile,
+        full_audit=False,
+        equipment_patch_root=patch,
+    )
+    base = base_result.canonical_data.equipment_performance
+    effective = patched_result.canonical_data.equipment_performance
+    gas = effective.loc[effective["technology_id"].eq("GAS_BOILER_BASE_01")]
+    assert len(gas) == 4
+    assert gas["efficiency"].eq(0.94).all()
+    assert gas["COP"].isna().all()
+    assert gas["energy_basis"].eq("LHV").all()
+    assert gas["executable_in_lhv_core"].all()
+    for technology_id in ("ASHP_BASE_01", "SHORT_TERM_STORAGE_BASE_01"):
+        columns = [column for column in base.columns if column not in {"energy_basis", "executable_in_lhv_core"}]
+        pd.testing.assert_frame_equal(
+            base.loc[base["technology_id"].eq(technology_id), columns].reset_index(drop=True),
+            effective.loc[effective["technology_id"].eq(technology_id), columns].reset_index(drop=True),
+            check_dtype=False,
+        )
+    ashp = effective.loc[effective["technology_id"].eq("ASHP_BASE_01")]
+    assert ashp["capacity_ratio"].eq(1.0).all()
+    provenance = patched_result.canonical_data.adaptation_metadata
+    assert base_result.source_report.valid
+    assert base_result.source_report.datasets["equipment_sources"]["row_count"] == 16
+    assert patched_result.source_report.valid
+    assert patched_result.source_report.datasets["equipment_sources"]["row_count"] == 17
+    assert provenance["base_data_version"] == DATA_VERSION
+    assert provenance["equipment_patch_applied"] is True
+    assert provenance["equipment_patch_identifier"] == patch.name
+    assert set(provenance["equipment_patch_files_sha256"]) == {
+        "06_equipment_performance.csv",
+        "06A_equipment_metadata.csv",
+        "06B_equipment_sources.csv",
+        "06C_equipment_curve_method.md",
+    }
+    assert all(len(digest) == 64 for digest in provenance["equipment_patch_files_sha256"].values())
+    assert patched_result.source_report.datasets["equipment_performance"]["path"] == "06_equipment_performance.csv"
+    assert patched_result.source_report.datasets["equipment_performance"]["effective_source_path"] == str(
+        patch / "06_equipment_performance.csv"
+    )
+    assert base_result.canonical_data.adaptation_metadata["equipment_patch_applied"] is False
+    assert base_result.source_report.datasets["equipment_performance"]["path"] == "06_equipment_performance.csv"
+
+
+def test_guanggu_v03_equipment_patch_requires_all_four_files(tmp_path: Path) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+    patch = tmp_path / "equipment_patch"
+    patch.mkdir()
+    for name in (
+        "06_equipment_performance.csv",
+        "06A_equipment_metadata.csv",
+        "06B_equipment_sources.csv",
+    ):
+        (patch / name).write_text("placeholder", encoding="utf-8")
+    with pytest.raises(ValueError, match="06C_equipment_curve_method.md"):
+        validate_guanggu_v03_delivery(
+            delivery,
+            profile_path=profile,
+            equipment_patch_root=patch,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        ("remove_lhv_source", "EQUIPMENT_PATCH_LHV_SOURCE_INVALID"),
+        ("duplicate_source_id", "EQUIPMENT_PATCH_SOURCE_ID_DUPLICATE"),
+    ],
+)
+def test_guanggu_v03_equipment_patch_rejects_invalid_source_registry(
+    tmp_path: Path, mutation: str, expected_code: str
+) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+    patch = tmp_path / "equipment_patch"
+    _write_lhv_patch_fixture(delivery, patch, profile)
+    sources_path = patch / "06B_equipment_sources.csv"
+    sources = pd.read_csv(sources_path, encoding="utf-8-sig")
+    if mutation == "remove_lhv_source":
+        sources = sources.loc[
+            ~sources["source_id"].eq("SRC_PROJECT_LHV_BASELINE_20260823")
+        ]
+    else:
+        sources.loc[sources.index[-1], "source_id"] = sources.loc[sources.index[0], "source_id"]
+    sources.to_csv(sources_path, index=False, encoding="utf-8-sig")
+
+    report = validate_guanggu_v03_delivery(
+        delivery,
+        profile_path=profile,
+        equipment_patch_root=patch,
+    )
+    assert not report.valid
+    assert expected_code in {issue.code for issue in report.issues}
 
 
 def test_canonical_season_revalidation_rejects_zero_based_model_hour(tmp_path: Path) -> None:

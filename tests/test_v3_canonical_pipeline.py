@@ -8,8 +8,10 @@ import shutil
 from types import MappingProxyType, SimpleNamespace
 
 import pandas as pd
+import geopandas as gpd
 import pytest
 import yaml
+from shapely.geometry import LineString, Point
 
 from competition.canonical import CanonicalCaseData, PipeTypeSpec, StorageSpec
 from competition.core_model import EconomicInput, SegmentSpec, TechnologySpec
@@ -152,6 +154,77 @@ def test_v3_loader_rejects_legacy_contract_before_file_adaptation(tmp_path: Path
     with pytest.raises(V3InputError) as captured:
         load_v3_case(tmp_path)
     assert "3.0.0-draft.2" in str(captured.value)
+
+
+def _copy_two_station_fixture(tmp_path: Path) -> Path:
+    source = Path(__file__).parent / "fixtures" / "v3_smoke_case"
+    case_dir = tmp_path / "two_station_case"
+    shutil.copytree(source, case_dir)
+    sites = gpd.GeoDataFrame(
+        {
+            "site_id": ["station_A", "station_B"],
+            "candidate_rank": [1, 2],
+            "data_version": ["synthetic-v3-draft1"] * 2,
+        },
+        geometry=[Point(114.3006, 30.5006), Point(114.3016, 30.5006)],
+        crs="EPSG:4326",
+    )
+    sites.to_file(case_dir / "candidate_sites.geojson", driver="GeoJSON")
+    network = gpd.GeoDataFrame(
+        {
+            "segment_id": ["segment_A", "segment_B", "segment_link"],
+            "node_from": ["station_A", "station_B", "building_1"],
+            "node_to": ["building_1", "building_2", "building_2"],
+            "length_m": [80.0, 90.0, 70.0],
+            "data_version": ["synthetic-v3-draft1"] * 3,
+        },
+        geometry=[
+            LineString([(114.3006, 30.5006), (114.3001, 30.5001)]),
+            LineString([(114.3016, 30.5006), (114.3011, 30.5001)]),
+            LineString([(114.3001, 30.5001), (114.3011, 30.5001)]),
+        ],
+        crs="EPSG:4326",
+    )
+    network.to_file(case_dir / "candidate_network.geojson", driver="GeoJSON")
+    return case_dir
+
+
+def test_v3_loader_accepts_multiple_candidate_stations_without_selecting_one(
+    tmp_path: Path,
+) -> None:
+    case = load_v3_case(_copy_two_station_fixture(tmp_path), profile="v0-smoke")
+    assert case.candidate_station_nodes == ("station_A", "station_B")
+    assert case.site_node is None
+    assert case.max_built_stations == 1
+    core = case.to_core_input("hybrid")
+    assert core.candidate_station_nodes == case.candidate_station_nodes
+    assert core.site_node is None
+
+
+def test_v3_loader_rejects_duplicate_and_building_station_ids(tmp_path: Path) -> None:
+    case_dir = _copy_two_station_fixture(tmp_path)
+    sites = gpd.read_file(case_dir / "candidate_sites.geojson")
+    sites.loc[1, "site_id"] = "station_A"
+    sites.to_file(case_dir / "candidate_sites.geojson", driver="GeoJSON")
+    with pytest.raises(V3InputError, match="unique"):
+        load_v3_case(case_dir, profile="v0-smoke")
+
+    sites.loc[1, "site_id"] = "building_1"
+    sites.to_file(case_dir / "candidate_sites.geojson", driver="GeoJSON")
+    with pytest.raises(V3InputError, match="overlap"):
+        load_v3_case(case_dir, profile="v0-smoke")
+
+
+def test_v3_loader_rejects_max_built_sites_above_one(tmp_path: Path) -> None:
+    case_dir = _copy_two_station_fixture(tmp_path)
+    config_path = case_dir / "case_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["spatial"]["max_built_sites"] = 2
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    with pytest.raises(
+        V3InputError, match="MULTI_STATION_OPERATION_OUT_OF_SCOPE_FOR_V1"
+    ):
+        load_v3_case(case_dir, profile="v0-smoke")
 
 
 def test_v1_full_never_falls_back_to_fixed_v0_performance(tmp_path: Path) -> None:

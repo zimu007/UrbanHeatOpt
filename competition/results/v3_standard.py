@@ -36,6 +36,17 @@ def _selected_pipe_type(model: Any, segment: str) -> str | None:
     return None
 
 
+def _station_ids(model: Any) -> tuple[str, ...]:
+    return tuple(str(station) for station in model.STATIONS)
+
+
+def _selected_station_ids(model: Any) -> tuple[str, ...]:
+    return tuple(
+        station for station in _station_ids(model)
+        if value(model.station_built[station]) > 0.5
+    )
+
+
 def _is_connected(model: Any, site: str, target: str) -> bool:
     adjacency: dict[str, set[str]] = {}
     for segment in model.SEGMENTS:
@@ -62,10 +73,10 @@ def _is_connected(model: Any, site: str, target: str) -> bool:
 
 def _manual_costs(model: Any) -> dict[str, float]:
     device = sum(
-        value(model.central_capacity_kW[tech])
+        value(model.central_capacity_by_station_kW[station, tech])
         * value(model.central_capex_CNY_per_kW[tech])
         * value(model.central_crf[tech])
-        for tech in model.CENTRAL_TECHNOLOGIES
+        for station in model.STATIONS for tech in model.CENTRAL_TECHNOLOGIES
     ) + sum(
         value(model.local_capacity_kW[node])
         * value(model.local_capex_CNY_per_kW)
@@ -91,34 +102,35 @@ def _manual_costs(model: Any) -> dict[str, float]:
         value(model.connected[node]) * value(model.connection_capex_CNY[node])
         * value(model.connection_crf[node]) for node in model.DEMAND_NODES
     )
-    station = value(model.site_built) * value(model.station_fixed_capex_CNY) * value(model.station_crf)
-    storage = (
-        value(model.storage_energy_capacity_kWh) * value(model.storage_capex_CNY_per_kWh)
-        + value(model.storage_power_cost_capacity_kW) * value(model.storage_power_capex_CNY_per_kW)
-        + value(model.storage_installed) * value(model.storage_fixed_capex_CNY)
+    station = sum(value(model.station_built[item]) for item in model.STATIONS) * value(model.station_fixed_capex_CNY) * value(model.station_crf)
+    storage = sum(
+        value(model.storage_energy_capacity_by_station_kWh[item]) * value(model.storage_capex_CNY_per_kWh)
+        + value(model.storage_power_cost_capacity_by_station_kW[item]) * value(model.storage_power_capex_CNY_per_kW)
+        + value(model.storage_installed_by_station[item]) * value(model.storage_fixed_capex_CNY)
+        for item in model.STATIONS
     ) * value(model.storage_crf)
     fixed_om = sum(
-        value(model.central_capacity_kW[tech]) * value(model.central_capex_CNY_per_kW[tech])
+        value(model.central_capacity_by_station_kW[station, tech]) * value(model.central_capex_CNY_per_kW[tech])
         * value(model.central_fixed_maintenance_fraction_per_year[tech])
-        for tech in model.CENTRAL_TECHNOLOGIES
+        for station in model.STATIONS for tech in model.CENTRAL_TECHNOLOGIES
     ) + sum(
         value(model.local_capacity_kW[node]) * value(model.local_capex_CNY_per_kW)
         * value(model.local_fixed_maintenance_fraction_per_year)
         for node in model.DEMAND_NODES
     )
     variable_om = sum(
-        value(model.central_heat_output_kW[tech, hour]) * value(model.time_weight_h_per_year[hour])
+        value(model.central_heat_output_by_station_kW[station, tech, hour]) * value(model.time_weight_h_per_year[hour])
         * value(model.central_variable_om_CNY_per_kWh_th[tech])
-        for tech in model.CENTRAL_TECHNOLOGIES for hour in model.HOURS
+        for station in model.STATIONS for tech in model.CENTRAL_TECHNOLOGIES for hour in model.HOURS
     ) + sum(
         value(model.local_heat_output_kW[node, hour]) * value(model.time_weight_h_per_year[hour])
         * value(model.local_variable_om_CNY_per_kWh_th)
         for node in model.DEMAND_NODES for hour in model.HOURS
     )
     electricity = sum(
-        value(model.central_electricity_input_kW_e[tech, hour]) * value(model.time_weight_h_per_year[hour])
+        value(model.central_electricity_input_by_station_kW_e[station, tech, hour]) * value(model.time_weight_h_per_year[hour])
         * value(model.electricity_price_CNY_per_kWh_e[hour])
-        for tech in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS for hour in model.HOURS
+        for station in model.STATIONS for tech in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS for hour in model.HOURS
     ) + sum(
         value(model.local_electricity_input_kW_e[node, hour]) * value(model.time_weight_h_per_year[hour])
         * value(model.electricity_price_CNY_per_kWh_e[hour])
@@ -130,9 +142,9 @@ def _manual_costs(model: Any) -> dict[str, float]:
         for hour in model.HOURS
     )
     gas = sum(
-        value(model.gas_input_kW_LHV[tech, hour]) * value(model.time_weight_h_per_year[hour])
+        value(model.gas_input_by_station_kW_LHV[station, tech, hour]) * value(model.time_weight_h_per_year[hour])
         * value(model.gas_price_CNY_per_kWh_LHV[hour])
-        for tech in model.CENTRAL_GAS_BOILERS for hour in model.HOURS
+        for station in model.STATIONS for tech in model.CENTRAL_GAS_BOILERS for hour in model.HOURS
     )
     return {
         "device_capex": float(device), "network_capex": float(network),
@@ -145,9 +157,9 @@ def _manual_costs(model: Any) -> dict[str, float]:
 
 def _manual_carbon(model: Any) -> dict[str, float]:
     electricity = sum(
-        value(model.central_electricity_input_kW_e[tech, hour]) * value(model.time_weight_h_per_year[hour])
+        value(model.central_electricity_input_by_station_kW_e[station, tech, hour]) * value(model.time_weight_h_per_year[hour])
         * value(model.electricity_carbon_kgCO2e_per_kWh_e[hour])
-        for tech in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS for hour in model.HOURS
+        for station in model.STATIONS for tech in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS for hour in model.HOURS
     ) + sum(
         value(model.local_electricity_input_kW_e[node, hour]) * value(model.time_weight_h_per_year[hour])
         * value(model.electricity_carbon_kgCO2e_per_kWh_e[hour])
@@ -159,23 +171,68 @@ def _manual_carbon(model: Any) -> dict[str, float]:
         for hour in model.HOURS
     )
     gas = sum(
-        value(model.gas_input_kW_LHV[tech, hour]) * value(model.time_weight_h_per_year[hour])
+        value(model.gas_input_by_station_kW_LHV[station, tech, hour]) * value(model.time_weight_h_per_year[hour])
         * value(model.gas_carbon_kgCO2e_per_kWh_LHV[hour])
-        for tech in model.CENTRAL_GAS_BOILERS for hour in model.HOURS
+        for station in model.STATIONS for tech in model.CENTRAL_GAS_BOILERS for hour in model.HOURS
     )
     return {"electricity": float(electricity), "gas": float(gas)}
 
 
-def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any, output: Path, network_input: gpd.GeoDataFrame) -> dict[str, Any]:
+def _export_solution(
+    case: CanonicalCaseData,
+    point: ParetoPoint,
+    solution: Any,
+    output: Path,
+    network_input: gpd.GeoDataFrame,
+    sites_input: gpd.GeoDataFrame,
+) -> dict[str, Any]:
     model = solution.model
     target = output / "solutions" / point.point_id
     target.mkdir(parents=True, exist_ok=True)
+    site_metadata = {
+        str(row.site_id): row
+        for row in sites_input.itertuples(index=False)
+    }
+    station_rows = []
+    for station in model.STATIONS:
+        station_id = str(station)
+        metadata = site_metadata[station_id]
+        station_rows.append({
+            "mode": point.mode,
+            "station_id": station_id,
+            "station_built": round(value(model.station_built[station])),
+            "candidate_rank": getattr(metadata, "candidate_rank", None),
+            "station_type": getattr(
+                metadata, "station_type", "candidate_regional_energy_station"
+            ),
+            "location_source": getattr(
+                metadata,
+                "location_source",
+                getattr(metadata, "candidate_source", getattr(metadata, "source", None)),
+            ),
+            "parameter_status": getattr(metadata, "parameter_status", None),
+        })
+    pd.DataFrame(station_rows).to_csv(target / "station_decisions.csv", index=False)
+
     capacities = [
-        {"asset_id": str(tech), "asset_type": "central_generation", "node_id": case.site_node,
-         "installed": round(value(model.central_installed[tech])), "capacity_kW_th": value(model.central_capacity_kW[tech])}
-        for tech in model.CENTRAL_TECHNOLOGIES
+        {
+            "mode": point.mode,
+            "asset_id": (
+                str(tech)
+                if len(model.STATIONS) == 1
+                else f"{tech}@{station}"
+            ),
+            "asset_type": "central_generation",
+            "station_id": str(station),
+            "node_id": str(station),
+            "technology_id": str(tech),
+            "installed": round(value(model.central_installed_by_station[station, tech])),
+            "capacity_kW_th": value(model.central_capacity_by_station_kW[station, tech]),
+        }
+        for station in model.STATIONS for tech in model.CENTRAL_TECHNOLOGIES
     ] + [
-        {"asset_id": f"local_hp@{node}", "asset_type": "local_generation", "node_id": str(node),
+        {"mode": point.mode, "asset_id": f"local_hp@{node}", "asset_type": "local_generation",
+         "station_id": None, "node_id": str(node), "technology_id": str(model.local_technology_id),
          "installed": round(value(model.local_installed[node])), "capacity_kW_th": value(model.local_capacity_kW[node])}
         for node in model.DEMAND_NODES
     ]
@@ -185,13 +242,18 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
          "service_mode": "central" if value(model.connected[node]) > 0.5 else "distributed"}
         for node in model.DEMAND_NODES
     ]).to_csv(target / "building_connection.csv", index=False)
-    pd.DataFrame([{
-        "technology_id": case.storage.technology_id,
-        "installed": round(value(model.storage_installed)),
-        "energy_capacity_kWh_th": value(model.storage_energy_capacity_kWh),
-        "charge_capacity_kW_th": value(model.storage_charge_capacity_kW),
-        "discharge_capacity_kW_th": value(model.storage_discharge_capacity_kW),
-    }]).to_csv(target / "storage_decisions.csv", index=False)
+    pd.DataFrame([
+        {
+            "mode": point.mode,
+            "station_id": str(station),
+            "technology_id": case.storage.technology_id,
+            "installed": round(value(model.storage_installed_by_station[station])),
+            "energy_capacity_kWh_th": value(model.storage_energy_capacity_by_station_kWh[station]),
+            "charge_capacity_kW_th": value(model.storage_charge_capacity_by_station_kW[station]),
+            "discharge_capacity_kW_th": value(model.storage_discharge_capacity_by_station_kW[station]),
+        }
+        for station in model.STATIONS
+    ]).to_csv(target / "storage_decisions.csv", index=False)
 
     network = network_input.copy()
     built = {str(segment): round(value(model.pipe_built[segment])) for segment in model.SEGMENTS}
@@ -208,27 +270,34 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
     network_rows: list[dict[str, Any]] = []
     balance_rows: list[dict[str, Any]] = []
     timestamp_by_hour = dict(zip(case.hours, case.timestamps, strict=True))
+    selected_stations = _selected_station_ids(model)
+    pump_station_id = selected_stations[0] if len(selected_stations) == 1 else None
     for hour in model.HOURS:
         timestamp = timestamp_by_hour[int(hour)]
-        for tech in model.CENTRAL_TECHNOLOGIES:
+        for station in model.STATIONS:
+            for tech in model.CENTRAL_TECHNOLOGIES:
+                dispatch_rows.append({
+                    "timestamp": timestamp, "hour": int(hour),
+                    "asset_id": str(tech) if len(model.STATIONS) == 1 else f"{tech}@{station}",
+                    "station_id": str(station), "node_id": str(station),
+                    "heat_output_kW_th": value(model.central_heat_output_by_station_kW[station, tech, hour]),
+                    "electricity_input_kW_e": value(model.central_electricity_input_by_station_kW_e[station, tech, hour]) if tech in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS else 0.0,
+                    "gas_input_kW_LHV": value(model.gas_input_by_station_kW_LHV[station, tech, hour]) if tech in model.CENTRAL_GAS_BOILERS else 0.0,
+                    "storage_charge_kW_th": 0.0, "storage_discharge_kW_th": 0.0, "storage_soc_kWh_th": 0.0,
+                })
             dispatch_rows.append({
-                "timestamp": timestamp, "hour": int(hour), "asset_id": str(tech),
-                "node_id": case.site_node, "heat_output_kW_th": value(model.central_heat_output_kW[tech, hour]),
-                "electricity_input_kW_e": value(model.central_electricity_input_kW_e[tech, hour]) if tech in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS else 0.0,
-                "gas_input_kW_LHV": value(model.gas_input_kW_LHV[tech, hour]) if tech in model.CENTRAL_GAS_BOILERS else 0.0,
-                "storage_charge_kW_th": 0.0, "storage_discharge_kW_th": 0.0, "storage_soc_kWh_th": 0.0,
+                "timestamp": timestamp, "hour": int(hour),
+                "asset_id": case.storage.technology_id if len(model.STATIONS) == 1 else f"{case.storage.technology_id}@{station}",
+                "station_id": str(station), "node_id": str(station),
+                "heat_output_kW_th": 0.0,
+                "electricity_input_kW_e": 0.0, "gas_input_kW_LHV": 0.0,
+                "storage_charge_kW_th": value(model.storage_charge_by_station_kW[station, hour]),
+                "storage_discharge_kW_th": value(model.storage_discharge_by_station_kW[station, hour]),
+                "storage_soc_kWh_th": value(model.storage_soc_by_station_kWh[station, hour]),
             })
         dispatch_rows.append({
-            "timestamp": timestamp, "hour": int(hour), "asset_id": case.storage.technology_id,
-            "node_id": case.site_node, "heat_output_kW_th": 0.0,
-            "electricity_input_kW_e": 0.0, "gas_input_kW_LHV": 0.0,
-            "storage_charge_kW_th": value(model.storage_charge_kW[hour]),
-            "storage_discharge_kW_th": value(model.storage_discharge_kW[hour]),
-            "storage_soc_kWh_th": value(model.storage_soc_kWh[hour]),
-        })
-        dispatch_rows.append({
             "timestamp": timestamp, "hour": int(hour), "asset_id": "network_pump",
-            "node_id": case.site_node, "heat_output_kW_th": 0.0,
+            "station_id": pump_station_id, "node_id": pump_station_id, "heat_output_kW_th": 0.0,
             "electricity_input_kW_e": value(model.pumping_electricity_input_kW_e[hour]),
             "gas_input_kW_LHV": 0.0, "storage_charge_kW_th": 0.0,
             "storage_discharge_kW_th": 0.0, "storage_soc_kWh_th": 0.0,
@@ -240,7 +309,11 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
             if selected is not None:
                 heat_loss = (
                     value(model.segment_length_m[segment])
-                    * value(model.pipe_level_heat_loss_kW_per_m[selected])
+                    * (
+                        value(model.pipe_level_heat_loss_kW_per_m[selected])
+                        + value(model.pipe_level_heat_loss_fraction_per_m[selected])
+                        * value(model.pipe_level_abs_flow_kW[segment, selected, hour])
+                    )
                 )
                 pumping = (
                     value(model.pipe_level_abs_flow_kW[segment, selected, hour])
@@ -259,7 +332,7 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
         for node in model.DEMAND_NODES:
             dispatch_rows.append({
                 "timestamp": timestamp, "hour": int(hour), "asset_id": f"local_hp@{node}",
-                "node_id": str(node), "heat_output_kW_th": value(model.local_heat_output_kW[node, hour]),
+                "station_id": None, "node_id": str(node), "heat_output_kW_th": value(model.local_heat_output_kW[node, hour]),
                 "electricity_input_kW_e": value(model.local_electricity_input_kW_e[node, hour]),
                 "gas_input_kW_LHV": 0.0, "storage_charge_kW_th": 0.0,
                 "storage_discharge_kW_th": 0.0, "storage_soc_kWh_th": 0.0,
@@ -297,35 +370,41 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
     max_balance = float(balance["residual_kW"].abs().max())
     weighted_hns = float(sum(value(model.unserved_heat_kW[node, hour]) * value(model.time_weight_h_per_year[hour]) for node in model.DEMAND_NODES for hour in model.HOURS))
     pipe_violation = max((abs(value(model.heat_flow_kW[segment, hour])) - value(model.pipe_capacity_kW[segment]) for segment in model.SEGMENTS for hour in model.HOURS), default=0.0)
-    connectivity_ok = all(value(model.connected[node]) < 0.5 or _is_connected(model, case.site_node, str(node)) for node in model.DEMAND_NODES)
-    site_residual = max((abs(
-        sum(value(model.central_heat_output_kW[technology_id, hour]) for technology_id in model.CENTRAL_TECHNOLOGIES)
-        + value(model.storage_discharge_kW[hour])
-        - value(model.storage_charge_kW[hour])
-        - sum(
-            value(model.segment_length_m[segment])
-            * value(model.pipe_level_heat_loss_kW_per_m[pipe_type])
-            * value(model.pipe_level_built[segment, pipe_type])
-            for segment in model.SEGMENTS for pipe_type in model.PIPE_LEVELS
-        )
-        + sum(
-            value(model.incidence[case.site_node, segment])
-            * value(model.heat_flow_kW[segment, hour])
-            for segment in model.SEGMENTS
-        )
-    ) for hour in model.HOURS), default=0.0)
+    connectivity_ok = all(
+        value(model.connected[node]) < 0.5
+        or any(_is_connected(model, station, str(node)) for station in selected_stations)
+        for node in model.DEMAND_NODES
+    )
+    site_residual = max(
+        (
+            abs(value(model.station_source_heat_balance[station, hour].body))
+            for station in model.STATIONS for hour in model.HOURS
+        ),
+        default=0.0,
+    )
     previous = {hour: case.hours[index - 1] if index else case.hours[-1] for index, hour in enumerate(case.hours)}
-    storage_residual = max((abs(value(model.storage_soc_kWh[hour]) - (value(model.storage_soc_kWh[previous[int(hour)]]) * (1 - value(model.storage_standing_loss_fraction_per_hour)) + value(model.storage_charge_kW[hour]) * value(model.storage_charge_efficiency) - value(model.storage_discharge_kW[hour]) / value(model.storage_discharge_efficiency))) for hour in model.HOURS), default=0.0)
+    storage_residual = max((abs(
+        value(model.storage_soc_by_station_kWh[station, hour])
+        - (
+            value(model.storage_soc_by_station_kWh[station, previous[int(hour)]])
+            * (1 - value(model.storage_standing_loss_fraction_per_hour))
+            + value(model.storage_charge_by_station_kW[station, hour])
+            * value(model.storage_charge_efficiency)
+            - value(model.storage_discharge_by_station_kW[station, hour])
+            / value(model.storage_discharge_efficiency)
+        )
+    ) for station in model.STATIONS for hour in model.HOURS), default=0.0)
     margin = float(case.peak_capacity_margin_fraction)
     if margin > 0:
         capacity_margin_slacks = [
             sum(
-                value(model.central_capacity_kW[technology_id])
+                value(model.central_capacity_by_station_kW[station, technology_id])
                 * (
                     value(model.central_ashp_capacity_ratio[technology_id, hour])
                     if technology_id in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS
                     else 1.0
                 )
+                for station in model.STATIONS
                 for technology_id in model.CENTRAL_TECHNOLOGIES
             )
             - (1 + margin)
@@ -348,6 +427,42 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
         minimum_capacity_margin_slack = float(min(capacity_margin_slacks))
     else:
         minimum_capacity_margin_slack = 0.0
+    station_built_count = sum(
+        round(value(model.station_built[station])) for station in model.STATIONS
+    )
+    station_count_ok = (
+        station_built_count == 1
+        if point.mode == "central"
+        else station_built_count == 0
+        if point.mode == "distributed"
+        else station_built_count <= 1
+    )
+    unbuilt_station_zero_ok = True
+    nonzero_central_dispatch_on_built_station_only = True
+    for station in model.STATIONS:
+        built = value(model.station_built[station]) > 0.5
+        capacity = sum(
+            value(model.central_capacity_by_station_kW[station, tech])
+            for tech in model.CENTRAL_TECHNOLOGIES
+        )
+        dispatch = sum(
+            value(model.central_heat_output_by_station_kW[station, tech, hour])
+            for tech in model.CENTRAL_TECHNOLOGIES for hour in model.HOURS
+        )
+        storage_capacity = (
+            value(model.storage_energy_capacity_by_station_kWh[station])
+            + value(model.storage_charge_capacity_by_station_kW[station])
+            + value(model.storage_discharge_capacity_by_station_kW[station])
+        )
+        storage_dispatch = sum(
+            value(model.storage_charge_by_station_kW[station, hour])
+            + value(model.storage_discharge_by_station_kW[station, hour])
+            for hour in model.HOURS
+        )
+        if not built and max(capacity, dispatch, storage_capacity, storage_dispatch) > 1e-7:
+            unbuilt_station_zero_ok = False
+        if dispatch > 1e-7 and not built:
+            nonzero_central_dispatch_on_built_station_only = False
     qa_config = case.raw_config["qa"]
     qa = {
         "point_id": point.point_id,
@@ -363,6 +478,21 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
             minimum_capacity_margin_slack >= -qa_config["balance_tolerance_kW"]
         ),
         "storage_counted_in_peak_capacity_margin": False,
+        "station_built_count": int(station_built_count),
+        "station_selection_ok": bool(station_count_ok),
+        "unbuilt_station_zero_ok": bool(unbuilt_station_zero_ok),
+        "central_dispatch_on_built_station_only": bool(
+            nonzero_central_dispatch_on_built_station_only
+        ),
+        "network_station_endpoints_valid": bool(
+            set(_station_ids(model)) == set(case.candidate_station_nodes)
+            and
+            all(
+                endpoint in {str(node) for node in model.NODES}
+                for segment in network_input.itertuples(index=False)
+                for endpoint in (str(segment.node_from), str(segment.node_to))
+            )
+        ),
         "cost_reaggregation_error_CNY_per_year": real_total - value(model.annual_real_cost_CNY_per_year),
         "carbon_reaggregation_error_kgCO2e_per_year": carbon_total - value(model.annual_operating_physical_carbon_kgCO2e_per_year),
     }
@@ -373,6 +503,10 @@ def _export_solution(case: CanonicalCaseData, point: ParetoPoint, solution: Any,
         and connectivity_ok
         and storage_residual <= qa_config["balance_tolerance_kW"]
         and qa["peak_capacity_margin_ok"]
+        and qa["station_selection_ok"]
+        and qa["unbuilt_station_zero_ok"]
+        and qa["central_dispatch_on_built_station_only"]
+        and qa["network_station_endpoints_valid"]
         and abs(qa["cost_reaggregation_error_CNY_per_year"]) <= qa_config["cost_tolerance_CNY_per_year"]
         and abs(qa["carbon_reaggregation_error_kgCO2e_per_year"]) <= qa_config["carbon_tolerance_kgCO2e_per_year"]
     )
@@ -393,13 +527,32 @@ def export_v3_results(case: CanonicalCaseData, pareto: ParetoRun, output_dir: st
     pareto_csv = output / "pareto_points.csv"
     pd.DataFrame([point_to_dict(point) for point in points.values()]).sort_values(["mode", "annual_operating_carbon_kgCO2e_per_year"]).to_csv(pareto_csv, index=False)
     network = gpd.read_file(Path(case_dir) / case.raw_config["files"]["candidate_network"])
+    sites = gpd.read_file(Path(case_dir) / case.raw_config["files"]["candidate_sites"])
     qa_reports = [
-        _export_solution(case, point, pareto.solutions[point_id], output, network)
+        _export_solution(
+            case, point, pareto.solutions[point_id], output, network, sites
+        )
         for point_id, point in sorted(points.items())
     ]
-    sites = gpd.read_file(Path(case_dir) / case.raw_config["files"]["candidate_sites"])
-    selected_modes = {point.mode for point in points.values() if value(pareto.solutions[point.point_id].model.site_built) > 0.5}
-    sites["selected_in_any_frontier_mode"] = bool(selected_modes)
+    selected_modes_by_station = {
+        station: sorted({
+            point.mode
+            for point in points.values()
+            if value(
+                pareto.solutions[point.point_id].model.station_built[station]
+            ) > 0.5
+        })
+        for station in case.candidate_station_nodes
+    }
+    sites["station_built"] = sites["site_id"].astype(str).map(
+        {station: int(bool(modes)) for station, modes in selected_modes_by_station.items()}
+    ).fillna(0).astype(int)
+    sites["selected_in_mode"] = sites["site_id"].astype(str).map(
+        {station: ",".join(modes) for station, modes in selected_modes_by_station.items()}
+    ).fillna("")
+    sites["selected_in_any_frontier_mode"] = sites["site_id"].astype(str).map(
+        {station: bool(modes) for station, modes in selected_modes_by_station.items()}
+    ).fillna(False).astype(bool)
     candidate_sites = output / "generated_candidate_sites.geojson"
     sites.to_file(candidate_sites, driver="GeoJSON")
     qa_summary = {

@@ -132,8 +132,16 @@ def run_case_pipeline(
                 f"hourly_provider_active:{case.heat_pump_performance.provider_name}"
             ),
             "discrete_pipe_capacity": "three_levels_implemented",
-            "pipe_loss": "linear_core_implemented_disabled_by_v0_input",
-            "pumping": "linear_core_cost_carbon_implemented_disabled_by_v0_input",
+            "pipe_loss": (
+                "linear_flow_proportional_core_active"
+                if case.raw_config.get("features", {}).get("pipe_loss_enabled", False)
+                else "linear_core_implemented_disabled_by_input"
+            ),
+            "pumping": (
+                "linear_core_cost_carbon_active"
+                if case.raw_config.get("features", {}).get("pumping_enabled", False)
+                else "linear_core_cost_carbon_implemented_disabled_by_input"
+            ),
             "candidate_generation": "provider_interface_only_not_executable",
             "carbon": "operating_physical_carbon_implemented",
             "pareto": "epsilon_constraint_implemented",

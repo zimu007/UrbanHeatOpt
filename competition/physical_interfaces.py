@@ -124,6 +124,7 @@ class TabularASHPPerformanceProvider:
     plr_layer: float = 1.0
     provider_name: str = "tabular_ashp_tout_linear"
     parameter_version: str = "guanggu-v0.3-20260823"
+    performance_boundary_policy: str = "strict"
 
     def _selected_curve(self) -> pd.DataFrame:
         table = pd.read_csv(Path(self.curve_path), encoding="utf-8-sig")
@@ -167,25 +168,43 @@ class TabularASHPPerformanceProvider:
 
         curve = self._selected_curve()
         source_t = curve["Tout_C"].to_numpy(dtype=float)
-        target = np.asarray(tuple(float(value) for value in outdoor_temperature_C), dtype=float)
-        if not np.isfinite(target).all():
+        target_raw = np.asarray(tuple(float(value) for value in outdoor_temperature_C), dtype=float)
+        if not np.isfinite(target_raw).all():
             raise PhysicalInterfaceError("outdoor temperature must be finite")
-        outside = (target < source_t[0]) | (target > source_t[-1])
-        if outside.any():
-            values = sorted(set(target[outside].tolist()))
+        if self.performance_boundary_policy not in {"strict", "clip_with_flag"}:
+            raise PhysicalInterfaceError(
+                "performance_boundary_policy must be strict or clip_with_flag"
+            )
+        below = target_raw < source_t[0]
+        above = target_raw > source_t[-1]
+        outside = below | above
+        if self.performance_boundary_policy == "strict" and outside.any():
+            values = sorted(set(target_raw[outside].tolist()))
             raise PhysicalInterfaceError(
                 f"ASHP Tout outside [{source_t[0]}, {source_t[-1]}] degC; extrapolation forbidden: {values}"
             )
-        upper_index = np.searchsorted(source_t, target, side="left")
+        target_lookup = (
+            np.clip(target_raw, source_t[0], source_t[-1])
+            if self.performance_boundary_policy == "clip_with_flag"
+            else target_raw.copy()
+        )
+        boundary_flag = np.full(len(target_raw), "inside_curve", dtype=object)
+        boundary_flag[below] = "clipped_low_temperature"
+        boundary_flag[above] = "clipped_high_temperature"
+        upper_index = np.searchsorted(source_t, target_lookup, side="left")
         upper_index = np.clip(upper_index, 0, len(source_t) - 1)
-        exact = source_t[upper_index] == target
+        exact = source_t[upper_index] == target_lookup
         lower_index = np.where(exact, upper_index, upper_index - 1)
         return pd.DataFrame(
             {
-                "Tout_C": target,
-                "COP": np.interp(target, source_t, curve["COP"].to_numpy(dtype=float)),
+                # Tout_C is retained as the historical raw-temperature alias.
+                "Tout_C": target_raw,
+                "Tout_raw": target_raw,
+                "Tout_for_performance": target_lookup,
+                "curve_boundary_flag": boundary_flag,
+                "COP": np.interp(target_lookup, source_t, curve["COP"].to_numpy(dtype=float)),
                 "capacity_ratio": np.interp(
-                    target, source_t, curve["capacity_ratio"].to_numpy(dtype=float)
+                    target_lookup, source_t, curve["capacity_ratio"].to_numpy(dtype=float)
                 ),
                 "lower_source_Tout": source_t[lower_index],
                 "upper_source_Tout": source_t[upper_index],

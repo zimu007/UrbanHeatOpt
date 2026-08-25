@@ -22,6 +22,7 @@ from pyomo.environ import (
     NonNegativeReals,
     Objective,
     Param,
+    Reference,
     Reals,
     Set,
     Var,
@@ -89,6 +90,7 @@ class PipeLevelSpec:
     lifetime_years: int
     heat_loss_kW_per_m: float = 0.0
     pumping_kWh_e_per_kWh_th_transferred: float = 0.0
+    heat_loss_fraction_per_m: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +162,7 @@ class CoreModelInput:
 
     mode: str
     hours: tuple[int, ...]
-    site_node: str
+    site_node: str | None
     demand_nodes: tuple[str, ...]
     heat_demand_kW: Mapping[tuple[str, int], float]
     technologies: tuple[TechnologySpec, ...]
@@ -172,6 +174,8 @@ class CoreModelInput:
     heat_pump_capacity_ratio_by_hour: Mapping[tuple[str, int], float] = field(default_factory=dict)
     allow_unserved: bool = True
     peak_capacity_margin_fraction: float = 0.0
+    candidate_station_nodes: tuple[str, ...] = ()
+    max_built_stations: int = 1
 
     def __post_init__(self) -> None:
         """复制并冻结负荷映射，阻断调用方在构模前后篡改输入。"""
@@ -348,8 +352,31 @@ def _validate_hours(hours: object) -> tuple[int, ...]:
     return normalized
 
 
-def _validate_nodes(data: CoreModelInput) -> tuple[str, ...]:
-    site = _validate_plain_id(data.site_node, "site_node")
+def _station_nodes(data: CoreModelInput) -> tuple[str, ...]:
+    """Resolve candidate stations without silently selecting the first one."""
+    if data.candidate_station_nodes:
+        if not isinstance(data.candidate_station_nodes, tuple):
+            raise CoreModelInputError("candidate_station_nodes must be a tuple")
+        stations = tuple(
+            _validate_plain_id(node, f"candidate_station_nodes[{index}]")
+            for index, node in enumerate(data.candidate_station_nodes)
+        )
+        if len(set(stations)) != len(stations):
+            raise CoreModelInputError("candidate_station_nodes must be unique")
+        if len(stations) == 1 and data.site_node is not None and data.site_node != stations[0]:
+            raise CoreModelInputError("singleton site_node must match candidate_station_nodes")
+        if len(stations) > 1 and data.site_node is not None:
+            raise CoreModelInputError(
+                "site_node compatibility field must be None for multiple candidate stations"
+            )
+    else:
+        stations = (_validate_plain_id(data.site_node, "site_node"),)
+    if data.max_built_stations != 1:
+        raise CoreModelInputError("MULTI_STATION_OPERATION_OUT_OF_SCOPE_FOR_V1")
+    return stations
+
+
+def _validate_nodes(data: CoreModelInput, stations: tuple[str, ...]) -> tuple[str, ...]:
     if not isinstance(data.demand_nodes, tuple) or not data.demand_nodes:
         raise CoreModelInputError("demand_nodes 必须是非空 tuple")
     nodes = tuple(
@@ -358,19 +385,19 @@ def _validate_nodes(data: CoreModelInput) -> tuple[str, ...]:
     )
     if len(set(nodes)) != len(nodes):
         raise CoreModelInputError("demand_nodes 不得重复")
-    if site in set(nodes):
+    if set(stations).intersection(nodes):
         raise CoreModelInputError("site_node 不得与 demand_nodes 重复")
     return nodes
 
 
 def _validate_segments(
     segments: object,
-    site_node: str,
+    station_nodes: tuple[str, ...],
     demand_nodes: tuple[str, ...],
 ) -> tuple[SegmentSpec, ...]:
     if not isinstance(segments, tuple):
         raise CoreModelInputError("segments 必须是 SegmentSpec tuple")
-    universe = {site_node, *demand_nodes}
+    universe = {*station_nodes, *demand_nodes}
     segment_ids: set[str] = set()
     unordered_pairs: set[frozenset[str]] = set()
     for index, segment in enumerate(segments):
@@ -445,6 +472,10 @@ def _validate_pipe_levels(levels: object) -> tuple[PipeLevelSpec, ...]:
             item.pumping_kWh_e_per_kWh_th_transferred,
             f"{pipe_id}.pumping_kWh_e_per_kWh_th_transferred",
         )
+        loss_fraction = _finite_real(
+            item.heat_loss_fraction_per_m,
+            f"{pipe_id}.heat_loss_fraction_per_m",
+        )
         if capacity <= previous_capacity:
             raise CoreModelInputError("pipe_levels 容量必须随 level 严格递增")
         if capex < 0:
@@ -454,6 +485,10 @@ def _validate_pipe_levels(levels: object) -> tuple[PipeLevelSpec, ...]:
         if pumping < 0:
             raise CoreModelInputError(
                 f"{pipe_id}.pumping_kWh_e_per_kWh_th_transferred 不得为负"
+            )
+        if loss_fraction < 0:
+            raise CoreModelInputError(
+                f"{pipe_id}.heat_loss_fraction_per_m 不得为负"
             )
         if isinstance(item.lifetime_years, bool) or not isinstance(item.lifetime_years, Integral) or item.lifetime_years < 1:
             raise CoreModelInputError(f"{pipe_id}.lifetime_years 必须是正整数")
@@ -700,9 +735,10 @@ def validate_core_input(data: CoreModelInput) -> None:
     if peak_margin < 0 or peak_margin > 1:
         raise CoreModelInputError("peak_capacity_margin_fraction 必须位于 [0, 1]")
     hours = _validate_hours(data.hours)
-    demand_nodes = _validate_nodes(data)
+    stations = _station_nodes(data)
+    demand_nodes = _validate_nodes(data, stations)
     central_ashp, _, local_ashp = _resolve_technology_roles(data.technologies)
-    segments = _validate_segments(data.segments, data.site_node, demand_nodes)
+    segments = _validate_segments(data.segments, stations, demand_nodes)
     _validate_pipe_levels(data.pipe_levels)
     _validate_storage(data.storage)
     _validate_economics(data.economics, hours, demand_nodes)
@@ -739,7 +775,10 @@ def validate_core_input(data: CoreModelInput) -> None:
             )
 
     if data.mode == "central":
-        unreachable = set(demand_nodes) - _reachable_nodes(data.site_node, segments)
+        reachable_from_any_station: set[str] = set()
+        for station in stations:
+            reachable_from_any_station.update(_reachable_nodes(station, segments))
+        unreachable = set(demand_nodes) - reachable_from_any_station
         if unreachable:
             joined = ", ".join(sorted(unreachable))
             raise CoreModelInputError(f"central 模式候选拓扑无法从站点到达：{joined}")
@@ -749,6 +788,8 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     """构建使用预计算性能系数和线性网络物理的三模式核心模型。"""
 
     validate_core_input(data)
+    station_nodes = _station_nodes(data)
+    singleton_station = len(station_nodes) == 1
     central_ashp, boiler, local_ashp = _resolve_technology_roles(data.technologies)
     central_specs = {
         central_ashp.technology_id: central_ashp,
@@ -791,7 +832,7 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         fixed_capex_CNY=0.0,
         lifetime_years=1,
     )
-    all_nodes = (data.site_node, *data.demand_nodes)
+    all_nodes = (*station_nodes, *data.demand_nodes)
 
     incidence = {
         (node, segment_id): (
@@ -807,9 +848,10 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
 
     model = ConcreteModel(name=f"competition-{data.mode}-source-network-load-core")
     model.mode = data.mode
-    model.site_node = data.site_node
+    model.site_node = station_nodes[0] if singleton_station else None
     model.local_technology_id = local_ashp.technology_id
     model.HOURS = Set(initialize=data.hours, ordered=True)
+    model.STATIONS = Set(initialize=station_nodes, ordered=True)
     model.DEMAND_NODES = Set(initialize=data.demand_nodes, ordered=True)
     model.NODES = Set(initialize=all_nodes, ordered=True)
     model.CENTRAL_TECHNOLOGIES = Set(initialize=central_ids, ordered=True)
@@ -921,6 +963,13 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         model.PIPE_LEVELS,
         initialize={key: item.heat_loss_kW_per_m for key, item in pipe_level_by_id.items()},
         within=NonNegativeReals,
+    )
+    model.pipe_level_heat_loss_fraction_per_m = Param(
+        model.PIPE_LEVELS,
+        initialize={
+            key: item.heat_loss_fraction_per_m
+            for key, item in pipe_level_by_id.items()
+        },
     )
     model.pipe_level_pumping_kWh_e_per_kWh_th = Param(
         model.PIPE_LEVELS,
@@ -1113,15 +1162,33 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         initialize=capital_recovery_factor(discount_rate, storage.lifetime_years)
     )
 
-    model.site_built = Var(domain=Binary)
+    model.station_built = Var(model.STATIONS, domain=Binary)
+    if singleton_station:
+        singleton = station_nodes[0]
+        model.site_built = Expression(expr=model.station_built[singleton])
     model.connected = Var(model.DEMAND_NODES, domain=Binary)
-    model.central_installed = Var(model.CENTRAL_TECHNOLOGIES, domain=Binary)
-    model.central_capacity_kW = Var(model.CENTRAL_TECHNOLOGIES, domain=NonNegativeReals)
-    model.central_heat_output_kW = Var(
+    model.central_installed_by_station = Var(
+        model.STATIONS, model.CENTRAL_TECHNOLOGIES, domain=Binary
+    )
+    model.central_capacity_by_station_kW = Var(
+        model.STATIONS, model.CENTRAL_TECHNOLOGIES, domain=NonNegativeReals
+    )
+    model.central_heat_output_by_station_kW = Var(
+        model.STATIONS,
         model.CENTRAL_TECHNOLOGIES,
         model.HOURS,
         domain=NonNegativeReals,
     )
+    if singleton_station:
+        model.central_installed = Reference(
+            model.central_installed_by_station[singleton, :]
+        )
+        model.central_capacity_kW = Reference(
+            model.central_capacity_by_station_kW[singleton, :]
+        )
+        model.central_heat_output_kW = Reference(
+            model.central_heat_output_by_station_kW[singleton, :, :]
+        )
     model.local_installed = Var(model.DEMAND_NODES, domain=Binary)
     model.local_capacity_kW = Var(model.DEMAND_NODES, domain=NonNegativeReals)
     model.local_heat_output_kW = Var(
@@ -1133,7 +1200,6 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     model.pipe_level_built = Var(model.SEGMENTS, model.PIPE_LEVELS, domain=Binary)
     model.pipe_capacity_kW = Var(model.SEGMENTS, domain=NonNegativeReals)
     model.heat_flow_kW = Var(model.SEGMENTS, model.HOURS, domain=Reals)
-    model.heat_flow_positive = Var(model.SEGMENTS, model.HOURS, domain=Binary)
     model.pipe_level_abs_flow_kW = Var(
         model.SEGMENTS,
         model.PIPE_LEVELS,
@@ -1151,35 +1217,58 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         model.HOURS,
         domain=NonNegativeReals,
     )
-    model.storage_installed = Var(domain=Binary)
-    model.storage_energy_capacity_kWh = Var(domain=NonNegativeReals)
-    model.storage_charge_capacity_kW = Var(domain=NonNegativeReals)
-    model.storage_discharge_capacity_kW = Var(domain=NonNegativeReals)
-    model.storage_power_cost_capacity_kW = Var(domain=NonNegativeReals)
-    model.storage_soc_kWh = Var(model.HOURS, domain=NonNegativeReals)
-    model.storage_charge_kW = Var(model.HOURS, domain=NonNegativeReals)
-    model.storage_discharge_kW = Var(model.HOURS, domain=NonNegativeReals)
-    model.storage_charging = Var(model.HOURS, domain=Binary)
+    model.storage_installed_by_station = Var(model.STATIONS, domain=Binary)
+    model.storage_energy_capacity_by_station_kWh = Var(model.STATIONS, domain=NonNegativeReals)
+    model.storage_charge_capacity_by_station_kW = Var(model.STATIONS, domain=NonNegativeReals)
+    model.storage_discharge_capacity_by_station_kW = Var(model.STATIONS, domain=NonNegativeReals)
+    model.storage_power_cost_capacity_by_station_kW = Var(model.STATIONS, domain=NonNegativeReals)
+    model.storage_soc_by_station_kWh = Var(model.STATIONS, model.HOURS, domain=NonNegativeReals)
+    model.storage_charge_by_station_kW = Var(model.STATIONS, model.HOURS, domain=NonNegativeReals)
+    model.storage_discharge_by_station_kW = Var(model.STATIONS, model.HOURS, domain=NonNegativeReals)
+    model.storage_charging_by_station = Var(model.STATIONS, model.HOURS, domain=Binary)
+    if singleton_station:
+        model.storage_installed = Expression(
+            expr=model.storage_installed_by_station[singleton]
+        )
+        model.storage_energy_capacity_kWh = Expression(
+            expr=model.storage_energy_capacity_by_station_kWh[singleton]
+        )
+        model.storage_charge_capacity_kW = Expression(
+            expr=model.storage_charge_capacity_by_station_kW[singleton]
+        )
+        model.storage_discharge_capacity_kW = Expression(
+            expr=model.storage_discharge_capacity_by_station_kW[singleton]
+        )
+        model.storage_power_cost_capacity_kW = Expression(
+            expr=model.storage_power_cost_capacity_by_station_kW[singleton]
+        )
+        model.storage_soc_kWh = Reference(model.storage_soc_by_station_kWh[singleton, :])
+        model.storage_charge_kW = Reference(model.storage_charge_by_station_kW[singleton, :])
+        model.storage_discharge_kW = Reference(model.storage_discharge_by_station_kW[singleton, :])
+        model.storage_charging = Reference(model.storage_charging_by_station[singleton, :])
 
     model.central_capacity_minimum = Constraint(
+        model.STATIONS,
         model.CENTRAL_TECHNOLOGIES,
-        rule=lambda m, technology_id: m.central_capacity_kW[technology_id]
+        rule=lambda m, station, technology_id: m.central_capacity_by_station_kW[station, technology_id]
         >= m.central_capacity_min_kW[technology_id]
-        * m.central_installed[technology_id],
+        * m.central_installed_by_station[station, technology_id],
     )
     model.central_capacity_maximum = Constraint(
+        model.STATIONS,
         model.CENTRAL_TECHNOLOGIES,
-        rule=lambda m, technology_id: m.central_capacity_kW[technology_id]
+        rule=lambda m, station, technology_id: m.central_capacity_by_station_kW[station, technology_id]
         <= m.central_capacity_max_kW[technology_id]
-        * m.central_installed[technology_id],
+        * m.central_installed_by_station[station, technology_id],
     )
     model.central_dispatch_capacity = Constraint(
+        model.STATIONS,
         model.CENTRAL_TECHNOLOGIES,
         model.HOURS,
-        rule=lambda m, technology_id, hour: m.central_heat_output_kW[
-            technology_id, hour
+        rule=lambda m, station, technology_id, hour: m.central_heat_output_by_station_kW[
+            station, technology_id, hour
         ]
-        <= m.central_capacity_kW[technology_id]
+        <= m.central_capacity_by_station_kW[station, technology_id]
         * (
             m.central_ashp_capacity_ratio[technology_id, hour]
             if technology_id in m.CENTRAL_AIR_SOURCE_HEAT_PUMPS
@@ -1213,12 +1302,13 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         rule=lambda m, hour: Constraint.Skip
         if data.peak_capacity_margin_fraction <= 0
         else sum(
-            m.central_capacity_kW[technology_id]
+            m.central_capacity_by_station_kW[station, technology_id]
             * (
                 m.central_ashp_capacity_ratio[technology_id, hour]
                 if technology_id in m.CENTRAL_AIR_SOURCE_HEAT_PUMPS
                 else 1.0
             )
+            for station in m.STATIONS
             for technology_id in m.CENTRAL_TECHNOLOGIES
         )
         >= (1 + m.peak_capacity_margin_fraction)
@@ -1245,103 +1335,161 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
 
     model.connection_requires_site = Constraint(
         model.DEMAND_NODES,
-        rule=lambda m, node: m.connected[node] <= m.site_built,
+        rule=lambda m, node: m.connected[node]
+        <= sum(m.station_built[station] for station in m.STATIONS),
+    )
+    model.maximum_built_stations = Constraint(
+        expr=sum(model.station_built[station] for station in model.STATIONS) <= 1
     )
     model.central_technology_requires_site = Constraint(
+        model.STATIONS,
         model.CENTRAL_TECHNOLOGIES,
-        rule=lambda m, technology_id: m.central_installed[technology_id]
-        <= m.site_built,
+        rule=lambda m, station, technology_id: m.central_installed_by_station[
+            station, technology_id
+        ] <= m.station_built[station],
     )
     model.site_requires_central_technology = Constraint(
-        expr=model.site_built
-        <= sum(model.central_installed[technology_id] for technology_id in central_ids)
+        model.STATIONS,
+        rule=lambda m, station: m.station_built[station]
+        <= sum(
+            m.central_installed_by_station[station, technology_id]
+            for technology_id in m.CENTRAL_TECHNOLOGIES
+        ),
     )
     model.site_requires_connection = Constraint(
-        expr=model.site_built
+        expr=sum(model.station_built[station] for station in model.STATIONS)
         <= sum(model.connected[node] for node in data.demand_nodes)
     )
-    model.pipe_requires_site = Constraint(
+    station_incident_segments = {
+        station: tuple(
+            segment_id
+            for segment_id, segment in segment_by_id.items()
+            if station in (segment.node_u, segment.node_v)
+        )
+        for station in station_nodes
+    }
+    model.STATION_ACCESS = Set(
+        dimen=2,
+        initialize=tuple(
+            (station, segment_id)
+            for station, segments_for_station in station_incident_segments.items()
+            for segment_id in segments_for_station
+        ),
+    )
+    model.station_access_pipe_requires_station = Constraint(
+        model.STATION_ACCESS,
+        rule=lambda m, station, segment_id: m.pipe_built[segment_id]
+        <= m.station_built[station],
+    )
+    model.pipe_requires_any_station = Constraint(
         model.SEGMENTS,
-        rule=lambda m, segment_id: m.pipe_built[segment_id] <= m.site_built,
+        rule=lambda m, segment_id: m.pipe_built[segment_id]
+        <= sum(m.station_built[station] for station in m.STATIONS),
     )
     model.storage_requires_site = Constraint(
-        expr=model.storage_installed <= model.site_built
+        model.STATIONS,
+        rule=lambda m, station: m.storage_installed_by_station[station]
+        <= m.station_built[station],
     )
     if data.storage is None:
-        model.storage_disabled = Constraint(expr=model.storage_installed == 0)
+        model.storage_disabled = Constraint(
+            model.STATIONS,
+            rule=lambda m, station: m.storage_installed_by_station[station] == 0,
+        )
     model.storage_energy_capacity_limit = Constraint(
-        expr=model.storage_energy_capacity_kWh
-        <= model.storage_energy_capacity_max_kWh * model.storage_installed
+        model.STATIONS,
+        rule=lambda m, station: m.storage_energy_capacity_by_station_kWh[station]
+        <= m.storage_energy_capacity_max_kWh * m.storage_installed_by_station[station],
     )
     model.storage_charge_capacity_limit = Constraint(
-        expr=model.storage_charge_capacity_kW
-        <= model.storage_charge_capacity_max_kW * model.storage_installed
+        model.STATIONS,
+        rule=lambda m, station: m.storage_charge_capacity_by_station_kW[station]
+        <= m.storage_charge_capacity_max_kW * m.storage_installed_by_station[station],
     )
     model.storage_discharge_capacity_limit = Constraint(
-        expr=model.storage_discharge_capacity_kW
-        <= model.storage_discharge_capacity_max_kW * model.storage_installed
+        model.STATIONS,
+        rule=lambda m, station: m.storage_discharge_capacity_by_station_kW[station]
+        <= m.storage_discharge_capacity_max_kW * m.storage_installed_by_station[station],
     )
     if storage.max_charge_ratio_per_hour is not None:
         model.storage_charge_energy_ratio = Constraint(
-            expr=model.storage_charge_capacity_kW
-            <= model.storage_max_charge_ratio_per_hour
-            * model.storage_energy_capacity_kWh
+            model.STATIONS,
+            rule=lambda m, station: m.storage_charge_capacity_by_station_kW[station]
+            <= m.storage_max_charge_ratio_per_hour
+            * m.storage_energy_capacity_by_station_kWh[station],
         )
     if storage.max_discharge_ratio_per_hour is not None:
         model.storage_discharge_energy_ratio = Constraint(
-            expr=model.storage_discharge_capacity_kW
-            <= model.storage_max_discharge_ratio_per_hour
-            * model.storage_energy_capacity_kWh
+            model.STATIONS,
+            rule=lambda m, station: m.storage_discharge_capacity_by_station_kW[station]
+            <= m.storage_max_discharge_ratio_per_hour
+            * m.storage_energy_capacity_by_station_kWh[station],
         )
     model.storage_power_cost_charge = Constraint(
-        expr=model.storage_power_cost_capacity_kW >= model.storage_charge_capacity_kW
+        model.STATIONS,
+        rule=lambda m, station: m.storage_power_cost_capacity_by_station_kW[station]
+        >= m.storage_charge_capacity_by_station_kW[station],
     )
     model.storage_power_cost_discharge = Constraint(
-        expr=model.storage_power_cost_capacity_kW >= model.storage_discharge_capacity_kW
+        model.STATIONS,
+        rule=lambda m, station: m.storage_power_cost_capacity_by_station_kW[station]
+        >= m.storage_discharge_capacity_by_station_kW[station],
     )
     model.storage_power_cost_installed = Constraint(
-        expr=model.storage_power_cost_capacity_kW
+        model.STATIONS,
+        rule=lambda m, station: m.storage_power_cost_capacity_by_station_kW[station]
         <= max(storage.charge_capacity_max_kW_th, storage.discharge_capacity_max_kW_th)
-        * model.storage_installed
+        * m.storage_installed_by_station[station],
     )
     model.storage_soc_capacity = Constraint(
+        model.STATIONS,
         model.HOURS,
-        rule=lambda m, hour: m.storage_soc_kWh[hour] <= m.storage_energy_capacity_kWh,
+        rule=lambda m, station, hour: m.storage_soc_by_station_kWh[station, hour]
+        <= m.storage_energy_capacity_by_station_kWh[station],
     )
     model.storage_charge_dispatch = Constraint(
+        model.STATIONS,
         model.HOURS,
-        rule=lambda m, hour: m.storage_charge_kW[hour] <= m.storage_charge_capacity_kW,
+        rule=lambda m, station, hour: m.storage_charge_by_station_kW[station, hour]
+        <= m.storage_charge_capacity_by_station_kW[station],
     )
     model.storage_discharge_dispatch = Constraint(
+        model.STATIONS,
         model.HOURS,
-        rule=lambda m, hour: m.storage_discharge_kW[hour] <= m.storage_discharge_capacity_kW,
+        rule=lambda m, station, hour: m.storage_discharge_by_station_kW[station, hour]
+        <= m.storage_discharge_capacity_by_station_kW[station],
     )
     model.storage_charge_mode = Constraint(
+        model.STATIONS,
         model.HOURS,
-        rule=lambda m, hour: m.storage_charge_kW[hour]
-        <= m.storage_charge_capacity_max_kW * m.storage_charging[hour],
+        rule=lambda m, station, hour: m.storage_charge_by_station_kW[station, hour]
+        <= m.storage_charge_capacity_max_kW * m.storage_charging_by_station[station, hour],
     )
     model.storage_discharge_mode = Constraint(
+        model.STATIONS,
         model.HOURS,
-        rule=lambda m, hour: m.storage_discharge_kW[hour]
+        rule=lambda m, station, hour: m.storage_discharge_by_station_kW[station, hour]
         <= m.storage_discharge_capacity_max_kW
-        * (m.storage_installed - m.storage_charging[hour]),
+        * (m.storage_installed_by_station[station] - m.storage_charging_by_station[station, hour]),
     )
     model.storage_charging_requires_installation = Constraint(
+        model.STATIONS,
         model.HOURS,
-        rule=lambda m, hour: m.storage_charging[hour] <= m.storage_installed,
+        rule=lambda m, station, hour: m.storage_charging_by_station[station, hour]
+        <= m.storage_installed_by_station[station],
     )
     previous_hour = {
         hour: data.hours[index - 1] if index > 0 else data.hours[-1]
         for index, hour in enumerate(data.hours)
     }
     model.storage_soc_balance = Constraint(
+        model.STATIONS,
         model.HOURS,
-        rule=lambda m, hour: m.storage_soc_kWh[hour]
-        == m.storage_soc_kWh[previous_hour[hour]]
+        rule=lambda m, station, hour: m.storage_soc_by_station_kWh[station, hour]
+        == m.storage_soc_by_station_kWh[station, previous_hour[hour]]
         * (1 - m.storage_standing_loss_fraction_per_hour)
-        + m.storage_charge_kW[hour] * m.storage_charge_efficiency
-        - m.storage_discharge_kW[hour] / m.storage_discharge_efficiency,
+        + m.storage_charge_by_station_kW[station, hour] * m.storage_charge_efficiency
+        - m.storage_discharge_by_station_kW[station, hour] / m.storage_discharge_efficiency,
     )
 
     if pipe_level_ids:
@@ -1391,30 +1539,6 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
             <= m.pipe_level_capacity_kW[pipe_type_id]
             * m.pipe_level_built[segment_id, pipe_type_id],
         )
-        model.pipe_level_abs_flow_upper_positive = Constraint(
-            model.SEGMENTS,
-            model.PIPE_LEVELS,
-            model.HOURS,
-            rule=lambda m, segment_id, pipe_type_id, hour:
-            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
-            <= m.heat_flow_kW[segment_id, hour]
-            + 2 * m.segment_capacity_max_kW[segment_id]
-            * (1 - m.heat_flow_positive[segment_id, hour])
-            + m.segment_capacity_max_kW[segment_id]
-            * (1 - m.pipe_level_built[segment_id, pipe_type_id]),
-        )
-        model.pipe_level_abs_flow_upper_negative = Constraint(
-            model.SEGMENTS,
-            model.PIPE_LEVELS,
-            model.HOURS,
-            rule=lambda m, segment_id, pipe_type_id, hour:
-            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
-            <= -m.heat_flow_kW[segment_id, hour]
-            + 2 * m.segment_capacity_max_kW[segment_id]
-            * m.heat_flow_positive[segment_id, hour]
-            + m.segment_capacity_max_kW[segment_id]
-            * (1 - m.pipe_level_built[segment_id, pipe_type_id]),
-        )
     else:
         model.pipe_capacity_limit = Constraint(
             model.SEGMENTS,
@@ -1432,20 +1556,6 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         model.HOURS,
         rule=lambda m, segment_id, hour: m.heat_flow_kW[segment_id, hour]
         >= -m.pipe_capacity_kW[segment_id],
-    )
-    model.heat_flow_direction_upper = Constraint(
-        model.SEGMENTS,
-        model.HOURS,
-        rule=lambda m, segment_id, hour: m.heat_flow_kW[segment_id, hour]
-        <= m.segment_capacity_max_kW[segment_id]
-        * m.heat_flow_positive[segment_id, hour],
-    )
-    model.heat_flow_direction_lower = Constraint(
-        model.SEGMENTS,
-        model.HOURS,
-        rule=lambda m, segment_id, hour: m.heat_flow_kW[segment_id, hour]
-        >= -m.segment_capacity_max_kW[segment_id]
-        * (1 - m.heat_flow_positive[segment_id, hour]),
     )
 
     commodity_big_m = len(data.demand_nodes)
@@ -1467,36 +1577,85 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         )
         == m.connected[node],
     )
+    model.station_topology_supply = Var(model.STATIONS, domain=NonNegativeReals)
     model.topology_site_balance = Constraint(
-        expr=sum(
-            model.incidence[data.site_node, segment_id]
-            * model.topology_flow[segment_id]
-            for segment_id in segment_ids
-        )
-        == -sum(model.connected[node] for node in data.demand_nodes)
+        model.STATIONS,
+        rule=lambda m, station: sum(
+            m.incidence[station, segment_id] * m.topology_flow[segment_id]
+            for segment_id in m.SEGMENTS
+        ) == -m.station_topology_supply[station],
+    )
+    model.station_topology_supply_limit = Constraint(
+        model.STATIONS,
+        rule=lambda m, station: m.station_topology_supply[station]
+        <= commodity_big_m * m.station_built[station],
+    )
+    model.topology_total_supply = Constraint(
+        expr=sum(model.station_topology_supply[station] for station in model.STATIONS)
+        == sum(model.connected[node] for node in model.DEMAND_NODES)
     )
 
-    model.central_site_heat_balance = Constraint(
+    model.pipe_heat_loss_kW = Expression(
         model.HOURS,
         rule=lambda m, hour: sum(
-            m.central_heat_output_kW[technology_id, hour]
-            for technology_id in m.CENTRAL_TECHNOLOGIES
-        )
-        + m.storage_discharge_kW[hour]
-        - m.storage_charge_kW[hour]
-        - sum(
             m.segment_length_m[segment_id]
-            * m.pipe_level_heat_loss_kW_per_m[pipe_type_id]
-            * m.pipe_level_built[segment_id, pipe_type_id]
+            * (
+                m.pipe_level_heat_loss_kW_per_m[pipe_type_id]
+                * m.pipe_level_built[segment_id, pipe_type_id]
+                + m.pipe_level_heat_loss_fraction_per_m[pipe_type_id]
+                * m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+            )
             for segment_id in m.SEGMENTS
             for pipe_type_id in m.PIPE_LEVELS
+        ),
+    )
+    maximum_loss_kW = sum(
+        segment.length_m
+        * max(
+            (
+                level.heat_loss_kW_per_m
+                + level.heat_loss_fraction_per_m * segment.capacity_max_kW
+                for level in data.pipe_levels
+            ),
+            default=0.0,
         )
+        for segment in data.segments
+    )
+    model.station_loss_allocation_kW = Var(
+        model.STATIONS, model.HOURS, domain=NonNegativeReals
+    )
+    model.station_loss_allocation_total = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: sum(
+            m.station_loss_allocation_kW[station, hour] for station in m.STATIONS
+        ) == m.pipe_heat_loss_kW[hour],
+    )
+    model.station_loss_allocation_requires_station = Constraint(
+        model.STATIONS,
+        model.HOURS,
+        rule=lambda m, station, hour: m.station_loss_allocation_kW[station, hour]
+        <= maximum_loss_kW * m.station_built[station],
+    )
+    model.station_source_heat_balance = Constraint(
+        model.STATIONS,
+        model.HOURS,
+        rule=lambda m, station, hour: sum(
+            m.central_heat_output_by_station_kW[station, technology_id, hour]
+            for technology_id in m.CENTRAL_TECHNOLOGIES
+        )
+        + m.storage_discharge_by_station_kW[station, hour]
+        - m.storage_charge_by_station_kW[station, hour]
+        - m.station_loss_allocation_kW[station, hour]
         + sum(
-            m.incidence[data.site_node, segment_id] * m.heat_flow_kW[segment_id, hour]
+            m.incidence[station, segment_id] * m.heat_flow_kW[segment_id, hour]
             for segment_id in m.SEGMENTS
         )
         == 0,
     )
+    if singleton_station:
+        model.central_site_heat_balance = Reference(
+            model.station_source_heat_balance[singleton, :]
+        )
     model.network_node_heat_balance = Constraint(
         model.DEMAND_NODES,
         model.HOURS,
@@ -1513,7 +1672,9 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         <= m.heat_demand_kW[node, hour] * m.connected[node],
     )
 
-    reachable = _reachable_nodes(data.site_node, data.segments)
+    reachable: set[str] = set()
+    for station in station_nodes:
+        reachable.update(_reachable_nodes(station, data.segments))
     unreachable_demands = tuple(
         node for node in data.demand_nodes if node not in reachable
     )
@@ -1542,13 +1703,17 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         )
 
     if data.mode == "central":
-        model.mode_site = Constraint(expr=model.site_built == 1)
+        model.mode_site = Constraint(
+            expr=sum(model.station_built[station] for station in model.STATIONS) == 1
+        )
         model.mode_connections = Constraint(
             model.DEMAND_NODES,
             rule=lambda m, node: m.connected[node] == 1,
         )
     elif data.mode == "distributed":
-        model.mode_site = Constraint(expr=model.site_built == 0)
+        model.mode_site = Constraint(
+            expr=sum(model.station_built[station] for station in model.STATIONS) == 0
+        )
         model.mode_connections = Constraint(
             model.DEMAND_NODES,
             rule=lambda m, node: m.connected[node] == 0,
@@ -1558,42 +1723,62 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
             rule=lambda m, segment_id: m.pipe_built[segment_id] == 0,
         )
         model.mode_central_technologies = Constraint(
+            model.STATIONS,
             model.CENTRAL_TECHNOLOGIES,
-            rule=lambda m, technology_id: m.central_installed[technology_id] == 0,
+            rule=lambda m, station, technology_id: m.central_installed_by_station[
+                station, technology_id
+            ] == 0,
         )
 
-    model.central_electricity_input_kW_e = Expression(
+    model.central_electricity_input_by_station_kW_e = Expression(
+        model.STATIONS,
         model.CENTRAL_AIR_SOURCE_HEAT_PUMPS,
         model.HOURS,
-        rule=lambda m, technology_id, hour: m.central_heat_output_kW[
-            technology_id, hour
+        rule=lambda m, station, technology_id, hour: m.central_heat_output_by_station_kW[
+            station, technology_id, hour
         ]
         / m.central_ashp_cop[technology_id, hour],
     )
-    model.central_electricity_input_kWh_e = Expression(
+    model.central_electricity_input_by_station_kWh_e = Expression(
+        model.STATIONS,
         model.CENTRAL_AIR_SOURCE_HEAT_PUMPS,
         model.HOURS,
-        rule=lambda m, technology_id, hour: m.central_electricity_input_kW_e[
-            technology_id, hour
+        rule=lambda m, station, technology_id, hour: m.central_electricity_input_by_station_kW_e[
+            station, technology_id, hour
         ]
         * m.timestep_hours,
     )
-    model.gas_input_kW_LHV = Expression(
+    model.gas_input_by_station_kW_LHV = Expression(
+        model.STATIONS,
         model.CENTRAL_GAS_BOILERS,
         model.HOURS,
-        rule=lambda m, technology_id, hour: m.central_heat_output_kW[
-            technology_id, hour
+        rule=lambda m, station, technology_id, hour: m.central_heat_output_by_station_kW[
+            station, technology_id, hour
         ]
         / m.central_boiler_efficiency[technology_id],
     )
-    model.gas_input_kWh_LHV = Expression(
+    model.gas_input_by_station_kWh_LHV = Expression(
+        model.STATIONS,
         model.CENTRAL_GAS_BOILERS,
         model.HOURS,
-        rule=lambda m, technology_id, hour: m.gas_input_kW_LHV[
-            technology_id, hour
+        rule=lambda m, station, technology_id, hour: m.gas_input_by_station_kW_LHV[
+            station, technology_id, hour
         ]
         * m.timestep_hours,
     )
+    if singleton_station:
+        model.central_electricity_input_kW_e = Reference(
+            model.central_electricity_input_by_station_kW_e[singleton, :, :]
+        )
+        model.central_electricity_input_kWh_e = Reference(
+            model.central_electricity_input_by_station_kWh_e[singleton, :, :]
+        )
+        model.gas_input_kW_LHV = Reference(
+            model.gas_input_by_station_kW_LHV[singleton, :, :]
+        )
+        model.gas_input_kWh_LHV = Reference(
+            model.gas_input_by_station_kWh_LHV[singleton, :, :]
+        )
     model.local_electricity_input_kW_e = Expression(
         model.DEMAND_NODES,
         model.HOURS,
@@ -1620,9 +1805,10 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     # 固定运维仍按装机容量×单位投资×年度维护比例核算。
     model.annual_device_capex_CNY_per_year = Expression(
         expr=sum(
-            model.central_capacity_kW[technology_id]
+            model.central_capacity_by_station_kW[station, technology_id]
             * model.central_capex_CNY_per_kW[technology_id]
             * model.central_crf[technology_id]
+            for station in model.STATIONS
             for technology_id in model.CENTRAL_TECHNOLOGIES
         )
         + sum(
@@ -1662,21 +1848,26 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         )
     )
     model.annual_station_capex_CNY_per_year = Expression(
-        expr=model.site_built * model.station_fixed_capex_CNY * model.station_crf
+        expr=sum(model.station_built[station] for station in model.STATIONS)
+        * model.station_fixed_capex_CNY * model.station_crf
     )
     model.annual_storage_capex_CNY_per_year = Expression(
-        expr=(
-            model.storage_energy_capacity_kWh * model.storage_capex_CNY_per_kWh
-            + model.storage_power_cost_capacity_kW * model.storage_power_capex_CNY_per_kW
-            + model.storage_installed * model.storage_fixed_capex_CNY
-        )
-        * model.storage_crf
+        expr=sum(
+            model.storage_energy_capacity_by_station_kWh[station]
+            * model.storage_capex_CNY_per_kWh
+            + model.storage_power_cost_capacity_by_station_kW[station]
+            * model.storage_power_capex_CNY_per_kW
+            + model.storage_installed_by_station[station]
+            * model.storage_fixed_capex_CNY
+            for station in model.STATIONS
+        ) * model.storage_crf
     )
     model.annual_fixed_om_CNY_per_year = Expression(
         expr=sum(
-            model.central_capacity_kW[technology_id]
+            model.central_capacity_by_station_kW[station, technology_id]
             * model.central_capex_CNY_per_kW[technology_id]
             * model.central_fixed_maintenance_fraction_per_year[technology_id]
+            for station in model.STATIONS
             for technology_id in model.CENTRAL_TECHNOLOGIES
         )
         + sum(
@@ -1688,9 +1879,10 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     )
     model.annual_variable_om_CNY_per_year = Expression(
         expr=sum(
-            model.central_heat_output_kW[technology_id, hour]
+            model.central_heat_output_by_station_kW[station, technology_id, hour]
             * model.time_weight_h_per_year[hour]
             * model.central_variable_om_CNY_per_kWh_th[technology_id]
+            for station in model.STATIONS
             for technology_id in model.CENTRAL_TECHNOLOGIES
             for hour in model.HOURS
         )
@@ -1704,9 +1896,10 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     )
     model.annual_electricity_cost_CNY_per_year = Expression(
         expr=sum(
-            model.central_electricity_input_kW_e[technology_id, hour]
+            model.central_electricity_input_by_station_kW_e[station, technology_id, hour]
             * model.time_weight_h_per_year[hour]
             * model.electricity_price_CNY_per_kWh_e[hour]
+            for station in model.STATIONS
             for technology_id in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS
             for hour in model.HOURS
         )
@@ -1726,9 +1919,10 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     )
     model.annual_gas_cost_CNY_per_year = Expression(
         expr=sum(
-            model.gas_input_kW_LHV[technology_id, hour]
+            model.gas_input_by_station_kW_LHV[station, technology_id, hour]
             * model.time_weight_h_per_year[hour]
             * model.gas_price_CNY_per_kWh_LHV[hour]
+            for station in model.STATIONS
             for technology_id in model.CENTRAL_GAS_BOILERS
             for hour in model.HOURS
         )
@@ -1746,9 +1940,10 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     )
     model.annual_electricity_carbon_kgCO2e_per_year = Expression(
         expr=sum(
-            model.central_electricity_input_kW_e[technology_id, hour]
+            model.central_electricity_input_by_station_kW_e[station, technology_id, hour]
             * model.time_weight_h_per_year[hour]
             * model.electricity_carbon_kgCO2e_per_kWh_e[hour]
+            for station in model.STATIONS
             for technology_id in model.CENTRAL_AIR_SOURCE_HEAT_PUMPS
             for hour in model.HOURS
         )
@@ -1768,9 +1963,10 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     )
     model.annual_gas_carbon_kgCO2e_per_year = Expression(
         expr=sum(
-            model.gas_input_kW_LHV[technology_id, hour]
+            model.gas_input_by_station_kW_LHV[station, technology_id, hour]
             * model.time_weight_h_per_year[hour]
             * model.gas_carbon_kgCO2e_per_kWh_LHV[hour]
+            for station in model.STATIONS
             for technology_id in model.CENTRAL_GAS_BOILERS
             for hour in model.HOURS
         )

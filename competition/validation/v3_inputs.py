@@ -101,6 +101,8 @@ def _load_config(case_dir: Path) -> dict[str, Any]:
         raise V3InputError([f"case_config.yaml 无法解析：{exc}"]) from exc
     if not isinstance(config, dict):
         raise V3InputError(["case_config.yaml 顶层必须是映射对象"])
+    if "spatial" in config and config["spatial"].get("max_built_sites") != 1:
+        raise V3InputError(["MULTI_STATION_OPERATION_OUT_OF_SCOPE_FOR_V1"])
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     errors = [
         f"{'.'.join(map(str, error.path)) or '$'}：{error.message}"
@@ -372,6 +374,11 @@ def _read_pipe_types(path: Path) -> tuple[PipeTypeSpec, ...]:
             lifetime_years=int(_finite(row["lifetime_years"], "pipe.lifetime", positive=True)),
             source=_clean_id(row["source"], "pipe.source"),
             parameter_version=_clean_id(row["parameter_version"], "pipe.parameter_version"),
+            heat_loss_fraction_per_m=_finite(
+                row.get("heat_loss_fraction_per_m", 0.0),
+                "pipe.loss_fraction",
+                minimum=0,
+            ),
         )
         for _, row in table.sort_values("level").iterrows()
     )
@@ -381,19 +388,41 @@ def _read_pipe_types(path: Path) -> tuple[PipeTypeSpec, ...]:
     return specs
 
 
-def _read_spatial(case_dir: Path, config: dict[str, Any], building_ids: tuple[str, ...], pipe_types: tuple[PipeTypeSpec, ...]) -> tuple[str, tuple[SegmentSpec, ...]]:
+def _read_spatial(
+    case_dir: Path,
+    config: dict[str, Any],
+    building_ids: tuple[str, ...],
+    pipe_types: tuple[PipeTypeSpec, ...],
+) -> tuple[str | None, tuple[str, ...], tuple[SegmentSpec, ...]]:
     if config["spatial"]["candidate_source"] != "provided":
         raise V3InputError(["candidate_source=generate 的候选生成模块尚未接入"])
     sites = gpd.read_file(case_dir / config["files"]["candidate_sites"])
     network = gpd.read_file(case_dir / config["files"]["candidate_network"])
-    if len(sites) != 1 or "site_id" not in sites.columns:
-        raise V3InputError(["当前 V0 核心要求 provided candidate_sites 恰好包含一个 site_id"])
-    site_id = _clean_id(sites.iloc[0]["site_id"], "site_id")
+    if "site_id" not in sites.columns:
+        raise V3InputError(["candidate_sites.geojson missing site_id"])
+    if int(config["spatial"]["max_built_sites"]) != 1:
+        raise V3InputError(["MULTI_STATION_OPERATION_OUT_OF_SCOPE_FOR_V1"])
+    count = len(sites)
+    minimum = int(config["spatial"]["candidate_site_count_min"])
+    maximum = int(config["spatial"]["candidate_site_count_max"])
+    if not minimum <= count <= maximum:
+        raise V3InputError([
+            f"candidate site count {count} must be within configured range [{minimum}, {maximum}]"
+        ])
+    station_nodes = tuple(
+        _clean_id(value, f"site_id[{index}]")
+        for index, value in enumerate(sites["site_id"].tolist())
+    )
+    if len(set(station_nodes)) != len(station_nodes):
+        raise V3InputError(["candidate site_id must be unique"])
+    overlap = set(station_nodes).intersection(building_ids)
+    if overlap:
+        raise V3InputError(["candidate site_id must not overlap building_id"])
     required = {"segment_id", "node_from", "node_to", "length_m", "data_version", "geometry"}
     missing = sorted(required - set(network.columns))
     if missing:
         raise V3InputError(["candidate_network.geojson 缺少字段：" + ", ".join(missing)])
-    allowed_nodes = {site_id, *building_ids}
+    allowed_nodes = {*station_nodes, *building_ids}
     if not set(network["node_from"]).union(network["node_to"]).issubset(allowed_nodes):
         raise V3InputError(["候选管段端点必须引用 site_id 或 building_id"])
     top = pipe_types[-1]
@@ -409,7 +438,8 @@ def _read_spatial(case_dir: Path, config: dict[str, Any], building_ids: tuple[st
         )
         for _, row in network.sort_values("segment_id").iterrows()
     )
-    return site_id, segments
+    compatibility_site = station_nodes[0] if len(station_nodes) == 1 else None
+    return compatibility_site, station_nodes, segments
 
 
 def load_v3_case(
@@ -443,7 +473,9 @@ def load_v3_case(
         )
         pipe_types = _read_pipe_types(paths[config["files"]["pipe_types"]])
         parameter_versions.update({item.pipe_type_id: item.parameter_version for item in pipe_types})
-        site_node, segments = _read_spatial(root, config, building_ids, pipe_types)
+        site_node, station_nodes, segments = _read_spatial(
+            root, config, building_ids, pipe_types
+        )
     except V3InputError:
         raise
     except Exception as exc:
@@ -465,6 +497,9 @@ def load_v3_case(
             supply_temperature_C=float(config["network"]["supply_temperature_C"]),
             plr_layer=float(config["performance"]["plr_layer"]),
             parameter_version=config["performance"]["parameter_version"],
+            performance_boundary_policy=config["performance"].get(
+                "performance_boundary_policy", "strict"
+            ),
         )
     provider = provider or FixedV0PerformanceProvider()
     try:
@@ -503,7 +538,11 @@ def load_v3_case(
             atol=1e-12,
         ):
             raise V3InputError(["v1-full 完整供暖季每小时权重必须为 1 h/year"])
-        if any(item.heat_loss_kW_per_m <= 0 for item in pipe_types):
+        if any(
+            item.heat_loss_kW_per_m <= 0
+            and item.heat_loss_fraction_per_m <= 0
+            for item in pipe_types
+        ):
             raise V3InputError(["v1-full 三档管径必须提供大于 0 的简化线性热损系数"])
         if any(
             item.pumping_kWh_e_per_kWh_th_transferred <= 0 for item in pipe_types
@@ -558,4 +597,6 @@ def load_v3_case(
         peak_capacity_margin_fraction=float(
             config["planning"]["peak_capacity_margin_fraction"]
         ),
+        candidate_station_nodes=station_nodes,
+        max_built_stations=int(config["spatial"]["max_built_sites"]),
     )

@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
+from pathlib import Path
+from types import SimpleNamespace
 
+import geopandas as gpd
+import pandas as pd
 import pytest
 from pyomo.environ import ConcreteModel, Constraint, Objective, Var, value
 from pyomo.core.base.objective import Objective as ObjectiveComponent
 from pyomo.opt import TerminationCondition
+from shapely.geometry import LineString, Point
 
 import competition.solvers as solver_module
 from competition.core_model import (
@@ -32,6 +38,8 @@ from competition.solvers import (
     solve_pyomo_model,
     validate_solver_settings,
 )
+from competition.pareto import ParetoPoint, ParetoRun
+from competition.results.v3_standard import export_v3_results
 
 
 COST_ABS_TOL_CNY_PER_YEAR = 1e-6
@@ -177,6 +185,252 @@ def _core_input(**overrides: object) -> CoreModelInput:
         ),
     )
     return CoreModelInput(**values)
+
+
+def _two_station_input(mode: str) -> CoreModelInput:
+    demand_nodes = ("demand_1", "demand_2")
+    hours = (1, 2)
+    return _core_input(
+        mode=mode,
+        hours=hours,
+        site_node=None,
+        candidate_station_nodes=("station_A", "station_B"),
+        max_built_stations=1,
+        demand_nodes=demand_nodes,
+        heat_demand_kW={
+            (node, hour): 10.0 for node in demand_nodes for hour in hours
+        },
+        technologies=_technologies(
+            central_ashp={"capacity_max_kW": 50.0},
+            central_gas_boiler={"capacity_max_kW": 50.0},
+            local_ashp={"capacity_max_kW": 20.0},
+        ),
+        segments=(
+            _segment("access_A", "station_A", "demand_1", length_m=5.0, pipe_capex_CNY_per_m=1.0),
+            _segment("building_link", "demand_1", "demand_2", length_m=5.0, pipe_capex_CNY_per_m=1.0),
+            _segment("access_B", "station_B", "demand_2", length_m=50.0, pipe_capex_CNY_per_m=1.0),
+        ),
+        economics=_economics(hours=hours, demand_nodes=demand_nodes),
+    )
+
+
+def test_multi_candidate_station_structure_and_max_one_constraint() -> None:
+    model = build_core_model(_two_station_input("hybrid"))
+    assert tuple(model.STATIONS) == ("station_A", "station_B")
+    assert len(model.station_built) == 2
+    body = model.maximum_built_stations.body
+    assert str(body).count("station_built") == 2
+    assert value(model.maximum_built_stations.upper) == pytest.approx(1)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_count", "expected_station"),
+    [
+        ("central", 1, "station_A"),
+        ("distributed", 0, None),
+        ("hybrid", 0, None),
+    ],
+)
+def test_tiny_two_station_mode_selection(
+    mode: str, expected_count: int, expected_station: str | None
+) -> None:
+    model = solve_core_model(
+        _two_station_input(mode), SolverSettings(name="highs", mip_gap=0.0)
+    ).model
+    selected = [
+        str(station) for station in model.STATIONS
+        if value(model.station_built[station]) > 0.5
+    ]
+    assert len(selected) == expected_count
+    assert (selected[0] if selected else None) == expected_station
+    assert sum(
+        value(model.unserved_heat_kW[node, hour])
+        for node in model.DEMAND_NODES for hour in model.HOURS
+    ) == pytest.approx(0, abs=1e-7)
+    assert max(
+        abs(value(model.station_source_heat_balance[station, hour].body))
+        for station in model.STATIONS for hour in model.HOURS
+    ) == pytest.approx(0, abs=1e-7)
+    assert max(
+        abs(
+            value(model.demand_heat_balance[node, hour].body)
+            - value(model.demand_heat_balance[node, hour].lower)
+        )
+        for node in model.DEMAND_NODES for hour in model.HOURS
+    ) == pytest.approx(0, abs=1e-7)
+    for station in model.STATIONS:
+        if station in selected:
+            continue
+        assert sum(
+            value(model.central_capacity_by_station_kW[station, technology])
+            for technology in model.CENTRAL_TECHNOLOGIES
+        ) == pytest.approx(0, abs=1e-7)
+        assert sum(
+            value(model.central_heat_output_by_station_kW[station, technology, hour])
+            for technology in model.CENTRAL_TECHNOLOGIES for hour in model.HOURS
+        ) == pytest.approx(0, abs=1e-7)
+        assert value(model.storage_installed_by_station[station]) == pytest.approx(0)
+        assert value(
+            model.storage_energy_capacity_by_station_kWh[station]
+        ) == pytest.approx(0, abs=1e-7)
+        assert value(
+            model.storage_charge_capacity_by_station_kW[station]
+        ) == pytest.approx(0, abs=1e-7)
+        assert value(
+            model.storage_discharge_capacity_by_station_kW[station]
+        ) == pytest.approx(0, abs=1e-7)
+        assert sum(
+            value(model.storage_charge_by_station_kW[station, hour])
+            + value(model.storage_discharge_by_station_kW[station, hour])
+            for hour in model.HOURS
+        ) == pytest.approx(0, abs=1e-7)
+        assert sum(
+            abs(value(model.incidence[station, segment]) * value(model.heat_flow_kW[segment, hour]))
+            for segment in model.SEGMENTS for hour in model.HOURS
+        ) == pytest.approx(0, abs=1e-7)
+
+
+def test_multi_station_operation_is_rejected() -> None:
+    with pytest.raises(
+        CoreModelInputError, match="MULTI_STATION_OPERATION_OUT_OF_SCOPE_FOR_V1"
+    ):
+        validate_core_input(replace(_two_station_input("hybrid"), max_built_stations=2))
+
+
+def test_multi_candidate_standard_results_keep_true_station_mapping(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    sites = gpd.GeoDataFrame(
+        {
+            "site_id": ["station_A", "station_B"],
+            "candidate_rank": [1, 2],
+            "candidate_source": ["synthetic_test", "synthetic_test"],
+            "parameter_status": ["synthetic_test", "synthetic_test"],
+        },
+        geometry=[Point(0, 0), Point(1, 0)],
+        crs="EPSG:4326",
+    )
+    sites.to_file(case_dir / "candidate_sites.geojson", driver="GeoJSON")
+    network = gpd.GeoDataFrame(
+        {
+            "segment_id": ["access_A", "building_link", "access_B"],
+            "node_from": ["station_A", "demand_1", "station_B"],
+            "node_to": ["demand_1", "demand_2", "demand_2"],
+            "length_m": [5.0, 5.0, 50.0],
+        },
+        geometry=[
+            LineString([(0, 0), (0.1, 0)]),
+            LineString([(0.1, 0), (0.9, 0)]),
+            LineString([(1, 0), (0.9, 0)]),
+        ],
+        crs="EPSG:4326",
+    )
+    network.to_file(case_dir / "candidate_network.geojson", driver="GeoJSON")
+
+    points: dict[str, ParetoPoint] = {}
+    solutions = {}
+    frontiers = {}
+    for mode in ("central", "distributed", "hybrid"):
+        solved = solve_core_model(
+            _two_station_input(mode), SolverSettings(name="highs", mip_gap=0.0)
+        )
+        model = solved.model
+        point = ParetoPoint(
+            point_id=f"{mode}_cost",
+            mode=mode,
+            labels=("cost_endpoint",),
+            epsilon_kgCO2e_per_year=None,
+            annual_real_cost_CNY_per_year=value(model.annual_real_cost_CNY_per_year),
+            annual_operating_carbon_kgCO2e_per_year=value(
+                model.annual_operating_physical_carbon_kgCO2e_per_year
+            ),
+            annual_hns_penalty_CNY_per_year=value(
+                model.annual_hns_penalty_CNY_per_year
+            ),
+            unserved_heat_kWh=0.0,
+        )
+        points[mode] = point
+        frontiers[mode] = (point,)
+        solutions[point.point_id] = solved
+
+    pareto = ParetoRun(
+        mode_frontiers=frontiers,
+        combined_frontier=tuple(points.values()),
+        solutions=solutions,
+    )
+    case = SimpleNamespace(
+        hours=(1, 2),
+        timestamps=(
+            pd.Timestamp("2026-01-01T00:00:00+08:00"),
+            pd.Timestamp("2026-01-01T01:00:00+08:00"),
+        ),
+        storage=SimpleNamespace(technology_id="disabled_storage"),
+        candidate_station_nodes=("station_A", "station_B"),
+        peak_capacity_margin_fraction=0.0,
+        solver=SolverSettings(name="highs", mip_gap=0.0),
+        raw_config={
+            "files": {
+                "candidate_sites": "candidate_sites.geojson",
+                "candidate_network": "candidate_network.geojson",
+            },
+            "qa": {
+                "balance_tolerance_kW": 1e-6,
+                "unserved_tolerance_kWh": 1e-6,
+                "cost_tolerance_CNY_per_year": 1e-6,
+                "carbon_tolerance_kgCO2e_per_year": 1e-6,
+            },
+        },
+    )
+    exported = export_v3_results(case, pareto, tmp_path / "results", case_dir)
+
+    central_dir = exported.output_dir / "solutions" / "central_cost"
+    station_decisions = pd.read_csv(central_dir / "station_decisions.csv")
+    assert station_decisions[["station_id", "station_built"]].to_dict("records") == [
+        {"station_id": "station_A", "station_built": 1},
+        {"station_id": "station_B", "station_built": 0},
+    ]
+    capacities = pd.read_csv(central_dir / "capacity_decisions.csv")
+    central_capacity = capacities[capacities["asset_type"].eq("central_generation")]
+    assert set(central_capacity["station_id"]) == {"station_A", "station_B"}
+    assert (central_capacity.loc[central_capacity.station_id.eq("station_B"), "capacity_kW_th"] == 0).all()
+    assert (central_capacity.loc[central_capacity.capacity_kW_th.gt(1e-8), "station_id"] == "station_A").all()
+
+    dispatch = pd.read_parquet(central_dir / "dispatch_hourly.parquet")
+    central_dispatch = dispatch[
+        dispatch["asset_id"].str.startswith(("central_ashp", "central_gas_boiler"))
+    ]
+    assert central_dispatch["station_id"].notna().all()
+    assert set(central_dispatch.loc[central_dispatch.heat_output_kW_th.gt(1e-8), "station_id"]) == {"station_A"}
+    storage = pd.read_csv(central_dir / "storage_decisions.csv")
+    assert set(storage["station_id"]) == {"station_A", "station_B"}
+    assert (storage.loc[storage.station_id.eq("station_B"), "energy_capacity_kWh_th"] == 0).all()
+
+    distributed = pd.read_csv(
+        exported.output_dir / "solutions" / "distributed_cost" / "station_decisions.csv"
+    )
+    hybrid = pd.read_csv(
+        exported.output_dir / "solutions" / "hybrid_cost" / "station_decisions.csv"
+    )
+    assert distributed["station_built"].sum() == 0
+    assert hybrid["station_built"].sum() <= 1
+
+    generated_sites = gpd.read_file(exported.candidate_sites_geojson).sort_values("site_id")
+    selected = generated_sites.set_index("site_id")
+    assert bool(selected.loc["station_A", "selected_in_any_frontier_mode"])
+    assert not bool(selected.loc["station_B", "selected_in_any_frontier_mode"])
+    assert "central" in selected.loc["station_A", "selected_in_mode"]
+    assert selected.loc["station_B", "selected_in_mode"] == ""
+
+    network_result = gpd.read_file(central_dir / "network_decisions.geojson")
+    assert set(network_result["node_from"]).union(network_result["node_to"]) >= {
+        "station_A", "station_B"
+    }
+    report = json.loads((central_dir / "qa_report.json").read_text(encoding="utf-8"))
+    assert report["station_selection_ok"] is True
+    assert report["unbuilt_station_zero_ok"] is True
+    assert report["central_dispatch_on_built_station_only"] is True
 
 
 def test_peak_capacity_margin_is_configurable_and_excludes_storage() -> None:
@@ -379,6 +633,39 @@ def test_linear_pipe_loss_and_pumping_enter_balance_cost_and_carbon() -> None:
     assert value(model.annual_electricity_carbon_kgCO2e_per_year) == pytest.approx(
         expected_electricity * 0.4
     )
+
+
+def test_flow_proportional_pipe_loss_is_zero_at_zero_flow_and_matches_hand_calculation() -> None:
+    levels = tuple(
+        PipeLevelSpec(
+            f"dn{level}", level, capacity, level, 30,
+            pumping_kWh_e_per_kWh_th_transferred=0.02,
+            heat_loss_fraction_per_m=0.001,
+        )
+        for level, capacity in ((1, 50), (2, 100), (3, 150))
+    )
+    zero = solve_core_model(
+        _core_input(
+            heat_demand_kW={("demand_1", 1): 0},
+            pipe_levels=levels,
+        )
+    ).model
+    assert value(zero.pipe_heat_loss_kW[1]) == pytest.approx(0)
+    assert value(zero.pumping_electricity_input_kW_e[1]) == pytest.approx(0)
+
+    used = solve_core_model(
+        _core_input(
+            heat_demand_kW={("demand_1", 1): 50},
+            pipe_levels=levels,
+        )
+    ).model
+    # Fixture segment length is 10 m: 10 m * 0.001 /m * 50 kW = 0.5 kW.
+    assert value(used.pipe_heat_loss_kW[1]) == pytest.approx(0.5)
+    assert value(used.pumping_electricity_input_kW_e[1]) == pytest.approx(1.0)
+    assert sum(
+        value(used.central_heat_output_kW[technology_id, 1])
+        for technology_id in used.CENTRAL_TECHNOLOGIES
+    ) == pytest.approx(50.5)
 
 
 def test_formal_policy_can_forbid_unserved_heat_as_a_hard_constraint() -> None:

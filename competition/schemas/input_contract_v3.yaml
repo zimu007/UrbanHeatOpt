@@ -78,6 +78,7 @@ files:
       - lifetime_years
       - source
       - parameter_version
+    optional: [heat_loss_fraction_per_m]
     rules: [exactly_three_levels, strictly_increasing_capacity]
 generated_or_provided_interfaces:
   candidate_sites.geojson:

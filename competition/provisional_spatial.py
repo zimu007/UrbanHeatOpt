@@ -21,6 +21,8 @@ from shapely.geometry import LineString, Point, mapping
 PROJECTED_CRS = "EPSG:32650"
 OUTPUT_CRS = "EPSG:4326"
 CANDIDATE_SOURCE = "provisional_geometric_mst"
+MULTI_CANDIDATE_SOURCE = "synthetic_multi_candidate_generator"
+MULTI_CANDIDATE_STATUS = "PROVISIONAL_ALGORITHM_VALIDATION"
 
 
 class ProvisionalSpatialError(ValueError):
@@ -37,6 +39,10 @@ class ProvisionalSpatialResult:
     road_constrained: bool = False
     construction_feasibility_verified: bool = False
     load_center_adjustment_m: float = 0.0
+    generation_method: str = "single_load_weighted"
+    candidate_count: int = 1
+    input_building_source: str = "provided_building_gis"
+    spatial_status: str = "provisional"
 
 
 class _DisjointSet:
@@ -151,6 +157,7 @@ def build_provisional_geometric_network(
     *,
     data_version: str,
     site_id: str = "site_1",
+    local_extra_edge_count: int = 0,
 ) -> ProvisionalSpatialResult:
     """Build a load-weighted site and Euclidean MST with stable identifiers."""
 
@@ -160,6 +167,13 @@ def build_provisional_geometric_network(
     building_ids = tuple(normalized_buildings["building_id"])
     if site_id in building_ids:
         raise ProvisionalSpatialError("site_id 不得与 building_id 重复")
+
+    if (
+        isinstance(local_extra_edge_count, bool)
+        or not isinstance(local_extra_edge_count, int)
+        or local_extra_edge_count < 0
+    ):
+        raise ProvisionalSpatialError("local_extra_edge_count must be a non-negative integer")
 
     projected = normalized_buildings.to_crs(PROJECTED_CRS)
     centroids = projected.geometry.centroid
@@ -182,6 +196,20 @@ def build_provisional_geometric_network(
     points = {site_id: site_point}
     points.update({building_id: point for building_id, point in zip(building_ids, centroids)})
     oriented_tree = _orient_from_site(_kruskal_tree(points), site_id)
+    tree_pairs = {frozenset((left, right)) for left, right, _ in oriented_tree}
+    extra_candidates = sorted(
+        (
+            (float(points[left].distance(points[right])), left, right)
+            for left, right in combinations(sorted(building_ids), 2)
+            if frozenset((left, right)) not in tree_pairs
+        ),
+        key=lambda item: (round(item[0], 12), item[1], item[2]),
+    )
+    extra_edges = tuple(
+        (left, right, distance)
+        for distance, left, right in extra_candidates[:local_extra_edge_count]
+    )
+    candidate_edges = oriented_tree + extra_edges
     if any(distance <= 0 for _, _, distance in oriented_tree):
         raise ProvisionalSpatialError("临时候选站仍产生零长度管段")
 
@@ -213,7 +241,7 @@ def build_provisional_geometric_network(
                 "data_version": data_version,
                 "geometry": LineString((points[node_from], points[node_to])),
             }
-            for index, (node_from, node_to, distance) in enumerate(oriented_tree, start=1)
+            for index, (node_from, node_to, distance) in enumerate(candidate_edges, start=1)
         ],
         geometry="geometry",
         crs=PROJECTED_CRS,
@@ -227,6 +255,188 @@ def build_provisional_geometric_network(
         network=network_projected.to_crs(OUTPUT_CRS),
         feasible_space=feasible_projected.to_crs(OUTPUT_CRS),
         load_center_adjustment_m=load_center_adjustment_m,
+    )
+
+
+def build_multi_candidate_provisional_network(
+    buildings: gpd.GeoDataFrame,
+    hourly_loads: pd.DataFrame,
+    *,
+    data_version: str,
+    candidate_count: int = 5,
+    input_building_source: str = "provided_building_gis",
+    local_extra_edge_count: int = 0,
+) -> ProvisionalSpatialResult:
+    """Build deterministic virtual sites as leaf sources on a building-only MST.
+
+    This is an algorithm-validation graph.  It does not read roads, parcels,
+    exclusions, or constructibility evidence.
+    """
+
+    normalized_buildings, annual_heat = _validate_inputs(buildings, hourly_loads)
+    if not isinstance(data_version, str) or not data_version.strip():
+        raise ProvisionalSpatialError("data_version must be a non-empty string")
+    if (
+        isinstance(candidate_count, bool)
+        or not isinstance(candidate_count, int)
+        or not 1 <= candidate_count <= 10
+    ):
+        raise ProvisionalSpatialError("candidate_count must be an integer in [1, 10]")
+    if not isinstance(input_building_source, str) or not input_building_source.strip():
+        raise ProvisionalSpatialError("input_building_source must be non-empty")
+    if (
+        isinstance(local_extra_edge_count, bool)
+        or not isinstance(local_extra_edge_count, int)
+        or local_extra_edge_count < 0
+    ):
+        raise ProvisionalSpatialError("local_extra_edge_count must be non-negative")
+
+    input_crs = normalized_buildings.crs
+    projected = normalized_buildings.to_crs(PROJECTED_CRS)
+    building_ids = tuple(projected["building_id"].astype(str))
+    centroids = projected.geometry.centroid
+    building_points = {
+        building_id: point
+        for building_id, point in zip(building_ids, centroids, strict=True)
+    }
+    weights = annual_heat.reindex(building_ids).astype(float)
+    total_weight = float(weights.sum())
+    weighted_center = Point(
+        sum(building_points[node].x * weights.loc[node] for node in building_ids)
+        / total_weight,
+        sum(building_points[node].y * weights.loc[node] for node in building_ids)
+        / total_weight,
+    )
+    min_x, min_y, max_x, max_y = projected.total_bounds
+    span_x = max(float(max_x - min_x), 10.0)
+    span_y = max(float(max_y - min_y), 10.0)
+    fixed_fractions = (
+        (0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75),
+        (0.50, 0.25), (0.50, 0.75), (0.25, 0.50), (0.75, 0.50),
+        (0.10, 0.50),
+    )
+    raw_points = [weighted_center] + [
+        Point(min_x + fx * span_x, min_y + fy * span_y)
+        for fx, fy in fixed_fractions
+    ]
+    candidate_points: dict[str, Point] = {}
+    occupied = list(building_points.values())
+    for index, raw in enumerate(raw_points[:candidate_count], start=1):
+        point = raw
+        attempt = 0
+        while any(point.distance(other) <= 0.5 for other in (*occupied, *candidate_points.values())):
+            attempt += 1
+            point = Point(raw.x + attempt * (0.71 + index * 0.13), raw.y + attempt * (0.43 + index * 0.11))
+        candidate_points[f"candidate_station_{index:02d}"] = point
+
+    backbone = _kruskal_tree(building_points) if len(building_points) > 1 else ()
+    backbone_pairs = {frozenset((left, right)) for left, right, _ in backbone}
+    extra_candidates = sorted(
+        (
+            (float(building_points[left].distance(building_points[right])), left, right)
+            for left, right in combinations(sorted(building_ids), 2)
+            if frozenset((left, right)) not in backbone_pairs
+        ),
+        key=lambda item: (round(item[0], 12), item[1], item[2]),
+    )
+    extra_edges = tuple(
+        (left, right, distance)
+        for distance, left, right in extra_candidates[:local_extra_edge_count]
+    )
+    access_edges = tuple(
+        (
+            station,
+            min(
+                building_ids,
+                key=lambda node: (
+                    round(point.distance(building_points[node]), 12), node
+                ),
+            ),
+        )
+        for station, point in candidate_points.items()
+    )
+
+    edge_records: list[dict[str, object]] = []
+    geometries: list[LineString] = []
+    index = 1
+    for edge_type, edges in (
+        ("building_backbone", backbone),
+        ("building_extra", extra_edges),
+    ):
+        for node_from, node_to, distance in edges:
+            edge_records.append({
+                "segment_id": f"segment_{index:03d}",
+                "node_from": node_from,
+                "node_to": node_to,
+                "length_m": float(distance),
+                "edge_type": edge_type,
+            })
+            geometries.append(LineString((building_points[node_from], building_points[node_to])))
+            index += 1
+    for station, building in access_edges:
+        distance = float(candidate_points[station].distance(building_points[building]))
+        if distance <= 0:
+            raise ProvisionalSpatialError("station access edge length must be positive")
+        edge_records.append({
+            "segment_id": f"segment_{index:03d}",
+            "node_from": station,
+            "node_to": building,
+            "length_m": distance,
+            "edge_type": "station_access",
+        })
+        geometries.append(LineString((candidate_points[station], building_points[building])))
+        index += 1
+
+    common_network = {
+        "candidate_source": MULTI_CANDIDATE_SOURCE,
+        "spatial_source": MULTI_CANDIDATE_SOURCE,
+        "parameter_status": "provisional",
+        "generation_method": "building_backbone_mst_plus_station_leaf_access",
+        "road_constrained": False,
+        "construction_feasibility_verified": False,
+        "data_version": data_version,
+    }
+    for record in edge_records:
+        record.update(common_network)
+    network_projected = gpd.GeoDataFrame(
+        edge_records, geometry=geometries, crs=PROJECTED_CRS
+    )
+    sites_projected = gpd.GeoDataFrame(
+        [
+            {
+                "site_id": station,
+                "candidate_rank": rank,
+                "station_type": "regional_energy_station_candidate",
+                "location_source": MULTI_CANDIDATE_SOURCE,
+                "candidate_source": MULTI_CANDIDATE_SOURCE,
+                "parameter_status": "provisional",
+                "generation_method": "load_center_and_extent_fraction_candidates",
+                "input_building_source": input_building_source,
+                "candidate_count": candidate_count,
+                "projected_crs": PROJECTED_CRS,
+                "spatial_status": MULTI_CANDIDATE_STATUS,
+                "road_constrained": False,
+                "construction_feasibility_verified": False,
+                "data_version": data_version,
+            }
+            for rank, station in enumerate(candidate_points, start=1)
+        ],
+        geometry=list(candidate_points.values()),
+        crs=PROJECTED_CRS,
+    )
+    feasible_projected = network_projected.rename(
+        columns={"segment_id": "feature_id"}
+    ).copy()
+    feasible_projected["spatial_role"] = "provisional_candidate_corridor"
+    return ProvisionalSpatialResult(
+        sites=sites_projected.to_crs(input_crs),
+        network=network_projected.to_crs(input_crs),
+        feasible_space=feasible_projected.to_crs(input_crs),
+        candidate_source=MULTI_CANDIDATE_SOURCE,
+        generation_method="load_center_extent_sites_with_building_mst",
+        candidate_count=candidate_count,
+        input_building_source=input_building_source,
+        spatial_status=MULTI_CANDIDATE_STATUS,
     )
 
 
