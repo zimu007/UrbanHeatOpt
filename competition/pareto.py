@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+import gc
 from math import hypot, isfinite
 from types import MappingProxyType
-from typing import Any, Mapping
+from time import perf_counter
+from typing import Any, Callable, Mapping
 
 from pyomo.environ import Constraint, Objective, minimize, value
 
@@ -33,6 +36,12 @@ class ParetoPoint:
     annual_hns_penalty_CNY_per_year: float
     unserved_heat_kWh: float
     is_knee: bool = False
+    solve_elapsed_seconds: float = 0.0
+    solve_started_at_utc: str | None = None
+    solve_finished_at_utc: str | None = None
+    solver_status: str = "unknown"
+    termination_condition: str = "unknown"
+    reported_mip_gap: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,15 +49,25 @@ class ParetoRun:
     mode_frontiers: Mapping[str, tuple[ParetoPoint, ...]]
     combined_frontier: tuple[ParetoPoint, ...]
     solutions: Mapping[str, CoreSolveResult]
+    mode_all_points: Mapping[str, tuple[ParetoPoint, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode_frontiers", MappingProxyType(dict(self.mode_frontiers)))
         object.__setattr__(self, "solutions", MappingProxyType(dict(self.solutions)))
+        object.__setattr__(
+            self,
+            "mode_all_points",
+            MappingProxyType(dict(self.mode_all_points or self.mode_frontiers)),
+        )
 
 
 def _validate_spec(spec: ParetoSpec) -> None:
-    if isinstance(spec.point_count, bool) or not isinstance(spec.point_count, int) or spec.point_count < 3:
-        raise ValueError("Pareto point_count 必须是大于等于 3 的整数")
+    if (
+        isinstance(spec.point_count, bool)
+        or not isinstance(spec.point_count, int)
+        or (spec.point_count != 0 and spec.point_count < 3)
+    ):
+        raise ValueError("Pareto point_count 必须为 0（仅端点）或大于等于 3 的整数")
     for field in (
         "unserved_tolerance_kWh",
         "cost_tolerance_CNY_per_year",
@@ -70,13 +89,17 @@ def _solve_point(
     epsilon: float | None = None,
 ) -> tuple[ParetoPoint, CoreSolveResult]:
     model = build_core_model(data)
+    numerical_reserve = max(1e-12, spec.unserved_tolerance_kWh * 1e-3)
+    enforced_unserved_limit = max(
+        0.0, spec.unserved_tolerance_kWh - numerical_reserve
+    )
     model.pareto_unserved_limit = Constraint(
         expr=sum(
             model.unserved_heat_kW[node, hour] * model.time_weight_h_per_year[hour]
             for node in model.DEMAND_NODES
             for hour in model.HOURS
         )
-        <= spec.unserved_tolerance_kWh
+        <= enforced_unserved_limit
     )
     if epsilon is not None:
         model.pareto_carbon_limit = Constraint(
@@ -94,7 +117,18 @@ def _solve_point(
     active = list(model.component_data_objects(Objective, active=True))
     if len(active) != 1:
         raise RuntimeError("每个 Pareto 模型必须且只能有一个活动目标")
+    solve_started = datetime.now(timezone.utc)
+    solve_clock = perf_counter()
     solver_results = solve_pyomo_model(model, settings)
+    solve_elapsed = perf_counter() - solve_clock
+    solve_finished = datetime.now(timezone.utc)
+    solver = solver_results.solver
+    try:
+        reported_gap = float(getattr(solver, "gap", None))
+        if not isfinite(reported_gap):
+            reported_gap = None
+    except (TypeError, ValueError):
+        reported_gap = None
     unserved = float(
         sum(
             value(model.unserved_heat_kW[node, hour])
@@ -114,6 +148,12 @@ def _solve_point(
         ),
         annual_hns_penalty_CNY_per_year=float(value(model.annual_hns_penalty_CNY_per_year)),
         unserved_heat_kWh=unserved,
+        solve_elapsed_seconds=solve_elapsed,
+        solve_started_at_utc=solve_started.isoformat(),
+        solve_finished_at_utc=solve_finished.isoformat(),
+        solver_status=str(getattr(solver, "status", "unknown")),
+        termination_condition=str(solver.termination_condition),
+        reported_mip_gap=reported_gap,
     )
     return point, CoreSolveResult(model=model, solver_results=solver_results)
 
@@ -175,23 +215,40 @@ def _mark_knee(points: tuple[ParetoPoint, ...]) -> tuple[ParetoPoint, ...]:
     return tuple(replace(point, is_knee=index == knee_index) for index, point in enumerate(points))
 
 
-def solve_mode_pareto(
+def _solve_mode_pareto_full(
     data: CoreModelInput,
     settings: SolverSettings,
     spec: ParetoSpec,
-) -> tuple[tuple[ParetoPoint, ...], dict[str, CoreSolveResult]]:
+    *,
+    solution_callback: Callable[[ParetoPoint, CoreSolveResult], None] | None = None,
+    retain_solutions: bool = True,
+) -> tuple[tuple[ParetoPoint, ...], tuple[ParetoPoint, ...], dict[str, CoreSolveResult]]:
     _validate_spec(spec)
     solutions: dict[str, CoreSolveResult] = {}
     points: list[ParetoPoint] = []
     cost_point, cost_solution = _solve_point(
         data, settings, spec, point_id=f"{data.mode}-cost", labels=("cost_endpoint",), objective="cost"
     )
+    points.append(cost_point)
+    if solution_callback is not None:
+        solution_callback(cost_point, cost_solution)
+    if retain_solutions:
+        solutions[cost_point.point_id] = cost_solution
+    else:
+        del cost_solution
+        gc.collect()
+
     carbon_point, carbon_solution = _solve_point(
         data, settings, spec, point_id=f"{data.mode}-carbon", labels=("carbon_endpoint",), objective="carbon"
     )
-    points.extend((cost_point, carbon_point))
-    solutions[cost_point.point_id] = cost_solution
-    solutions[carbon_point.point_id] = carbon_solution
+    points.append(carbon_point)
+    if solution_callback is not None:
+        solution_callback(carbon_point, carbon_solution)
+    if retain_solutions:
+        solutions[carbon_point.point_id] = carbon_solution
+    else:
+        del carbon_solution
+        gc.collect()
     low = carbon_point.annual_operating_carbon_kgCO2e_per_year
     high = cost_point.annual_operating_carbon_kgCO2e_per_year
     if high < low - spec.carbon_tolerance_kgCO2e_per_year:
@@ -204,19 +261,136 @@ def solve_mode_pareto(
             labels=("epsilon",), objective="cost", epsilon=epsilon,
         )
         points.append(point)
-        solutions[point.point_id] = solution
-    return _mark_knee(_frontier(points, spec)), solutions
+        if solution_callback is not None:
+            solution_callback(point, solution)
+        if retain_solutions:
+            solutions[point.point_id] = solution
+        else:
+            del solution
+            gc.collect()
+    frontier = _mark_knee(_frontier(points, spec))
+    return frontier, tuple(points), solutions
 
 
-def solve_case_pareto(case: CanonicalCaseData, spec: ParetoSpec) -> ParetoRun:
+def solve_mode_pareto(
+    data: CoreModelInput,
+    settings: SolverSettings,
+    spec: ParetoSpec,
+) -> tuple[tuple[ParetoPoint, ...], dict[str, CoreSolveResult]]:
+    """Backward-compatible public mode solver returning its frontier and solutions."""
+
+    frontier, _, solutions = _solve_mode_pareto_full(data, settings, spec)
+    return frontier, solutions
+
+
+def solve_case_pareto(
+    case: CanonicalCaseData,
+    spec: ParetoSpec,
+    *,
+    solution_callback: Callable[[ParetoPoint, CoreSolveResult], None] | None = None,
+    retain_solutions: bool = True,
+) -> ParetoRun:
     mode_frontiers: dict[str, tuple[ParetoPoint, ...]] = {}
+    mode_all_points: dict[str, tuple[ParetoPoint, ...]] = {}
     solutions: dict[str, CoreSolveResult] = {}
     for mode in case.modes:
-        frontier, mode_solutions = solve_mode_pareto(case.to_core_input(mode), case.solver, spec)
+        frontier, all_points, mode_solutions = _solve_mode_pareto_full(
+            case.to_core_input(mode),
+            case.solver,
+            spec,
+            solution_callback=solution_callback,
+            retain_solutions=retain_solutions,
+        )
         mode_frontiers[mode] = frontier
+        mode_all_points[mode] = all_points
         solutions.update(mode_solutions)
     combined = _mark_knee(_frontier([point for points in mode_frontiers.values() for point in points], spec))
-    return ParetoRun(mode_frontiers=mode_frontiers, combined_frontier=combined, solutions=solutions)
+    return ParetoRun(
+        mode_frontiers=mode_frontiers,
+        combined_frontier=combined,
+        solutions=solutions,
+        mode_all_points=mode_all_points,
+    )
+
+
+def select_representative_points(
+    points: tuple[ParetoPoint, ...],
+    *,
+    policy_carbon_constraint_kgCO2e_per_year: float | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Select auditable representatives without manufacturing distinct solutions."""
+
+    if not points:
+        return {
+            name: {"point_id": None, "status": "unavailable_empty_frontier"}
+            for name in ("minimum_cost", "minimum_carbon", "normalized_knee", "policy_constraint")
+        }
+    minimum_cost = min(
+        points,
+        key=lambda item: (
+            item.annual_real_cost_CNY_per_year,
+            item.annual_operating_carbon_kgCO2e_per_year,
+            item.point_id,
+        ),
+    )
+    minimum_carbon = min(
+        points,
+        key=lambda item: (
+            item.annual_operating_carbon_kgCO2e_per_year,
+            item.annual_real_cost_CNY_per_year,
+            item.point_id,
+        ),
+    )
+    knee = next((point for point in points if point.is_knee), None)
+    policy = None
+    if policy_carbon_constraint_kgCO2e_per_year is not None:
+        feasible = [
+            point
+            for point in points
+            if point.annual_operating_carbon_kgCO2e_per_year
+            <= policy_carbon_constraint_kgCO2e_per_year
+        ]
+        if feasible:
+            policy = min(
+                feasible,
+                key=lambda item: (
+                    item.annual_real_cost_CNY_per_year,
+                    item.annual_operating_carbon_kgCO2e_per_year,
+                    item.point_id,
+                ),
+            )
+
+    def record(point: ParetoPoint | None, missing_status: str) -> dict[str, Any]:
+        if point is None:
+            return {"point_id": None, "status": missing_status}
+        return {
+            "point_id": point.point_id,
+            "mode": point.mode,
+            "status": "selected",
+            "annual_real_cost_CNY_per_year": point.annual_real_cost_CNY_per_year,
+            "annual_operating_carbon_kgCO2e_per_year": (
+                point.annual_operating_carbon_kgCO2e_per_year
+            ),
+        }
+
+    result = {
+        "minimum_cost": record(minimum_cost, "unavailable"),
+        "minimum_carbon": record(minimum_carbon, "unavailable"),
+        "normalized_knee": record(knee, "unavailable_fewer_than_three_distinct_points"),
+        "policy_constraint": record(
+            policy,
+            (
+                "not_selected_missing_policy_carbon_constraint"
+                if policy_carbon_constraint_kgCO2e_per_year is None
+                else "no_frontier_point_satisfies_policy_constraint"
+            ),
+        ),
+    }
+    selected_ids = [item["point_id"] for item in result.values() if item["point_id"]]
+    duplicates = sorted({point_id for point_id in selected_ids if selected_ids.count(point_id) > 1})
+    for item in result.values():
+        item["overlaps_other_representative"] = item.get("point_id") in duplicates
+    return result
 
 
 def point_to_dict(point: ParetoPoint) -> dict[str, Any]:
@@ -230,4 +404,7 @@ def point_to_dict(point: ParetoPoint) -> dict[str, Any]:
         "annual_hns_penalty_CNY_per_year": point.annual_hns_penalty_CNY_per_year,
         "unserved_heat_kWh": point.unserved_heat_kWh,
         "is_knee": point.is_knee,
+        "solver_status": point.solver_status,
+        "termination_condition": point.termination_condition,
+        "reported_mip_gap": point.reported_mip_gap,
     }

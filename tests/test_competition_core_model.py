@@ -34,6 +34,7 @@ from competition.economics import (
 )
 from competition.costing.annualized import capital_recovery_factor
 from competition.solvers import (
+    SolverNotOptimalError,
     SolverSettings,
     solve_pyomo_model,
     validate_solver_settings,
@@ -1549,8 +1550,11 @@ def test_competition_solver_keeps_infeasible_variables_unloaded() -> None:
     model.lower = Constraint(expr=model.x >= 1)
     model.upper = Constraint(expr=model.x <= 0)
 
-    with pytest.raises(RuntimeError, match="optimal"):
+    with pytest.raises(SolverNotOptimalError, match="optimal") as captured:
         solve_pyomo_model(model, SolverSettings())
+    assert captured.value.termination_condition == "infeasible"
+    assert captured.value.time_limit_seconds == 60.0
+    assert captured.value.reported_mip_gap is None
     assert model.x.value is None
 
 
@@ -1645,5 +1649,8 @@ def test_competition_highs_uses_reproducible_options_and_delays_loading(
         "threads": 1,
         "time_limit": 60.0,
         "random_seed": 202611,
+        "primal_feasibility_tolerance": 1e-9,
+        "dual_feasibility_tolerance": 1e-9,
+        "mip_feasibility_tolerance": 1e-9,
     }
     assert value(model.x) == pytest.approx(1.0)

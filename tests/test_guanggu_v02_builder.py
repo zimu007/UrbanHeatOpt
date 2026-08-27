@@ -12,9 +12,18 @@ from competition.validation.v3_inputs import load_v3_case
 
 ROOT = Path(__file__).resolve().parents[1]
 CASE = ROOT / "cases" / "v0_guanggu_62b_168h"
+CASE_REQUIRED_FILES = (
+    "case_config.yaml",
+    "building_hourly_loads.parquet",
+    "external_timeseries.parquet",
+    "performance_hourly.csv",
+    "candidate_sites.geojson",
+    "candidate_network.geojson",
+)
+CASE_READY = CASE.is_dir() and all((CASE / name).is_file() for name in CASE_REQUIRED_FILES)
 
 
-@pytest.mark.skipif(not CASE.exists(), reason="generated V0.2 scale case is not present")
+@pytest.mark.skipif(not CASE_READY, reason="generated V0.2 scale case is incomplete or not present")
 def test_v02_case_has_62_buildings_168_hours_and_active_physics() -> None:
     case = load_v3_case(CASE, profile="v0-smoke")
     assert len(case.demand_nodes) == 62
@@ -28,7 +37,7 @@ def test_v02_case_has_62_buildings_168_hours_and_active_physics() -> None:
     assert all(pipe.pumping_kWh_e_per_kWh_th_transferred == pytest.approx(0.01) for pipe in case.pipe_types)
 
 
-@pytest.mark.skipif(not CASE.exists(), reason="generated V0.2 scale case is not present")
+@pytest.mark.skipif(not CASE_READY, reason="generated V0.2 scale case is incomplete or not present")
 def test_v02_candidate_graph_is_sparse_connected_and_not_a_star() -> None:
     sites = gpd.read_file(CASE / "candidate_sites.geojson")
     network = gpd.read_file(CASE / "candidate_network.geojson")
@@ -43,7 +52,7 @@ def test_v02_candidate_graph_is_sparse_connected_and_not_a_star() -> None:
     assert network.length_m.gt(0).all()
 
 
-@pytest.mark.skipif(not CASE.exists(), reason="generated V0.2 scale case is not present")
+@pytest.mark.skipif(not CASE_READY, reason="generated V0.2 scale case is incomplete or not present")
 def test_v02_source_time_and_performance_audit() -> None:
     loads = pd.read_parquet(CASE / "building_hourly_loads.parquet")
     external = pd.read_parquet(CASE / "external_timeseries.parquet")

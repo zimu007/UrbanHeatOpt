@@ -13,11 +13,32 @@ from shapely.geometry import Polygon
 
 from competition.adapters import adapt_guanggu_v03_sources, validate_canonical_season_data
 from competition.canonical import CanonicalSeasonData
-from competition.intake import validate_guanggu_v03_delivery
+from competition.intake import (
+    resolve_guanggu_v03_source_roots,
+    validate_guanggu_v03_delivery,
+)
 from competition.readiness import run_guanggu_v03_input_validation
 
 
 DATA_VERSION = "guanggu-v0.3-test"
+
+
+def test_source_resolver_accepts_v02_root_and_rejects_v01(tmp_path: Path) -> None:
+    v02 = tmp_path / "v0.2"
+    delivery = v02 / "0823代码组交付_光谷软件园_v0.3"
+    patch = v02 / "0821设备性能曲线"
+    delivery.mkdir(parents=True)
+    patch.mkdir()
+    (delivery / "00_building_master.csv").write_text("building_id\nb1\n", encoding="utf-8")
+    roots = resolve_guanggu_v03_source_roots(v02)
+    assert roots.scope_root == v02.resolve()
+    assert roots.delivery_root == delivery.resolve()
+    assert roots.equipment_patch_root == patch.resolve()
+
+    v01 = tmp_path / "v0.1"
+    v01.mkdir()
+    with pytest.raises(ValueError, match="v0.1"):
+        resolve_guanggu_v03_source_roots(v01)
 
 
 def _write_lhv_patch_fixture(delivery: Path, patch: Path, profile_path: Path) -> None:
@@ -341,6 +362,25 @@ def test_guanggu_v03_full_audit_recomputes_checks_and_is_read_only(tmp_path: Pat
     assert {path: _hash(path) for path in tracked if path.is_file()} == before
 
 
+def test_string_false_is_not_misread_as_true(tmp_path: Path) -> None:
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    _write_delivery(delivery)
+    profile = _write_profile(tmp_path)
+    loads_path = delivery / "05_building_hourly_loads.parquet"
+    loads = pd.read_parquet(loads_path)
+    loads["dhw_included"] = "False"
+    loads.to_parquet(loads_path, index=False)
+    manifest_path = delivery / "scheme_input_manifest.csv"
+    manifest = pd.read_csv(manifest_path, encoding="utf-8-sig")
+    manifest["building_load_file_hash_sha256"] = _hash(loads_path)
+    manifest.to_csv(manifest_path, index=False, encoding="utf-8-sig")
+
+    report = validate_guanggu_v03_delivery(delivery, profile_path=profile)
+    assert report.valid, report.to_dict()
+    assert "DHW_BOUNDARY_INVALID" not in {issue.code for issue in report.issues}
+
+
 def test_guanggu_v03_rejects_wrong_season_mapping_and_excluded_building(tmp_path: Path) -> None:
     delivery = tmp_path / "delivery"
     delivery.mkdir()
@@ -596,12 +636,14 @@ def test_guanggu_v03_readiness_report_is_generated_from_machine_results(
     assert run.readiness.model_ready is False
     assert run.readiness.solver_executed is False
     assert {item.item_id for item in run.readiness.blockers} >= {
-        "ashp_curve_coverage",
         "road_candidate_network",
         "pipe_types",
-        "v03_case_builder",
         "full_season_solve_qa",
     }
+    statuses = {item.item_id: item.status for item in run.readiness.items}
+    assert statuses["ashp_curve_coverage"] == "ready"
+    assert statuses["capacity_margin_wiring"] == "ready"
+    assert statuses["v03_case_builder"] == "provisional"
     machine = run.readiness_report_path.read_text(encoding="utf-8")
     rendered = guidance.read_text(encoding="utf-8")
     assert '"model_ready": false' in machine

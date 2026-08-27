@@ -12,12 +12,18 @@
     "performance", "pareto", "enabled_technology_ids", "solver", "qa"
   ],
   "properties": {
-    "contract_version": {"const": "competition_input_3.0.0-draft.2"},
-    "software_release_track": {"const": "test_v0"},
+    "contract_version": {"enum": ["competition_input_3.0.0-draft.2", "competition_input_3.0.0"]},
+    "software_release_track": {"enum": ["test_v0", "formal_v1"]},
     "case_id": {"$ref": "#/$defs/id"},
     "scenario_id": {"$ref": "#/$defs/id"},
     "data_version": {"type": "string", "minLength": 1},
-    "data_classification": {"enum": ["synthetic_test", "formal_project_data"]},
+    "data_classification": {
+      "enum": [
+        "synthetic_test",
+        "formal_project_data",
+        "formal_project_loads_with_provisional_system_assumptions"
+      ]
+    },
     "time": {
       "type": "object", "additionalProperties": false,
       "required": ["start", "end", "timezone", "frequency", "interval", "complete_heating_season"],
@@ -88,7 +94,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["profile", "modes"],
       "properties": {
-        "profile": {"enum": ["v0-smoke", "v1-full"]},
+        "profile": {"enum": ["v0-smoke", "v0-168h", "v0-full-season", "v1-full"]},
         "modes": {
           "type": "array", "prefixItems": [
             {"const": "central"}, {"const": "distributed"}, {"const": "hybrid"}
@@ -194,6 +200,8 @@
       "properties": {
         "method": {"const": "epsilon_constraint"},
         "point_count": {"type": "integer", "minimum": 3, "maximum": 101},
+        "run_epsilon_scan": {"type": "boolean"},
+        "policy_carbon_constraint_kgCO2e_per_year": {"type": "number", "minimum": 0},
         "second_objective": {"const": "annual_operating_physical_carbon"},
         "knee_method": {"const": "normalized_max_distance_to_endpoint_chord"},
         "topsis_enabled": {"const": false}
@@ -218,6 +226,20 @@
   },
   "allOf": [
     {
+      "if": {"properties": {"run": {"properties": {"profile": {"const": "v1-full"}}}}},
+      "then": {"properties": {
+        "contract_version": {"const": "competition_input_3.0.0"},
+        "software_release_track": {"const": "formal_v1"}
+      }}
+    },
+    {
+      "if": {"properties": {"software_release_track": {"const": "formal_v1"}}},
+      "then": {"properties": {
+        "contract_version": {"const": "competition_input_3.0.0"},
+        "run": {"properties": {"profile": {"const": "v1-full"}}}
+      }}
+    },
+    {
       "if": {"properties": {"run": {"properties": {"profile": {"const": "v0-smoke"}}}}},
       "then": {"properties": {"pareto": {"properties": {"point_count": {"const": 5}}}}}
     },
@@ -240,7 +262,10 @@
             "capacity_derating_model": {"const": "temperature_interpolated"}
           }},
           "planning": {"properties": {"unserved_policy": {"const": "forbidden_for_v1"}}},
-          "pareto": {"properties": {"point_count": {"const": 11}}}
+          "pareto": {"properties": {
+            "point_count": {"const": 11},
+            "run_epsilon_scan": {"const": true}
+          }}
         }
       }
     },

@@ -22,6 +22,34 @@ class SolverSettings:
     tee: bool = False
 
 
+class SolverNotOptimalError(RuntimeError):
+    """Structured non-optimal termination; no model values have been loaded."""
+
+    def __init__(self, solver_name: str, results: Any, settings: SolverSettings) -> None:
+        solver = results.solver
+        self.solver_name = solver_name
+        self.solver_status = str(getattr(solver, "status", "unknown"))
+        self.termination_condition = str(solver.termination_condition)
+        self.reported_mip_gap = _optional_finite(getattr(solver, "gap", None))
+        self.time_limit_seconds = float(settings.time_limit_seconds)
+        self.mip_gap_target = float(settings.mip_gap)
+        self.threads = int(settings.threads)
+        self.random_seed = int(settings.random_seed)
+        super().__init__(
+            "求解未达到 optimal，变量未加载且不会导出结果："
+            f"solver={solver_name}, termination_condition={self.termination_condition}, "
+            f"reported_mip_gap={self.reported_mip_gap}"
+        )
+
+
+def _optional_finite(value: object) -> float | None:
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized if isfinite(normalized) else None
+
+
 def _finite_real(value: object, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(f"{field} 必须是有限数值")
@@ -77,6 +105,9 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
             "threads": int(resolved.threads),
             "time_limit": float(resolved.time_limit_seconds),
             "random_seed": int(resolved.random_seed),
+            "primal_feasibility_tolerance": 1e-9,
+            "dual_feasibility_tolerance": 1e-9,
+            "mip_feasibility_tolerance": 1e-9,
         }
     else:
         factory_name = "gurobi"
@@ -102,10 +133,7 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
     )
     termination = results.solver.termination_condition
     if termination != TerminationCondition.optimal:
-        raise RuntimeError(
-            "求解未达到 optimal，变量未加载且不会导出结果："
-            f"solver={resolved.name}, termination_condition={termination}"
-        )
+        raise SolverNotOptimalError(resolved.name, results, resolved)
 
     model.solutions.load_from(results)
     return results

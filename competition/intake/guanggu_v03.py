@@ -28,6 +28,64 @@ EQUIPMENT_PATCH_FILES = (
     "06C_equipment_curve_method.md",
 )
 
+DEFAULT_DELIVERY_DIRECTORY = "0823代码组交付_光谷软件园_v0.3"
+DEFAULT_EQUIPMENT_PATCH_DIRECTORY = "0821设备性能曲线"
+
+
+@dataclass(frozen=True, slots=True)
+class GuangguV03SourceRoots:
+    """Resolved read-only roots inside the authorised v0.2 input boundary."""
+
+    requested_root: Path
+    scope_root: Path
+    delivery_root: Path
+    equipment_patch_root: Path | None
+
+
+def resolve_guanggu_v03_source_roots(source_root: str | Path) -> GuangguV03SourceRoots:
+    """Resolve the v0.2 scope root or historical direct v0.3 delivery root."""
+
+    requested = Path(source_root).resolve()
+    if not requested.is_dir():
+        raise ValueError(f"输入目录不存在: {requested}")
+    if any(part.casefold() == "v0.1" for part in requested.parts):
+        raise ValueError("guanggu_v03 禁止读取 v0.1 输入目录")
+
+    looks_like_delivery = (requested / "00_building_master.csv").is_file() or (
+        (requested / "05_building_hourly_loads.parquet").is_file()
+        and (requested / "external_timeseries.parquet").is_file()
+    )
+    if looks_like_delivery:
+        delivery = requested
+        parent = requested.parent
+        if parent.name.casefold() == "v0.2":
+            scope = parent
+            patch_candidate = scope / DEFAULT_EQUIPMENT_PATCH_DIRECTORY
+        else:
+            scope = requested
+            patch_candidate = parent / DEFAULT_EQUIPMENT_PATCH_DIRECTORY
+    else:
+        delivery = requested / DEFAULT_DELIVERY_DIRECTORY
+        scope = requested
+        patch_candidate = requested / DEFAULT_EQUIPMENT_PATCH_DIRECTORY
+        if not delivery.is_dir():
+            candidates = sorted(
+                path
+                for path in requested.iterdir()
+                if path.is_dir() and (path / "00_building_master.csv").is_file()
+            )
+            if len(candidates) != 1:
+                raise ValueError(
+                    "无法从输入根目录唯一定位 v0.3 交付目录；"
+                    f"期望子目录 {DEFAULT_DELIVERY_DIRECTORY}"
+                )
+            delivery = candidates[0]
+
+    if any(part.casefold() == "v0.1" for part in delivery.parts):
+        raise ValueError("解析后的交付目录落入 v0.1，已拒绝")
+    patch = patch_candidate if patch_candidate.is_dir() else None
+    return GuangguV03SourceRoots(requested, scope, delivery, patch)
+
 
 @dataclass(frozen=True, slots=True)
 class GuangguV03Issue:
@@ -117,6 +175,40 @@ def _read_csv(path: Path, encoding: str | None = None) -> tuple[pd.DataFrame, st
     if last_error is not None:
         raise last_error
     raise UnicodeError(f"无法确定 CSV 编码: {path}")
+
+
+def _strict_boolean(
+    report: GuangguV03Report,
+    series: pd.Series,
+    *,
+    column: str,
+    path: Path,
+) -> pd.Series:
+    """Parse booleans without Python's unsafe ``bool('False')`` behaviour."""
+
+    if pd.api.types.is_bool_dtype(series.dtype):
+        return series.astype("boolean")
+    normalized = series.astype("string").str.strip().str.casefold()
+    parsed = normalized.map(
+        {
+            "true": True,
+            "false": False,
+            "1": True,
+            "0": False,
+            "yes": True,
+            "no": False,
+        }
+    ).astype("boolean")
+    invalid = series.notna() & parsed.isna()
+    if invalid.any():
+        examples = sorted(set(series.loc[invalid].astype(str)))[:5]
+        _issue(
+            report,
+            "BOOLEAN_VALUE_INVALID",
+            f"{column} 含无法识别的布尔值: {examples}",
+            path,
+        )
+    return parsed
 
 
 def _read_standard(path: Path, spec: dict[str, Any]) -> tuple[pd.DataFrame, str | None]:
@@ -318,6 +410,22 @@ def _validate_full_year_table(
                 path,
             )
             continue
+        if "timestamp" in group:
+            timestamps = pd.DatetimeIndex(group["timestamp"])
+            if timestamps.tz is not None:
+                expected_timestamps = pd.date_range(
+                    timestamps[0], periods=count, freq="h", tz=timestamps.tz
+                )
+                if not np.array_equal(
+                    timestamps.as_unit("ns").asi8,
+                    expected_timestamps.as_unit("ns").asi8,
+                ):
+                    _issue(
+                        report,
+                        "FULL_YEAR_TIMESTAMP_INVALID",
+                        f"timestamp 必须与 hour 严格一一对应且连续{label}",
+                        path,
+                    )
         expected_flag, expected_season_hour = _expected_season_mapping(hours, season)
         actual_flag = pd.to_numeric(group["heating_season_flag"], errors="coerce")
         if actual_flag.isna().any() or not np.array_equal(
@@ -384,8 +492,15 @@ def _validate_buildings_and_mapping(
         for column, expected in terminal_checks.items():
             if column in master and set(master[column].dropna()) != {expected}:
                 _issue(report, "TERMINAL_BOUNDARY_INVALID", f"00 {column} 必须全部为 {expected!r}")
-        if "load_included" in master and not master["load_included"].map(bool).all():
-            _issue(report, "LOAD_SCOPE_INVALID", "00 中所有计算建筑 load_included 必须为 true")
+        if "load_included" in master:
+            included = _strict_boolean(
+                report,
+                master["load_included"],
+                column="load_included",
+                path=root / profile["standard_files"]["building_master"]["path"],
+            )
+            if included.isna().any() or not included.fillna(False).all():
+                _issue(report, "LOAD_SCOPE_INVALID", "00 中所有计算建筑 load_included 必须为 true")
     mapping_columns = {
         "building_id",
         "target_conditioned_area_m2",
@@ -413,9 +528,12 @@ def _validate_buildings_and_mapping(
                 continue
             if not np.isclose(float(target.iloc[0]), float(master_area.loc[building_id]), rtol=1e-6, atol=1e-6):
                 _issue(report, "MAPPING_BUILDING_AREA_MISMATCH", f"04 {building_id} 目标面积与00不一致")
-            mixed = group["is_mixed_use"]
-            if mixed.dtype != bool:
-                mixed = mixed.astype(str).str.lower().map({"true": True, "false": False})
+            mixed = _strict_boolean(
+                report,
+                group["is_mixed_use"],
+                column="is_mixed_use",
+                path=root / profile["standard_files"]["building_archetype_map"]["path"],
+            )
             if mixed.isna().any() or mixed.nunique() != 1:
                 _issue(report, "MIXED_USE_FLAG_INVALID", f"04 {building_id} is_mixed_use 无效")
                 continue
@@ -449,8 +567,12 @@ def _validate_loads_and_external(
                 _issue(report, "TIMESTAMP_TIMEZONE_MISSING", "05 timestamp 必须带时区", path)
             elif str(loads["timestamp"].dt.tz) != season["timezone"]:
                 _issue(report, "TIMESTAMP_TIMEZONE_INVALID", f"05 timestamp 必须为 {season['timezone']}", path)
-        if "dhw_included" in loads and set(loads["dhw_included"].dropna().map(bool)) != {False}:
-            _issue(report, "DHW_BOUNDARY_INVALID", "05 dhw_included 必须全部为 false", path)
+        if "dhw_included" in loads:
+            dhw = _strict_boolean(
+                report, loads["dhw_included"], column="dhw_included", path=path
+            )
+            if dhw.isna().any() or dhw.fillna(True).any():
+                _issue(report, "DHW_BOUNDARY_INVALID", "05 dhw_included 必须全部为 false", path)
         _validate_full_year_table(report, loads, path, season, group_column="building_id")
         if "building_id" in loads and "heating_season_flag" in loads:
             season_counts = loads.loc[loads["heating_season_flag"].eq(1)].groupby("building_id").size()
@@ -496,6 +618,17 @@ def _validate_loads_and_external(
                 values = _numeric_series(report, selected, column, path)
                 if values is not None and column != "outdoor_temperature_C" and (values <= 0).any():
                     _issue(report, "EXTERNAL_VALUE_NONPOSITIVE", f"供暖季 {column} 必须大于 0", path)
+            if "time_weight_h" in selected:
+                weights = pd.to_numeric(selected["time_weight_h"], errors="coerce")
+                if weights.isna().any() or not np.allclose(
+                    weights.to_numpy(dtype=float), 1.0, rtol=0, atol=1e-12
+                ):
+                    _issue(
+                        report,
+                        "HEATING_SEASON_TIME_WEIGHT_INVALID",
+                        "完整供暖季 time_weight_h 必须全部为 1 h",
+                        path,
+                    )
             required_sources = [column for column in external.columns if column.endswith("_source_id") or column.endswith("_parameter_status")]
             if required_sources and selected[required_sources].isna().any().any():
                 _issue(report, "EXTERNAL_PROVENANCE_MISSING", "供暖季外部参数来源或状态存在空值", path)
@@ -879,9 +1012,10 @@ def validate_guanggu_v03_delivery(
     """Validate and hash a v0.3 delivery without modifying source files."""
 
     profile_file, profile = _load_profile(profile_path)
-    root = Path(source_root).resolve()
-    if not root.is_dir():
-        raise ValueError(f"交付目录不存在: {root}")
+    resolved = resolve_guanggu_v03_source_roots(source_root)
+    root = resolved.delivery_root
+    if equipment_patch_root is None:
+        equipment_patch_root = resolved.equipment_patch_root
     report = GuangguV03Report(
         source_profile=profile["source_profile"],
         profile_version=profile["profile_version"],
@@ -925,8 +1059,16 @@ def validate_guanggu_v03_delivery(
         patch_hashes = {
             filename: _sha256(patch / filename) for filename in EQUIPMENT_PATCH_FILES
         }
+        patch_inventory_hashes = {
+            path.relative_to(patch).as_posix(): _sha256(path)
+            for path in sorted(patch.rglob("*"))
+            if path.is_file()
+        }
         report.file_sha256.update(
-            {f"equipment_patch/{name}": digest for name, digest in patch_hashes.items()}
+            {
+                f"equipment_patch/{name}": digest
+                for name, digest in patch_inventory_hashes.items()
+            }
         )
         report.datasets["equipment_patch_overlay"] = {
             "patch_identifier": patch.name,
@@ -934,6 +1076,7 @@ def validate_guanggu_v03_delivery(
             "target_data_version": profile["data_version"],
             "files": patch_hashes,
             "provenance_only_files": ["06C_equipment_curve_method.md"],
+            "inventory_file_count": len(patch_inventory_hashes),
         }
         report.datasets["effective_input_provenance"].update(
             {
@@ -941,6 +1084,14 @@ def validate_guanggu_v03_delivery(
                 "equipment_patch_files": patch_hashes,
             }
         )
+    report.inventory["authorised_scope_root"] = str(resolved.scope_root)
+    report.inventory["delivery_file_count"] = len(files)
+    report.inventory["equipment_patch_file_count"] = (
+        sum(1 for path in Path(equipment_patch_root).resolve().rglob("*") if path.is_file())
+        if equipment_patch_root is not None
+        else 0
+    )
+    report.inventory["scope_hashed_file_count"] = len(report.file_sha256)
     _validate_inventory(report, root, files, profile)
     frames = _validate_standard_files(
         report, root, profile, overrides, expected_row_overrides

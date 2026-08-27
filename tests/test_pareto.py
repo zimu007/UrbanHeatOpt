@@ -6,7 +6,7 @@ from pyomo.environ import Objective
 import pytest
 
 from competition.core_model import CoreModelInput, EconomicInput, SegmentSpec, TechnologySpec
-from competition.pareto import ParetoSpec, solve_mode_pareto
+from competition.pareto import ParetoSpec, solve_case_pareto, solve_mode_pareto
 from competition.solvers import SolverSettings
 
 
@@ -71,3 +71,34 @@ def test_cost_and_carbon_endpoints_switch_the_same_model_physics() -> None:
 def test_pareto_spec_rejects_invalid_point_count() -> None:
     with pytest.raises(ValueError, match="point_count"):
         solve_mode_pareto(_data(), SolverSettings(), ParetoSpec(point_count=2))
+
+
+def test_endpoint_only_mode_solves_exactly_two_points() -> None:
+    frontier, solutions = solve_mode_pareto(
+        _data(), SolverSettings(mip_gap=0), ParetoSpec(point_count=0)
+    )
+    assert set(solutions) == {"central-cost", "central-carbon"}
+    labels = {label for point in frontier for label in point.labels}
+    assert {"cost_endpoint", "carbon_endpoint"} <= labels
+
+
+def test_case_streaming_callback_can_release_all_solved_models() -> None:
+    data = _data()
+    case = type(
+        "StreamingCase",
+        (),
+        {
+            "modes": ("central",),
+            "solver": SolverSettings(mip_gap=0),
+            "to_core_input": lambda self, _mode: data,
+        },
+    )()
+    seen: list[str] = []
+    run = solve_case_pareto(
+        case,
+        ParetoSpec(point_count=0),
+        solution_callback=lambda point, _solution: seen.append(point.point_id),
+        retain_solutions=False,
+    )
+    assert set(seen) == {"central-cost", "central-carbon"}
+    assert dict(run.solutions) == {}

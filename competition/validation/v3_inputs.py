@@ -15,8 +15,10 @@ import yaml
 
 from competition.canonical import (
     CANONICAL_MODES,
+    FORMAL_RELEASE_TRACK,
     TEST_RELEASE_TRACK,
     V3_DRAFT_CONTRACT,
+    V3_FINAL_CONTRACT,
     CanonicalCaseData,
     PipeTypeSpec,
     StorageSpec,
@@ -482,13 +484,6 @@ def load_v3_case(
         raise V3InputError([f"V3 文件读取失败：{exc}"]) from exc
 
     hours = tuple(range(1, len(timestamps) + 1))
-    if config["run"]["profile"] == "v1-full" and (
-        performance_provider is None
-        or isinstance(performance_provider, FixedV0PerformanceProvider)
-    ):
-        raise V3InputError([
-            "v1-full 必须显式提供经过验收的温度 COP/容量修正 provider；不得使用 V0 固定 COP"
-        ])
     provider = performance_provider
     if provider is None and config["performance"]["cop_model"] == "temperature_interpolated":
         provider = TabularASHPPerformanceProvider(
@@ -502,6 +497,12 @@ def load_v3_case(
             ),
         )
     provider = provider or FixedV0PerformanceProvider()
+    if config["run"]["profile"] == "v1-full" and isinstance(
+        provider, FixedV0PerformanceProvider
+    ):
+        raise V3InputError([
+            "v1-full 必须提供经过验收的温度 COP/容量修正 provider；不得使用 V0 固定 COP"
+        ])
     try:
         performance = provider.precompute(
             technologies=technologies,
@@ -583,8 +584,8 @@ def load_v3_case(
     if before != after:
         raise V3InputError(["V3 校验过程修改了原始输入文件"])
     return CanonicalCaseData(
-        contract_version=V3_DRAFT_CONTRACT,
-        software_release_track=TEST_RELEASE_TRACK,
+        contract_version=config["contract_version"],
+        software_release_track=config["software_release_track"],
         case_id=config["case_id"], scenario_id=config["scenario_id"],
         data_version=config["data_version"], profile=config["run"]["profile"],
         modes=CANONICAL_MODES, timestamps=timestamps, hours=hours,

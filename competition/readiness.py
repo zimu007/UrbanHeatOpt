@@ -95,8 +95,10 @@ def assess_guanggu_v03_model_readiness(
             "source_delivery",
             "v0.3源数据自主校验",
             "ready" if adaptation.source_report.valid else "blocked",
-            "412个文件必须由代码独立读取、分类、哈希和交叉校验。",
-            f"识别{adaptation.source_report.inventory.get('total_files')}个文件；错误数="
+            "v0.3交付与0821设备补丁必须由代码独立发现、分类、哈希和交叉校验。",
+            f"授权范围内识别{adaptation.source_report.inventory.get('scope_hashed_file_count')}个文件"
+            f"（交付{adaptation.source_report.inventory.get('total_files')}、"
+            f"补丁{adaptation.source_report.inventory.get('equipment_patch_file_count', 0)}）；错误数="
             f"{sum(issue.severity == 'error' for issue in adaptation.source_report.issues)}。",
         ),
         ReadinessItem(
@@ -133,21 +135,21 @@ def assess_guanggu_v03_model_readiness(
         ReadinessItem(
             "ashp_curve_coverage",
             "温度相关COP与低温能力衰减",
-            "blocked",
-            "06曲线已读取，但当前核心只有固定V0 Provider，尚无v0.3表格曲线Provider接线。",
+            "ready",
+            "0821补丁曲线已由表格Provider预计算逐时COP和capacity_ratio，并由唯一Builder传入新Core。",
             f"曲线最高15℃；{int(external['cop_boundary_clamped'].sum())}小时按15℃封顶。"
-            "当前供暖季最低温在曲线范围内，capacity_ratio仍需由新Provider逐时传入Core。",
+            "当前供暖季最低温在曲线范围内；边界封顶小时保留原温度和标记。",
             required_files=("06_equipment_performance.csv",),
             required_fields=("technology_id", "Tout", "Tsupply", "PLR", "COP", "capacity_ratio"),
             units=("degC", "fraction", "W/W"),
-            resolution="实现并测试表格插值/边界封顶Provider，再由v0.3 Case Builder调用。",
+            resolution="V1结果中继续保留曲线版本、补丁哈希和封顶小时清单。",
         ),
         ReadinessItem(
             "road_candidate_network",
             "道路约束候选站与候选管网",
             "blocked",
             "交付GIS为建筑来源材料，没有正式道路/可建设空间、候选站和物理候选管段接口。",
-            "历史V0存在provisional_geometric_mst，但明确非道路优化、非施工可实施方案。",
+            "V0 Builder生成5个确定性虚拟候选站和欧氏候选边；明确非道路约束、非施工可实施方案。",
             required_files=(
                 "roads_or_feasible_space.geojson",
                 "candidate_sites.geojson",
@@ -166,7 +168,7 @@ def assess_guanggu_v03_model_readiness(
             "三档管径、管损与泵耗",
             "blocked",
             "v0.3没有可执行pipe_types.csv；因此不能计算正式管网投资、热损和泵耗。",
-            "Core已预留三档管径、线性热损和泵耗系数接口，但本交付没有对应输入。",
+            "Core与Builder可消费三档管径、线性热损和泵耗；V0仅使用scenario_assumption，本交付没有正式输入。",
             required_files=("pipe_types.csv",),
             required_fields=(
                 "pipe_type_id", "level", "capacity_max_kW_th", "capex_CNY_per_m",
@@ -181,7 +183,7 @@ def assess_guanggu_v03_model_readiness(
             "能源站与接入经济参数",
             "blocked",
             "v0.3没有站点固定投资和逐需求节点接入投资/寿命的权威落点。",
-            "当前标准快照不生成case_config，避免以0或旧模板值静默补齐。",
+            "V0 Builder仅从provisional_v0假设生成case_config；标准快照未把假设伪装成正式值。",
             required_files=("case_config.yaml",),
             required_fields=(
                 "economics.station_fixed_capex_CNY", "economics.station_lifetime_years",
@@ -195,9 +197,10 @@ def assess_guanggu_v03_model_readiness(
             "technology_economics",
             "热泵、锅炉和储热可执行经济参数",
             "blocked",
-            "长表可读取，但尚不能无歧义生成Core要求的逐设备技术表。",
-            "ASHP缺固定/可变运维；锅炉variable_maintenance_coefficient=0.026单位为"
-            "model_coefficient；8个扩展技术参数仍pending_confirmation。",
+            "长表可读取，但正式设备经济字段仍不足以无歧义生成Core逐设备技术表。",
+            "V0使用显式scenario_assumption；源表中ASHP缺固定/可变运维，锅炉"
+            "variable_maintenance_coefficient=0.026单位为model_coefficient；"
+            "8个扩展技术参数仍pending_confirmation。",
             required_files=("technologies.csv",),
             required_fields=(
                 "capex_CNY_per_kW_th", "fixed_maintenance_fraction_per_year",
@@ -211,8 +214,8 @@ def assess_guanggu_v03_model_readiness(
             "storage_input_and_wiring",
             "水蓄热输入与SOC接线",
             "blocked",
-            "06提供首版效率/损失假设，但缺少完整可执行容量、功率、投资映射和v0.3构造器接线。",
-            "Core已有线性SOC、循环边界和容量接口；当前标准快照只保留来源表。",
+            "06提供首版效率/损失假设，但缺少正式签认的容量、功率和投资边界。",
+            "Core与V0 Builder已有线性SOC、循环边界、容量/功率和成本接线；V0值全部标记scenario_assumption。",
             required_files=("technologies.csv", "06_equipment_performance.csv", "case_config.yaml"),
             required_fields=(
                 "energy_capacity_max_kWh_th", "charge_capacity_max_kW_th",
@@ -226,30 +229,30 @@ def assess_guanggu_v03_model_readiness(
         ReadinessItem(
             "capacity_margin_wiring",
             "20%峰值容量裕度接线",
-            "blocked",
-            "统一Core已实现该约束，但v0.3尚未构造完整CanonicalCaseData，因而尚未实际传入。",
-            "CanonicalSeasonData已记录peak_capacity_margin_fraction=0.20；不含N-1且储热不计入。",
+            "ready",
+            "统一Core和v0.3唯一Builder均已接线，并由专项测试校核。",
+            "CanonicalCaseData显式传入peak_capacity_margin_fraction=0.20；不含N-1且储热不计入。",
             required_files=("case_config.yaml",),
             required_fields=("planning.peak_capacity_margin_fraction",),
             units=("fraction",),
-            resolution="v0.3 Case Builder必须显式传入0.20，并用100kW→120kW手算复验。",
+            resolution="正式运行继续从运行清单复核0.20，禁止以储热容量抵扣裕度。",
         ),
         ReadinessItem(
             "v03_case_builder",
             "v0.3标准快照到统一Pyomo Core连接层",
-            "blocked",
-            "当前只完成CanonicalSeasonData；尚未将空间、设备、储热和经济参数组合为CanonicalCaseData。",
-            "正式入口必须等本项和全部上游必需项通过后才能实例化求解器。",
+            "provisional",
+            "唯一V03CaseBuilder已将标准负荷、设备曲线、临时站网、储热和经济假设组合为CanonicalCaseData；正式入口不回退旧模型。",
+            "V0可执行链已形成；其中站网、管网、储热和经济输入仍带scenario_assumption，不能提升为正式契约。",
             required_files=("case_config.yaml",),
             required_fields=("完整V3 files/run/spatial/network/planning/economics/performance/pareto配置",),
-            resolution="实现唯一Case Builder；禁止调用旧model.run_model或自动回退V0固定假设。",
+            resolution="正式道路、管型、报价等阻塞解除后，由同一Builder生成final/formal配置；禁止另建手工拼表路径。",
         ),
         ReadinessItem(
             "full_season_solve_qa",
             "62栋×2160小时求解与独立QA",
             "blocked",
-            "本轮按批准边界不运行求解器；尚无全季三模式、Pareto和QA证据。",
-            "数据规模已完成标准化，但solver_executed=false。",
+            "输入验收本身不能证明全季求解完成；必须另有全季三模式、Pareto和独立QA证据。",
+            "数据规模已完成标准化；本份输入门禁报告不把后续求解状态冒充为输入状态。",
             required_files=("模型就绪后的标准结果目录",),
             required_fields=("三模式状态", "热平衡", "容量裕度", "连通", "SOC", "成本", "碳排", "Pareto"),
             resolution="前述阻塞解除后再运行；全部QA通过前不得称正式运行完成。",
@@ -519,7 +522,7 @@ def render_guanggu_v03_guidance(
             f"- 模型就绪JSON：`{run.readiness_report_path}`",
             f"- 本说明：`{run.guidance_report_path}`",
             "",
-            "源目录只读；校验和适配前后412个源文件SHA-256保持一致。",
+            f"源目录只读；校验和适配前后{adaptation.source_report.inventory.get('scope_hashed_file_count')}个授权范围文件SHA-256保持一致。",
             "",
             "## 附录A：交付数据字典原文",
             "",

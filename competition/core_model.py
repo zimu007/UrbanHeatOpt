@@ -802,6 +802,11 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         item.pipe_type_id: item for item in sorted(data.pipe_levels, key=lambda value: value.level)
     }
     pipe_level_ids = tuple(pipe_level_by_id)
+    flow_dependent_network_coefficients = bool(pipe_level_ids) and any(
+        item.heat_loss_fraction_per_m > 0
+        or item.pumping_kWh_e_per_kWh_th_transferred > 0
+        for item in pipe_level_by_id.values()
+    )
     heat_pump_ids = (central_ashp.technology_id, local_ashp.technology_id)
     if data.heat_pump_cop_by_hour:
         heat_pump_cop = dict(data.heat_pump_cop_by_hour)
@@ -1200,12 +1205,13 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
     model.pipe_level_built = Var(model.SEGMENTS, model.PIPE_LEVELS, domain=Binary)
     model.pipe_capacity_kW = Var(model.SEGMENTS, domain=NonNegativeReals)
     model.heat_flow_kW = Var(model.SEGMENTS, model.HOURS, domain=Reals)
-    model.pipe_level_abs_flow_kW = Var(
-        model.SEGMENTS,
-        model.PIPE_LEVELS,
-        model.HOURS,
-        domain=NonNegativeReals,
-    )
+    if flow_dependent_network_coefficients:
+        model.pipe_level_abs_flow_kW = Var(
+            model.SEGMENTS,
+            model.PIPE_LEVELS,
+            model.HOURS,
+            domain=NonNegativeReals,
+        )
     model.network_heat_kW = Var(
         model.DEMAND_NODES,
         model.HOURS,
@@ -1510,35 +1516,36 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
                 for pipe_type_id in m.PIPE_LEVELS
             ),
         )
-        model.pipe_level_abs_flow_positive = Constraint(
-            model.SEGMENTS,
-            model.PIPE_LEVELS,
-            model.HOURS,
-            rule=lambda m, segment_id, pipe_type_id, hour:
-            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
-            >= m.heat_flow_kW[segment_id, hour]
-            - m.segment_capacity_max_kW[segment_id]
-            * (1 - m.pipe_level_built[segment_id, pipe_type_id]),
-        )
-        model.pipe_level_abs_flow_negative = Constraint(
-            model.SEGMENTS,
-            model.PIPE_LEVELS,
-            model.HOURS,
-            rule=lambda m, segment_id, pipe_type_id, hour:
-            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
-            >= -m.heat_flow_kW[segment_id, hour]
-            - m.segment_capacity_max_kW[segment_id]
-            * (1 - m.pipe_level_built[segment_id, pipe_type_id]),
-        )
-        model.pipe_level_abs_flow_limit = Constraint(
-            model.SEGMENTS,
-            model.PIPE_LEVELS,
-            model.HOURS,
-            rule=lambda m, segment_id, pipe_type_id, hour:
-            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
-            <= m.pipe_level_capacity_kW[pipe_type_id]
-            * m.pipe_level_built[segment_id, pipe_type_id],
-        )
+        if flow_dependent_network_coefficients:
+            model.pipe_level_abs_flow_positive = Constraint(
+                model.SEGMENTS,
+                model.PIPE_LEVELS,
+                model.HOURS,
+                rule=lambda m, segment_id, pipe_type_id, hour:
+                m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+                >= m.heat_flow_kW[segment_id, hour]
+                - m.segment_capacity_max_kW[segment_id]
+                * (1 - m.pipe_level_built[segment_id, pipe_type_id]),
+            )
+            model.pipe_level_abs_flow_negative = Constraint(
+                model.SEGMENTS,
+                model.PIPE_LEVELS,
+                model.HOURS,
+                rule=lambda m, segment_id, pipe_type_id, hour:
+                m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+                >= -m.heat_flow_kW[segment_id, hour]
+                - m.segment_capacity_max_kW[segment_id]
+                * (1 - m.pipe_level_built[segment_id, pipe_type_id]),
+            )
+            model.pipe_level_abs_flow_limit = Constraint(
+                model.SEGMENTS,
+                model.PIPE_LEVELS,
+                model.HOURS,
+                rule=lambda m, segment_id, pipe_type_id, hour:
+                m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+                <= m.pipe_level_capacity_kW[pipe_type_id]
+                * m.pipe_level_built[segment_id, pipe_type_id],
+            )
     else:
         model.pipe_capacity_limit = Constraint(
             model.SEGMENTS,
@@ -1595,20 +1602,32 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         == sum(model.connected[node] for node in model.DEMAND_NODES)
     )
 
-    model.pipe_heat_loss_kW = Expression(
-        model.HOURS,
-        rule=lambda m, hour: sum(
-            m.segment_length_m[segment_id]
-            * (
-                m.pipe_level_heat_loss_kW_per_m[pipe_type_id]
+    if flow_dependent_network_coefficients:
+        model.pipe_heat_loss_kW = Expression(
+            model.HOURS,
+            rule=lambda m, hour: sum(
+                m.segment_length_m[segment_id]
+                * (
+                    m.pipe_level_heat_loss_kW_per_m[pipe_type_id]
+                    * m.pipe_level_built[segment_id, pipe_type_id]
+                    + m.pipe_level_heat_loss_fraction_per_m[pipe_type_id]
+                    * m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+                )
+                for segment_id in m.SEGMENTS
+                for pipe_type_id in m.PIPE_LEVELS
+            ),
+        )
+    else:
+        model.pipe_heat_loss_kW = Expression(
+            model.HOURS,
+            rule=lambda m, hour: sum(
+                m.segment_length_m[segment_id]
+                * m.pipe_level_heat_loss_kW_per_m[pipe_type_id]
                 * m.pipe_level_built[segment_id, pipe_type_id]
-                + m.pipe_level_heat_loss_fraction_per_m[pipe_type_id]
-                * m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
-            )
-            for segment_id in m.SEGMENTS
-            for pipe_type_id in m.PIPE_LEVELS
-        ),
-    )
+                for segment_id in m.SEGMENTS
+                for pipe_type_id in m.PIPE_LEVELS
+            ),
+        )
     maximum_loss_kW = sum(
         segment.length_m
         * max(
@@ -1785,15 +1804,20 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         rule=lambda m, node, hour: m.local_heat_output_kW[node, hour]
         / m.local_ashp_cop[hour],
     )
-    model.pumping_electricity_input_kW_e = Expression(
-        model.HOURS,
-        rule=lambda m, hour: sum(
-            m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
-            * m.pipe_level_pumping_kWh_e_per_kWh_th[pipe_type_id]
-            for segment_id in m.SEGMENTS
-            for pipe_type_id in m.PIPE_LEVELS
-        ),
-    )
+    if flow_dependent_network_coefficients:
+        model.pumping_electricity_input_kW_e = Expression(
+            model.HOURS,
+            rule=lambda m, hour: sum(
+                m.pipe_level_abs_flow_kW[segment_id, pipe_type_id, hour]
+                * m.pipe_level_pumping_kWh_e_per_kWh_th[pipe_type_id]
+                for segment_id in m.SEGMENTS
+                for pipe_type_id in m.PIPE_LEVELS
+            ),
+        )
+    else:
+        model.pumping_electricity_input_kW_e = Expression(
+            model.HOURS, rule=lambda _m, _hour: 0.0
+        )
     model.local_electricity_input_kWh_e = Expression(
         model.DEMAND_NODES,
         model.HOURS,

@@ -72,7 +72,15 @@ def _canonical() -> CanonicalCaseData:
             {"building_1": 0}, {"building_1": 30}, 1_000_000,
         ),
         solver=SolverSettings(mip_gap=0), input_sha256={"case_config.yaml": "0" * 64},
-        parameter_versions={"central_hp": "v1"}, raw_config={"marker": [1, 2]},
+        parameter_versions={"central_hp": "v1"},
+        raw_config={
+            "marker": [1, 2],
+            "files": {
+                "candidate_network": "candidate_network.geojson",
+                "candidate_sites": "candidate_sites.geojson",
+            },
+            "pareto": {"point_count": 5},
+        },
     )
 
 
@@ -88,11 +96,35 @@ def test_canonical_case_is_deeply_read_only_and_projects_same_inputs() -> None:
 def test_pipeline_solves_all_modes_without_legacy_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("competition.pipelines.case_pipeline.load_v3_case", lambda *_args, **_kwargs: _canonical())
     monkeypatch.setattr(
+        "competition.pipelines.case_pipeline.gpd.read_file",
+        lambda *_args, **_kwargs: gpd.GeoDataFrame(),
+    )
+
+    def fake_solution(_case, point, _solution, output, *_args):
+        target = output / "solutions" / point.point_id
+        target.mkdir(parents=True)
+        pd.DataFrame(
+            {
+                "category": ["policy_carbon_cost"],
+                "annual_cost_CNY_per_year": [0.0],
+            }
+        ).to_csv(target / "cost_breakdown.csv", index=False)
+        pd.DataFrame(
+            {"building_id": ["building_1"], "connected": [point.mode != "distributed"]}
+        ).to_csv(target / "building_connection.csv", index=False)
+
+    monkeypatch.setattr(
+        "competition.pipelines.case_pipeline.export_v3_solution", fake_solution
+    )
+    monkeypatch.setattr(
         "competition.pipelines.case_pipeline.export_v3_results",
         lambda *_args, **_kwargs: SimpleNamespace(
             pareto_csv=Path("pareto_points.csv"),
             candidate_sites_geojson=Path("generated_candidate_sites.geojson"),
             qa_summary_json=Path("qa_summary.json"),
+            combined_frontier_csv=None,
+            representatives_json=None,
+            figure_paths=(),
         ),
     )
     result = run_case_pipeline(tmp_path / "unused", profile="v0-smoke", output_root=tmp_path / "runs")
@@ -108,14 +140,16 @@ def test_public_command_only_delegates_to_new_pipeline(monkeypatch: pytest.Monke
     manifest.write_text("{}", encoding="utf-8")
     observed: dict[str, object] = {}
 
-    def fake(case: str, *, profile: str, output_root: str) -> PipelineRun:
-        observed.update(case=case, profile=profile, output_root=output_root)
+    def fake(case: str, *, profile: str, output_root: str, run_id: str | None) -> PipelineRun:
+        observed.update(case=case, profile=profile, output_root=output_root, run_id=run_id)
         return PipelineRun(tmp_path, manifest, tmp_path / "summary.json", {})
 
     monkeypatch.setattr("scripts.run_case.run_case_pipeline", fake)
     monkeypatch.setattr("sys.argv", ["run_case.py", "--case", "case", "--profile", "v0-smoke", "--output-root", "out"])
     assert run_main() == 0
-    assert observed == {"case": "case", "profile": "v0-smoke", "output_root": "out"}
+    assert observed == {
+        "case": "case", "profile": "v0-smoke", "output_root": "out", "run_id": None
+    }
 
 
 def test_delivery_command_delegates_to_wuhan_new_core_pipeline(
@@ -146,6 +180,7 @@ def test_delivery_command_delegates_to_wuhan_new_core_pipeline(
         "assumption_profile": "provisional_v0",
         "profile": "v0-smoke",
         "output_root": "out",
+        "run_id": None,
     }
 
 
@@ -234,6 +269,8 @@ def test_v1_full_never_falls_back_to_fixed_v0_performance(tmp_path: Path) -> Non
     config_path = case_dir / "case_config.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     config["run"]["profile"] = "v1-full"
+    config["contract_version"] = "competition_input_3.0.0"
+    config["software_release_track"] = "formal_v1"
     config["time"]["complete_heating_season"] = True
     config["features"].update(
         temperature_cop_enabled=True,

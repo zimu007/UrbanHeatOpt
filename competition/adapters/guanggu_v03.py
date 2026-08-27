@@ -16,7 +16,10 @@ import yaml
 
 from competition.canonical import CanonicalSeasonData, V3_DRAFT_CONTRACT
 from competition.intake import GuangguV03Report, validate_guanggu_v03_delivery
-from competition.intake.guanggu_v03 import EQUIPMENT_PATCH_FILES
+from competition.intake.guanggu_v03 import (
+    EQUIPMENT_PATCH_FILES,
+    resolve_guanggu_v03_source_roots,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,9 +121,19 @@ def _source_hour_order(profile: dict[str, Any]) -> tuple[int, ...]:
 
 
 def _normalize_mapping(source: pd.DataFrame) -> pd.DataFrame:
+    def strict_bool(value: Any) -> bool:
+        if isinstance(value, (bool, np.bool_)):
+            return bool(value)
+        normalized = str(value).strip().casefold()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+        raise ValueError(f"is_mixed_use 含非法布尔值: {value!r}")
+
     records: list[dict[str, Any]] = []
     for row in source.itertuples(index=False):
-        mixed = bool(row.is_mixed_use)
+        mixed = strict_bool(row.is_mixed_use)
         records.append(
             {
                 "building_id": str(row.building_id),
@@ -398,7 +411,19 @@ def validate_canonical_season_data(
             _issue(report, "CANONICAL_GAS_PRICE_CONVERSION_INVALID", "LHV气价没有按体积价/LHV转换一次")
         if not np.allclose(external["gas_carbon_kgCO2e_per_kWh_LHV"], expected_gas_carbon, rtol=0, atol=1e-12):
             _issue(report, "CANONICAL_GAS_CARBON_CONVERSION_INVALID", "LHV碳因子没有按体积因子/LHV转换一次")
-        if set(external["gas_energy_basis"]) != {"LHV"} or set(external["gas_conversion_applied"].map(bool)) != {True}:
+        conversion_flags = external["gas_conversion_applied"]
+        if not pd.api.types.is_bool_dtype(conversion_flags.dtype):
+            conversion_flags = (
+                conversion_flags.astype("string")
+                .str.strip()
+                .str.casefold()
+                .map({"true": True, "false": False, "1": True, "0": False})
+            )
+        if (
+            set(external["gas_energy_basis"]) != {"LHV"}
+            or conversion_flags.isna().any()
+            or set(conversion_flags.astype(bool)) != {True}
+        ):
             _issue(report, "CANONICAL_GAS_BASIS_INVALID", "标准燃气边界必须明确LHV且仅转换一次")
         expected_clamped = external["outdoor_temperature_C"].gt(15.0)
         if not external["cop_boundary_clamped"].map(bool).equals(expected_clamped):
@@ -431,14 +456,20 @@ def adapt_guanggu_v03_sources(
 ) -> GuangguV03Adaptation:
     """Validate and standardize the complete heating season without solving."""
 
-    source = Path(source_root).resolve()
+    resolved = resolve_guanggu_v03_source_roots(source_root)
+    source = resolved.delivery_root
     output = Path(output_dir).resolve()
     profile = _load_profile(profile_path)
+    effective_patch_root = (
+        Path(equipment_patch_root).resolve()
+        if equipment_patch_root is not None
+        else resolved.equipment_patch_root
+    )
     source_report = validate_guanggu_v03_delivery(
-        source,
+        resolved.requested_root,
         full_audit=full_audit,
         profile_path=profile_path,
-        equipment_patch_root=equipment_patch_root,
+        equipment_patch_root=effective_patch_root,
     )
     if not source_report.valid:
         errors = [issue.message for issue in source_report.issues if issue.severity == "error"]
@@ -456,7 +487,7 @@ def adapt_guanggu_v03_sources(
     technologies_source = pd.read_csv(
         source / files["technologies"]["path"], encoding="utf-8-sig"
     )
-    patch = Path(equipment_patch_root).resolve() if equipment_patch_root is not None else None
+    patch = effective_patch_root
     equipment_source_path = (
         patch / "06_equipment_performance.csv"
         if patch is not None

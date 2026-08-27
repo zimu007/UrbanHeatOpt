@@ -12,7 +12,12 @@ import pandas as pd
 from pyomo.environ import value
 
 from competition.canonical import CanonicalCaseData
-from competition.pareto import ParetoPoint, ParetoRun, point_to_dict
+from competition.pareto import (
+    ParetoPoint,
+    ParetoRun,
+    point_to_dict,
+    select_representative_points,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,10 +26,164 @@ class V3StandardExport:
     pareto_csv: Path
     candidate_sites_geojson: Path
     qa_summary_json: Path
+    representatives_json: Path | None = None
+    combined_frontier_csv: Path | None = None
+    figure_paths: tuple[Path, ...] = ()
 
 
 def _json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _render_figures(
+    case: CanonicalCaseData,
+    pareto: ParetoRun,
+    output: Path,
+    case_dir: Path,
+    representatives: dict[str, Any],
+) -> tuple[Path, ...]:
+    """Render auditable static figures from exported numeric solution files."""
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    figures = output / "figures"
+    figures.mkdir(exist_ok=False)
+    created: list[Path] = []
+    colours = {"central": "#1f77b4", "distributed": "#ff7f0e", "hybrid": "#2ca02c"}
+
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    for mode, all_points in pareto.mode_all_points.items():
+        ax.scatter(
+            [point.annual_operating_carbon_kgCO2e_per_year / 1000 for point in all_points],
+            [point.annual_real_cost_CNY_per_year for point in all_points],
+            color=colours[mode], alpha=0.2, s=18,
+        )
+        frontier = pareto.mode_frontiers[mode]
+        ax.plot(
+            [point.annual_operating_carbon_kgCO2e_per_year / 1000 for point in frontier],
+            [point.annual_real_cost_CNY_per_year for point in frontier],
+            marker="o", color=colours[mode], label=mode,
+        )
+    if pareto.combined_frontier:
+        ax.scatter(
+            [point.annual_operating_carbon_kgCO2e_per_year / 1000 for point in pareto.combined_frontier],
+            [point.annual_real_cost_CNY_per_year for point in pareto.combined_frontier],
+            marker="x", color="black", s=55, label="combined non-dominated",
+        )
+    ax.set_xlabel("Operating carbon (tCO2e/period)")
+    ax.set_ylabel("Annualized real cost (CNY/period)")
+    ax.set_title("Cost-carbon Pareto frontiers")
+    ax.grid(alpha=0.25)
+    ax.legend()
+    path = figures / "pareto_frontiers.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    created.append(path)
+
+    mode_minimums = {
+        mode: select_representative_points(frontier)["minimum_cost"]
+        for mode, frontier in pareto.mode_frontiers.items()
+    }
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+    modes = list(pareto.mode_frontiers)
+    axes[0].bar(
+        modes,
+        [mode_minimums[mode]["annual_real_cost_CNY_per_year"] for mode in modes],
+        color=[colours[mode] for mode in modes],
+    )
+    axes[0].set_title("Minimum-cost point")
+    axes[0].set_ylabel("CNY/period")
+    axes[1].bar(
+        modes,
+        [mode_minimums[mode]["annual_operating_carbon_kgCO2e_per_year"] / 1000 for mode in modes],
+        color=[colours[mode] for mode in modes],
+    )
+    axes[1].set_title("Carbon at minimum-cost point")
+    axes[1].set_ylabel("tCO2e/period")
+    path = figures / "three_modes_comparison.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    created.append(path)
+
+    buildings_name = case.raw_config.get("files", {}).get("buildings")
+    buildings_path = case_dir / buildings_name if isinstance(buildings_name, str) else None
+    buildings = (
+        gpd.read_file(buildings_path)
+        if buildings_path is not None and buildings_path.is_file()
+        else None
+    )
+    candidate_sites = gpd.read_file(case_dir / case.raw_config["files"]["candidate_sites"])
+    for mode in modes:
+        point_id = str(mode_minimums[mode]["point_id"])
+        solution_dir = output / "solutions" / point_id
+        dispatch = pd.read_parquet(solution_dir / "dispatch_hourly.parquet")
+        dispatch["technology"] = dispatch["asset_id"].astype(str).str.split("@").str[0]
+        hourly = dispatch.groupby(["timestamp", "technology"], sort=True)["heat_output_kW_th"].sum().unstack(fill_value=0)
+        fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
+        hourly.plot(ax=ax)
+        ax.set_title(f"{mode}: minimum-cost hourly heat dispatch")
+        ax.set_ylabel("kW_th")
+        ax.grid(alpha=0.2)
+        path = figures / f"dispatch_{mode}_minimum_cost.png"
+        fig.savefig(path, dpi=180)
+        plt.close(fig)
+        created.append(path)
+
+        network = gpd.read_file(solution_dir / "network_decisions.geojson")
+        fig, ax = plt.subplots(figsize=(7, 7), constrained_layout=True)
+        if buildings is not None and not buildings.empty:
+            buildings.plot(ax=ax, facecolor="#eeeeee", edgecolor="#666666", linewidth=0.5)
+        unbuilt = network.loc[network["built"].eq(0)]
+        built = network.loc[network["built"].eq(1)]
+        if not unbuilt.empty:
+            unbuilt.plot(ax=ax, color="#bbbbbb", linewidth=0.6)
+        if not built.empty:
+            built.plot(ax=ax, color="#d62728", linewidth=2.0)
+        if not candidate_sites.empty:
+            candidate_sites.plot(ax=ax, color="#9467bd", marker="^", markersize=35)
+        ax.set_title(f"{mode}: provisional candidate/built network")
+        ax.set_axis_off()
+        path = figures / f"network_{mode}_minimum_cost.png"
+        fig.savefig(path, dpi=180)
+        plt.close(fig)
+        created.append(path)
+
+        electricity = float(dispatch["electricity_input_kW_e"].sum())
+        gas = float(dispatch["gas_input_kW_LHV"].sum())
+        heat = float(dispatch["heat_output_kW_th"].sum())
+        charge = float(dispatch["storage_charge_kW_th"].sum())
+        discharge = float(dispatch["storage_discharge_kW_th"].sum())
+        fig, ax = plt.subplots(figsize=(8, 4), constrained_layout=True)
+        labels = ["Electricity input", "Gas input (LHV)", "Heat output", "TES charge", "TES discharge"]
+        values = [electricity, gas, heat, charge, discharge]
+        ax.barh(labels, values, color=["#1f77b4", "#ff7f0e", "#d62728", "#9467bd", "#2ca02c"])
+        ax.set_xlabel("Period sum of hourly power values (kWh at 1 h steps)")
+        ax.set_title(f"{mode}: source-network-load-storage energy totals")
+        path = figures / f"energy_flow_{mode}_minimum_cost.png"
+        fig.savefig(path, dpi=180)
+        plt.close(fig)
+        created.append(path)
+
+    combined_minimum = representatives["combined"]["minimum_cost"]["point_id"]
+    if combined_minimum:
+        solution_dir = output / "solutions" / str(combined_minimum)
+        cost = pd.read_csv(solution_dir / "cost_breakdown.csv")
+        carbon = pd.read_csv(solution_dir / "carbon_breakdown.csv")
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+        axes[0].barh(cost["category"], cost["annual_cost_CNY_per_year"])
+        axes[0].set_title("Cost breakdown: combined minimum-cost point")
+        axes[0].set_xlabel("CNY/period")
+        axes[1].barh(carbon["category"], carbon["annual_carbon_kgCO2e_per_year"] / 1000)
+        axes[1].set_title("Carbon breakdown")
+        axes[1].set_xlabel("tCO2e/period")
+        path = figures / "cost_carbon_breakdown_combined_minimum_cost.png"
+        fig.savefig(path, dpi=180)
+        plt.close(fig)
+        created.append(path)
+    return tuple(created)
 
 
 def _selected_pipe_type(model: Any, segment: str) -> str | None:
@@ -178,7 +337,7 @@ def _manual_carbon(model: Any) -> dict[str, float]:
     return {"electricity": float(electricity), "gas": float(gas)}
 
 
-def _export_solution(
+def export_v3_solution(
     case: CanonicalCaseData,
     point: ParetoPoint,
     solution: Any,
@@ -188,7 +347,7 @@ def _export_solution(
 ) -> dict[str, Any]:
     model = solution.model
     target = output / "solutions" / point.point_id
-    target.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=False)
     site_metadata = {
         str(row.site_id): row
         for row in sites_input.itertuples(index=False)
@@ -307,16 +466,17 @@ def _export_solution(
             heat_loss = 0.0
             pumping = 0.0
             if selected is not None:
+                absolute_flow = abs(value(model.heat_flow_kW[segment, hour]))
                 heat_loss = (
                     value(model.segment_length_m[segment])
                     * (
                         value(model.pipe_level_heat_loss_kW_per_m[selected])
                         + value(model.pipe_level_heat_loss_fraction_per_m[selected])
-                        * value(model.pipe_level_abs_flow_kW[segment, selected, hour])
+                        * absolute_flow
                     )
                 )
                 pumping = (
-                    value(model.pipe_level_abs_flow_kW[segment, selected, hour])
+                    absolute_flow
                     * value(model.pipe_level_pumping_kWh_e_per_kWh_th[selected])
                 )
             network_rows.append({
@@ -513,9 +673,15 @@ def _export_solution(
     _json(target / "qa_report.json", qa)
     _json(target / "solver_report.json", {
         "solver": case.solver.name,
-        "termination_condition": str(solution.solver_results.solver.termination_condition),
-        "threads": case.solver.threads, "mip_gap": case.solver.mip_gap,
+        "solver_status": point.solver_status,
+        "termination_condition": point.termination_condition,
+        "solve_started_at_utc": point.solve_started_at_utc,
+        "solve_finished_at_utc": point.solve_finished_at_utc,
+        "solve_elapsed_seconds": point.solve_elapsed_seconds,
+        "reported_mip_gap": point.reported_mip_gap,
+        "threads": case.solver.threads, "mip_gap_target": case.solver.mip_gap,
         "time_limit_seconds": case.solver.time_limit_seconds,
+        "random_seed": case.solver.random_seed,
     })
     return qa
 
@@ -523,27 +689,98 @@ def _export_solution(
 def export_v3_results(case: CanonicalCaseData, pareto: ParetoRun, output_dir: str | Path, case_dir: str | Path) -> V3StandardExport:
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    points = {point.point_id: point for frontier in pareto.mode_frontiers.values() for point in frontier}
+    points = {
+        point.point_id: point
+        for all_points in pareto.mode_all_points.values()
+        for point in all_points
+    }
+    frontier_ids = {
+        point.point_id for frontier in pareto.mode_frontiers.values() for point in frontier
+    }
     pareto_csv = output / "pareto_points.csv"
-    pd.DataFrame([point_to_dict(point) for point in points.values()]).sort_values(["mode", "annual_operating_carbon_kgCO2e_per_year"]).to_csv(pareto_csv, index=False)
+    point_rows = []
+    for point in points.values():
+        row = point_to_dict(point)
+        row["is_mode_nondominated"] = point.point_id in frontier_ids
+        point_rows.append(row)
+    pd.DataFrame(point_rows).sort_values(
+        ["mode", "annual_operating_carbon_kgCO2e_per_year", "point_id"]
+    ).to_csv(pareto_csv, index=False)
+    combined_frontier_csv = output / "combined_nondominated_frontier.csv"
+    pd.DataFrame([point_to_dict(point) for point in pareto.combined_frontier]).to_csv(
+        combined_frontier_csv, index=False
+    )
+    policy_constraint = case.raw_config.get("pareto", {}).get(
+        "policy_carbon_constraint_kgCO2e_per_year"
+    )
+    representatives = {
+        "by_mode": {
+            mode: select_representative_points(
+                frontier,
+                policy_carbon_constraint_kgCO2e_per_year=policy_constraint,
+            )
+            for mode, frontier in pareto.mode_frontiers.items()
+        },
+        "combined": select_representative_points(
+            pareto.combined_frontier,
+            policy_carbon_constraint_kgCO2e_per_year=policy_constraint,
+        ),
+        "policy_carbon_constraint_kgCO2e_per_year": policy_constraint,
+        "policy_status": (
+            "configured"
+            if policy_constraint is not None
+            else "missing_teacher_or_project_policy_threshold"
+        ),
+    }
+    representatives_path = output / "representative_solutions.json"
+    _json(representatives_path, representatives)
     network = gpd.read_file(Path(case_dir) / case.raw_config["files"]["candidate_network"])
     sites = gpd.read_file(Path(case_dir) / case.raw_config["files"]["candidate_sites"])
-    qa_reports = [
-        _export_solution(
-            case, point, pareto.solutions[point_id], output, network, sites
-        )
-        for point_id, point in sorted(points.items())
-    ]
-    selected_modes_by_station = {
-        station: sorted({
-            point.mode
-            for point in points.values()
-            if value(
-                pareto.solutions[point.point_id].model.station_built[station]
-            ) > 0.5
-        })
-        for station in case.candidate_station_nodes
+    qa_reports: list[dict[str, Any]] = []
+    for point_id, point in sorted(points.items()):
+        if point_id in pareto.solutions:
+            qa_reports.append(
+                export_v3_solution(
+                    case, point, pareto.solutions[point_id], output, network, sites
+                )
+            )
+            continue
+        qa_path = output / "solutions" / point_id / "qa_report.json"
+        if not qa_path.is_file():
+            raise RuntimeError(f"缺少流式导出的 Pareto 方案：{point_id}")
+        report = json.loads(qa_path.read_text(encoding="utf-8"))
+        if report.get("point_id") != point_id:
+            raise RuntimeError(f"流式方案 QA point_id 不匹配：{point_id}")
+        qa_reports.append(report)
+    frontier_points = {
+        point.point_id: point
+        for frontier in pareto.mode_frontiers.values()
+        for point in frontier
     }
+    selected_modes_by_station: dict[str, list[str]] = {}
+    for station in case.candidate_station_nodes:
+        selected_modes: set[str] = set()
+        for point in frontier_points.values():
+            if point.point_id in pareto.solutions:
+                built = value(
+                    pareto.solutions[point.point_id].model.station_built[station]
+                ) > 0.5
+            else:
+                decisions = pd.read_csv(
+                    output / "solutions" / point.point_id / "station_decisions.csv"
+                )
+                selected = decisions.loc[
+                    decisions["station_id"].astype(str).eq(str(station)),
+                    "station_built",
+                ]
+                if len(selected) != 1:
+                    raise RuntimeError(
+                        f"方案 {point.point_id} 缺少唯一站点决策：{station}"
+                    )
+                built = float(selected.iloc[0]) > 0.5
+            if built:
+                selected_modes.add(point.mode)
+        selected_modes_by_station[str(station)] = sorted(selected_modes)
     sites["station_built"] = sites["site_id"].astype(str).map(
         {station: int(bool(modes)) for station, modes in selected_modes_by_station.items()}
     ).fillna(0).astype(int)
@@ -564,4 +801,19 @@ def export_v3_results(case: CanonicalCaseData, pareto: ParetoRun, output_dir: st
     _json(qa_summary_path, qa_summary)
     if not qa_summary["all_points_passed"]:
         raise RuntimeError(f"标准结果 QA 未通过：{qa_summary['failed_points']}")
-    return V3StandardExport(output, pareto_csv, candidate_sites, qa_summary_path)
+    figure_paths = _render_figures(
+        case,
+        pareto,
+        output,
+        Path(case_dir).resolve(),
+        representatives,
+    )
+    return V3StandardExport(
+        output,
+        pareto_csv,
+        candidate_sites,
+        qa_summary_path,
+        representatives_path,
+        combined_frontier_csv,
+        figure_paths,
+    )

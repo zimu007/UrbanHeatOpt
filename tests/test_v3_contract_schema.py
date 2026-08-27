@@ -17,8 +17,10 @@ MACHINE_CONTRACT_PATH = ROOT / "competition" / "schemas" / "input_contract_v3.ya
 def _config(profile: str = "v0-smoke") -> dict[str, object]:
     is_full = profile == "v1-full"
     return {
-        "contract_version": "competition_input_3.0.0-draft.2",
-        "software_release_track": "test_v0",
+        "contract_version": (
+            "competition_input_3.0.0" if is_full else "competition_input_3.0.0-draft.2"
+        ),
+        "software_release_track": "formal_v1" if is_full else "test_v0",
         "case_id": "minimal_v3",
         "scenario_id": "smoke",
         "data_version": "synthetic-v3-draft1",

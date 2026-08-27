@@ -21,7 +21,9 @@ from competition.solvers import SolverSettings
 
 
 V3_DRAFT_CONTRACT = "competition_input_3.0.0-draft.2"
+V3_FINAL_CONTRACT = "competition_input_3.0.0"
 TEST_RELEASE_TRACK = "test_v0"
+FORMAL_RELEASE_TRACK = "formal_v1"
 CANONICAL_MODES = ("central", "distributed", "hybrid")
 
 
@@ -196,10 +198,16 @@ class CanonicalCaseData:
     max_built_stations: int = 1
 
     def __post_init__(self) -> None:
-        if self.contract_version != V3_DRAFT_CONTRACT:
-            raise ValueError(f"canonical contract_version 必须为 {V3_DRAFT_CONTRACT}")
-        if self.software_release_track != TEST_RELEASE_TRACK:
-            raise ValueError("canonical software_release_track 必须为 test_v0")
+        allowed_pairs = {
+            (V3_DRAFT_CONTRACT, TEST_RELEASE_TRACK),
+            (V3_FINAL_CONTRACT, FORMAL_RELEASE_TRACK),
+        }
+        if (self.contract_version, self.software_release_track) not in allowed_pairs:
+            raise ValueError("contract_version 与 software_release_track 组合无效")
+        if self.profile == "v1-full" and self.contract_version != V3_FINAL_CONTRACT:
+            raise ValueError("v1-full 必须使用冻结的 competition_input_3.0.0 契约")
+        if self.profile != "v1-full" and self.contract_version != V3_DRAFT_CONTRACT:
+            raise ValueError("V0 调试配置必须使用 draft.2 契约")
         if self.modes != CANONICAL_MODES:
             raise ValueError("modes 必须按 central, distributed, hybrid 固定排序")
         if self.hours != tuple(range(1, len(self.timestamps) + 1)):
