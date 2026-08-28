@@ -14,7 +14,7 @@ from pyomo.environ import Constraint, Objective, minimize, value
 
 from competition.canonical import CanonicalCaseData
 from competition.core_model import CoreModelInput, CoreSolveResult, build_core_model
-from competition.solvers import SolverSettings, solve_pyomo_model
+from competition.solvers import SolverSettings, get_solver_evidence, solve_pyomo_model
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +42,12 @@ class ParetoPoint:
     solver_status: str = "unknown"
     termination_condition: str = "unknown"
     reported_mip_gap: float | None = None
+    incumbent_objective: float | None = None
+    best_objective_bound: float | None = None
+    reported_wallclock_seconds: float | None = None
+    model_sha256: str | None = None
+    solver_log_file: str | None = None
+    solver_evidence_file: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,12 +129,7 @@ def _solve_point(
     solve_elapsed = perf_counter() - solve_clock
     solve_finished = datetime.now(timezone.utc)
     solver = solver_results.solver
-    try:
-        reported_gap = float(getattr(solver, "gap", None))
-        if not isfinite(reported_gap):
-            reported_gap = None
-    except (TypeError, ValueError):
-        reported_gap = None
+    evidence = get_solver_evidence(solver_results)
     unserved = float(
         sum(
             value(model.unserved_heat_kW[node, hour])
@@ -153,7 +154,13 @@ def _solve_point(
         solve_finished_at_utc=solve_finished.isoformat(),
         solver_status=str(getattr(solver, "status", "unknown")),
         termination_condition=str(solver.termination_condition),
-        reported_mip_gap=reported_gap,
+        reported_mip_gap=evidence.get("relative_mip_gap"),
+        incumbent_objective=evidence.get("incumbent_objective"),
+        best_objective_bound=evidence.get("best_objective_bound"),
+        reported_wallclock_seconds=evidence.get("elapsed_seconds"),
+        model_sha256=evidence.get("model_sha256"),
+        solver_log_file=evidence.get("solver_log_file"),
+        solver_evidence_file=evidence.get("solver_evidence_file"),
     )
     return point, CoreSolveResult(model=model, solver_results=solver_results)
 
@@ -407,4 +414,10 @@ def point_to_dict(point: ParetoPoint) -> dict[str, Any]:
         "solver_status": point.solver_status,
         "termination_condition": point.termination_condition,
         "reported_mip_gap": point.reported_mip_gap,
+        "incumbent_objective": point.incumbent_objective,
+        "best_objective_bound": point.best_objective_bound,
+        "reported_wallclock_seconds": point.reported_wallclock_seconds,
+        "model_sha256": point.model_sha256,
+        "solver_log_file": point.solver_log_file,
+        "solver_evidence_file": point.solver_evidence_file,
     }

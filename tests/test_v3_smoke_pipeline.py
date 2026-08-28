@@ -70,9 +70,10 @@ def test_v3_smoke_pipeline_is_read_only_complete_and_deterministic(tmp_path: Pat
 
     first_points = _assert_standard_outputs(first.output_dir)
     second_points = _assert_standard_outputs(second.output_dir)
+    volatile = ["reported_wallclock_seconds"]
     pd.testing.assert_frame_equal(
-        first_points,
-        second_points,
+        first_points.drop(columns=volatile),
+        second_points.drop(columns=volatile),
         check_exact=False,
         rtol=0.0,
         atol=1e-9,

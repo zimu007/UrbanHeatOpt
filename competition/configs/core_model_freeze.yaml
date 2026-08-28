@@ -1,0 +1,8 @@
+schema_version: urbanheatopt_core_freeze_v1
+frozen_at: '2026-08-28'
+git_commit_at_freeze: 2f529dd3da516589dcce7fcfadbb77d83252117a
+core_model_path: competition/core_model.py
+sha256: da9a29273e79a7c361fd8cd38b109023177500594168530942049a9812f8194d
+purpose: 62栋2160小时原规模全季服务器求解前冻结核心数学模型
+allowed_changes: 求解配置、日志、并行编排、空间输入和结果导出外围层
+forbidden_changes: 核心变量、目标函数、物理约束、成本与碳排表达式

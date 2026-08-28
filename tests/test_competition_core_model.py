@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import geopandas as gpd
 import pandas as pd
 import pytest
-from pyomo.environ import ConcreteModel, Constraint, Objective, Var, value
+from pyomo.environ import Binary, ConcreteModel, Constraint, Objective, Var, value
 from pyomo.core.base.objective import Objective as ObjectiveComponent
 from pyomo.opt import TerminationCondition
 from shapely.geometry import LineString, Point
@@ -1565,6 +1565,7 @@ def test_competition_solver_keeps_infeasible_variables_unloaded() -> None:
         (SolverSettings(mip_gap=-0.1), "mip_gap"),
         (SolverSettings(mip_gap=1.0), "mip_gap"),
         (SolverSettings(threads=2), "threads"),
+        (SolverSettings(threads=16), "threads"),
         (SolverSettings(time_limit_seconds=0), "time_limit_seconds"),
         (SolverSettings(random_seed=-1), "random_seed"),
         (SolverSettings(tee="false"), "tee"),
@@ -1654,3 +1655,39 @@ def test_competition_highs_uses_reproducible_options_and_delays_loading(
         "mip_feasibility_tolerance": 1e-9,
     }
     assert value(model.x) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("threads", [1, 4, 8])
+def test_competition_solver_accepts_frozen_server_thread_counts(threads: int) -> None:
+    validate_solver_settings(SolverSettings(threads=threads))
+
+
+def test_competition_solver_writes_mps_hash_log_and_evidence(tmp_path) -> None:
+    model = ConcreteModel()
+    model.x = Var(domain=Binary)
+    model.objective = Objective(expr=model.x)
+    model.lower = Constraint(expr=model.x >= 1)
+    model_file = tmp_path / "model.mps"
+    log_file = tmp_path / "solver.log"
+    evidence_file = tmp_path / "solver_evidence.json"
+    results = solve_pyomo_model(
+        model,
+        SolverSettings(
+            model_file=str(model_file),
+            log_file=str(log_file),
+            evidence_file=str(evidence_file),
+        ),
+    )
+    evidence = solver_module.get_solver_evidence(results)
+    assert model_file.is_file() and model_file.stat().st_size > 0
+    assert log_file.is_file() and log_file.stat().st_size > 0
+    assert evidence_file.is_file()
+    assert evidence["accepted"] is True
+    assert evidence["model_sha256"] == __import__("hashlib").sha256(
+        model_file.read_bytes()
+    ).hexdigest()
+    assert evidence["has_feasible_solution"] is True
+    assert evidence["relative_mip_gap"] == pytest.approx(0.0)
+    assert evidence["peak_working_set_after_bytes"] is None or evidence[
+        "peak_working_set_after_bytes"
+    ] > 0
