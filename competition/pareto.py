@@ -290,6 +290,67 @@ def solve_mode_pareto(
     return frontier, solutions
 
 
+def solve_pareto_task(
+    data: CoreModelInput,
+    settings: SolverSettings,
+    spec: ParetoSpec,
+    *,
+    point_id: str,
+    objective: str,
+    epsilon_kgCO2e_per_year: float | None = None,
+    labels: tuple[str, ...] = (),
+) -> tuple[ParetoPoint, CoreSolveResult]:
+    """Solve one independently schedulable point using unchanged core physics."""
+
+    resolved_labels = labels or (
+        ("cost_endpoint",)
+        if objective == "cost" and epsilon_kgCO2e_per_year is None
+        else ("carbon_endpoint",)
+        if objective == "carbon"
+        else ("epsilon",)
+    )
+    return _solve_point(
+        data,
+        settings,
+        spec,
+        point_id=point_id,
+        labels=resolved_labels,
+        objective=objective,
+        epsilon=epsilon_kgCO2e_per_year,
+    )
+
+
+def assemble_pareto_run(
+    points: tuple[ParetoPoint, ...],
+    spec: ParetoSpec,
+    *,
+    modes: tuple[str, ...] = ("central", "distributed", "hybrid"),
+) -> ParetoRun:
+    """Assemble independently solved points without re-solving any model."""
+
+    _validate_spec(spec)
+    grouped: dict[str, tuple[ParetoPoint, ...]] = {}
+    frontiers: dict[str, tuple[ParetoPoint, ...]] = {}
+    for mode in modes:
+        mode_points = tuple(point for point in points if point.mode == mode)
+        if not mode_points:
+            raise ValueError(f"缺少模式 {mode} 的独立求解点")
+        grouped[mode] = mode_points
+        frontiers[mode] = _mark_knee(_frontier(list(mode_points), spec))
+    combined = _mark_knee(
+        _frontier(
+            [point for frontier in frontiers.values() for point in frontier],
+            spec,
+        )
+    )
+    return ParetoRun(
+        mode_frontiers=frontiers,
+        combined_frontier=combined,
+        solutions={},
+        mode_all_points=grouped,
+    )
+
+
 def solve_case_pareto(
     case: CanonicalCaseData,
     spec: ParetoSpec,
