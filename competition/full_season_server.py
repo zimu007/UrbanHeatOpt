@@ -186,6 +186,8 @@ def create_task_plan(
     *,
     point_count: int = 11,
     physical_core_count: int | None = None,
+    source_input_sha256: dict[str, str] | None = None,
+    source_validation_report_sha256: str | None = None,
 ) -> Path:
     root = Path(run_root).resolve()
     plan_path = root / "task_plan.json"
@@ -208,6 +210,8 @@ def create_task_plan(
         "core_freeze": core,
         "host_environment": host_environment_record(physical_core_count),
         "case_input_sha256": dict(case.input_sha256),
+        "source_input_sha256": dict(source_input_sha256 or {}),
+        "source_validation_report_sha256": source_validation_report_sha256,
         "required_building_count": 62,
         "required_hour_count": 2160,
         "mode_order": list(MODES),
@@ -577,11 +581,16 @@ def run_ready_tasks(
     if not ready:
         return []
     threads = max(task.threads for task in ready)
-    workers = maximum_workers or recommended_worker_count(
-        threads_per_task=threads,
-        memory_per_task_gib=memory_per_task_gib,
-        physical_core_count=physical_core_count,
-    )
+    if phase == "benchmark":
+        if maximum_workers not in (None, 1):
+            raise ValueError("1/4/8线程基准必须串行运行，--max-workers只能为1")
+        workers = 1
+    else:
+        workers = maximum_workers or recommended_worker_count(
+            threads_per_task=threads,
+            memory_per_task_gib=memory_per_task_gib,
+            physical_core_count=physical_core_count,
+        )
     results: list[dict[str, Any]] = []
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = {
@@ -608,6 +617,12 @@ def summarize_benchmarks(run_root: str | Path) -> Path:
             raise RuntimeError(f"线程基准尚未完成：{task.task_id}")
         result = json.loads(success.read_text(encoding="utf-8"))
         point = result.get("point", {})
+        evidence_path = result.get("solver_evidence_file") or point.get(
+            "solver_evidence_file"
+        )
+        evidence = {}
+        if evidence_path and Path(evidence_path).is_file():
+            evidence = json.loads(Path(evidence_path).read_text(encoding="utf-8"))
         rows.append(
             {
                 "task_id": task.task_id,
@@ -622,6 +637,10 @@ def summarize_benchmarks(run_root: str | Path) -> Path:
                 "reported_mip_gap": result.get("reported_mip_gap")
                 if "reported_mip_gap" in result
                 else point.get("reported_mip_gap"),
+                "elapsed_seconds": evidence.get("elapsed_seconds"),
+                "peak_working_set_bytes": evidence.get("peak_working_set_bytes"),
+                "solver_version": evidence.get("solver_version"),
+                "solver_evidence_file": evidence_path,
             }
         )
     hashes = {row["model_sha256"] for row in rows}
@@ -641,6 +660,73 @@ def summarize_benchmarks(run_root: str | Path) -> Path:
         },
     )
     return report
+
+
+def select_formal_thread_count(run_root: str | Path, *, threads: int) -> Path:
+    """Apply a benchmark-backed 1/4/8 thread choice before any formal task starts."""
+
+    if threads not in {1, 4, 8}:
+        raise ValueError("正式单任务线程数只能为1、4或8")
+    root, payload = _load_plan(run_root)
+    if not (root / "benchmark_comparison.json").is_file():
+        raise RuntimeError("必须先完成并汇总1/4/8线程基准")
+    formal = [
+        row for row in payload["tasks"] if row["phase"] in {"endpoint", "epsilon"}
+    ]
+    started = [
+        row["task_id"]
+        for row in formal
+        if _success_path(root, row["task_id"]).exists()
+        or (root / "tasks" / row["task_id"] / "task.lock").exists()
+        or any((root / "tasks" / row["task_id"]).glob("attempt_*"))
+    ]
+    if started:
+        raise RuntimeError(f"正式任务已开始，禁止再改变线程数：{started}")
+    payload["tasks"] = [
+        {**row, "threads": threads}
+        if row["phase"] in {"endpoint", "epsilon"}
+        else row
+        for row in payload["tasks"]
+    ]
+    payload["formal_threads"] = threads
+    payload["formal_threads_selected_at_utc"] = datetime.now(timezone.utc).isoformat()
+    _json(root / "task_plan.json", payload)
+    return root / "task_plan.json"
+
+
+def extend_unfinished_time_limits(
+    run_root: str | Path, *, phase: str, time_limit_hours: int = 12
+) -> Path:
+    """Extend failed/unstarted formal tasks to the approved 12-hour ceiling."""
+
+    if phase not in {"endpoint", "epsilon"}:
+        raise ValueError("只能延长endpoint或epsilon阶段")
+    if time_limit_hours != 12:
+        raise ValueError("冻结计划只允许从6小时延长到12小时")
+    root, payload = _load_plan(run_root)
+    updated: list[dict[str, Any]] = []
+    changed: list[str] = []
+    for row in payload["tasks"]:
+        if row["phase"] != phase or _success_path(root, row["task_id"]).exists():
+            updated.append(row)
+            continue
+        if (root / "tasks" / row["task_id"] / "task.lock").exists():
+            raise RuntimeError(f"任务正在运行，不能改变时限：{row['task_id']}")
+        updated.append({**row, "time_limit_seconds": 43200.0})
+        changed.append(row["task_id"])
+    if not changed:
+        raise RuntimeError(f"{phase}没有可延长的未完成任务")
+    payload["tasks"] = updated
+    payload.setdefault("time_limit_extensions", []).append(
+        {
+            "phase": phase,
+            "task_ids": changed,
+            "time_limit_seconds": 43200.0,
+            "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    _json(root / "task_plan.json", payload)
+    return root / "task_plan.json"
 
 
 def task_status(run_root: str | Path) -> dict[str, Any]:
@@ -694,6 +780,8 @@ def finalize_representative_results(run_root: str | Path) -> Path:
     """Certify the four labels, retaining aliases when rules select one point."""
 
     root, payload = _load_plan(run_root)
+    if not (root / "source_integrity_verified.json").is_file():
+        raise RuntimeError("尚未完成求解后v0.2源输入哈希复验")
     mapping = payload.get("representative_selection")
     if not isinstance(mapping, dict) or set(mapping) != {
         "minimum_cost",
@@ -742,3 +830,43 @@ def finalize_representative_results(run_root: str | Path) -> Path:
         },
     )
     return report
+
+
+def verify_source_integrity(
+    run_root: str | Path,
+    *,
+    current_source_input_sha256: dict[str, str],
+    current_source_validation_report: str | Path,
+) -> Path:
+    """Compare the post-run independent audit against the prepare-time 422 hashes."""
+
+    root, payload = _load_plan(run_root)
+    marker = root / "source_integrity_verified.json"
+    if marker.exists():
+        raise FileExistsError(f"源输入复验结果已存在，拒绝覆盖：{marker}")
+    expected = payload.get("source_input_sha256")
+    if not isinstance(expected, dict) or not expected:
+        raise RuntimeError("任务计划未记录准备阶段源输入哈希")
+    current = dict(current_source_input_sha256)
+    missing = sorted(set(expected) - set(current))
+    unexpected = sorted(set(current) - set(expected))
+    changed = sorted(
+        key for key in set(expected) & set(current) if expected[key] != current[key]
+    )
+    if missing or unexpected or changed:
+        raise RuntimeError(
+            "求解前后v0.2源输入不一致："
+            f"missing={missing}, unexpected={unexpected}, changed={changed}"
+        )
+    report_path = Path(current_source_validation_report).resolve()
+    _json(
+        marker,
+        {
+            "status": "verified_unchanged",
+            "file_count": len(expected),
+            "source_validation_report": str(report_path),
+            "source_validation_report_sha256": _hash(report_path),
+            "verified_at_utc": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return marker

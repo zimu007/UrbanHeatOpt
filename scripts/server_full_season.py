@@ -17,12 +17,15 @@ from competition.adapters.guanggu_v03_case import prepare_guanggu_v03_v0_case
 from competition.full_season_server import (
     assemble_full_season_results,
     create_task_plan,
+    extend_unfinished_time_limits,
     finalize_representative_results,
     resolve_epsilon_tasks,
     resolve_representative_tasks,
     run_ready_tasks,
+    select_formal_thread_count,
     summarize_benchmarks,
     task_status,
+    verify_source_integrity,
 )
 from competition.osm_corridor import download_osm_snapshot
 from competition.readiness import run_guanggu_v03_input_validation
@@ -95,6 +98,10 @@ def _prepare(args: argparse.Namespace) -> int:
         prepared.case_dir,
         point_count=11,
         physical_core_count=args.physical_cores,
+        source_input_sha256=dict(validation.adaptation.source_report.file_sha256),
+        source_validation_report_sha256=sha256(
+            validation.adaptation.source_report_path.read_bytes()
+        ).hexdigest(),
     )
     print(plan)
     return 0
@@ -154,12 +161,28 @@ def main() -> int:
         "summarize-benchmarks", help="核对1/4/8线程MPS并汇总求解进展"
     )
     benchmark_summary.add_argument("--run-root", required=True, type=Path)
+    select_threads = sub.add_parser(
+        "select-threads", help="根据基准证据冻结正式任务的单任务线程数"
+    )
+    select_threads.add_argument("--run-root", required=True, type=Path)
+    select_threads.add_argument("--threads", required=True, type=int, choices=(1, 4, 8))
+    extend = sub.add_parser(
+        "extend-time", help="将未完成端点或epsilon任务从6小时延长到12小时"
+    )
+    extend.add_argument("--run-root", required=True, type=Path)
+    extend.add_argument("--phase", required=True, choices=("endpoint", "epsilon"))
+    extend.add_argument("--hours", type=int, default=12, choices=(12,))
     assemble = sub.add_parser("assemble", help="汇总39个完整全季任务")
     assemble.add_argument("--run-root", required=True, type=Path)
     finalize = sub.add_parser(
         "finalize-representatives", help="核验并汇总千分之一gap代表解认证结果"
     )
     finalize.add_argument("--run-root", required=True, type=Path)
+    verify_source = sub.add_parser(
+        "verify-source-integrity", help="求解后重新校验v0.2并核对全部源文件哈希"
+    )
+    verify_source.add_argument("--run-root", required=True, type=Path)
+    verify_source.add_argument("--delivery-root", required=True, type=Path)
     args = parser.parse_args()
     if args.action == "prepare":
         return _prepare(args)
@@ -181,6 +204,18 @@ def main() -> int:
         return 0
     if args.action == "summarize-benchmarks":
         print(summarize_benchmarks(args.run_root))
+        return 0
+    if args.action == "select-threads":
+        print(select_formal_thread_count(args.run_root, threads=args.threads))
+        return 0
+    if args.action == "extend-time":
+        print(
+            extend_unfinished_time_limits(
+                args.run_root,
+                phase=args.phase,
+                time_limit_hours=args.hours,
+            )
+        )
         return 0
     if args.action == "run":
         physical_cores = args.physical_cores
@@ -206,6 +241,27 @@ def main() -> int:
                 ),
                 ensure_ascii=False,
                 indent=2,
+            )
+        )
+        return 0
+    if args.action == "verify-source-integrity":
+        root = args.run_root.resolve()
+        final_validation = run_guanggu_v03_input_validation(
+            args.delivery_root,
+            root / "final_source_integrity_validation",
+            root / "final_source_integrity_guidance_CN.md",
+            full_audit=True,
+            workspace_root=Path(__file__).resolve().parents[1],
+        )
+        print(
+            verify_source_integrity(
+                root,
+                current_source_input_sha256=dict(
+                    final_validation.adaptation.source_report.file_sha256
+                ),
+                current_source_validation_report=(
+                    final_validation.adaptation.source_report_path
+                ),
             )
         )
         return 0

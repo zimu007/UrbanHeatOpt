@@ -21,6 +21,7 @@ def _fake_plan(root: Path) -> Path:
         "case_dir": str(root / "case"),
         "core_freeze": server.frozen_core_record(),
         "case_input_sha256": {},
+        "source_input_sha256": {"input.csv": "abc"},
         "required_building_count": 62,
         "required_hour_count": 2160,
         "mode_order": list(server.MODES),
@@ -120,6 +121,52 @@ def test_benchmark_summary_requires_one_mathematical_model_hash(tmp_path: Path) 
     assert payload["status"] == "same_mathematical_model_verified"
     assert payload["model_sha256"] == "same-mps"
     assert [row["threads"] for row in payload["benchmarks"]] == [1, 4, 8]
+    server.select_formal_thread_count(root, threads=4)
+    plan = json.loads((root / "task_plan.json").read_text(encoding="utf-8"))
+    formal = [row for row in plan["tasks"] if row["phase"] in {"endpoint", "epsilon"}]
+    assert formal and {row["threads"] for row in formal} == {4}
+
+
+def test_benchmarks_must_run_serially(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+    _fake_plan(root)
+    with pytest.raises(ValueError, match="串行"):
+        server.run_ready_tasks(root, phase="benchmark", maximum_workers=2)
+
+
+def test_failed_formal_tasks_can_only_extend_to_twelve_hours(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+    _fake_plan(root)
+    server.extend_unfinished_time_limits(root, phase="endpoint")
+    plan = json.loads((root / "task_plan.json").read_text(encoding="utf-8"))
+    endpoints = [row for row in plan["tasks"] if row["phase"] == "endpoint"]
+    assert {row["time_limit_seconds"] for row in endpoints} == {43200.0}
+    with pytest.raises(ValueError, match="12小时"):
+        server.extend_unfinished_time_limits(
+            root, phase="epsilon", time_limit_hours=10
+        )
+
+
+def test_source_integrity_requires_exact_prepare_time_hashes(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+    _fake_plan(root)
+    report = root / "final_source_report.json"
+    report.write_text("{}", encoding="utf-8")
+    marker = server.verify_source_integrity(
+        root,
+        current_source_input_sha256={"input.csv": "abc"},
+        current_source_validation_report=report,
+    )
+    assert json.loads(marker.read_text(encoding="utf-8"))["file_count"] == 1
+
+    other = tmp_path / "other"
+    _fake_plan(other)
+    with pytest.raises(RuntimeError, match="changed"):
+        server.verify_source_integrity(
+            other,
+            current_source_input_sha256={"input.csv": "different"},
+            current_source_validation_report=report,
+        )
 
 
 def _write_main_points(root: Path) -> None:
