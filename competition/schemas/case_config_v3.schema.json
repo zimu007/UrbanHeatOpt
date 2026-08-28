@@ -110,7 +110,11 @@
         "candidate_source": {"enum": ["provided", "generate"]},
         "candidate_site_count_min": {"type": "integer", "minimum": 1},
         "candidate_site_count_max": {"type": "integer", "minimum": 1},
-        "max_built_sites": {"const": 1}
+        "max_built_sites": {"const": 1},
+        "road_constrained": {"type": "boolean"},
+        "greenbelt_alignment_assumed": {"type": "boolean"},
+        "construction_feasibility_verified": {"type": "boolean"},
+        "spatial_status": {"type": "string", "minLength": 1}
       }
     },
     "demand": {
@@ -284,7 +288,7 @@
       "required": ["name", "threads", "time_limit_seconds", "mip_gap", "random_seed", "load_solution_only_if_optimal"],
       "properties": {
         "name": {"enum": ["highs", "gurobi"]},
-        "threads": {"const": 1},
+        "threads": {"enum": [1, 4, 8]},
         "time_limit_seconds": {"type": "number", "exclusiveMinimum": 0},
         "mip_gap": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
         "random_seed": {"type": "integer", "minimum": 0, "maximum": 2147483647},

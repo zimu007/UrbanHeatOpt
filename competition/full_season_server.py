@@ -86,7 +86,7 @@ def host_environment_record(physical_core_count: int | None = None) -> dict[str,
         "logical_cpu_count": os.cpu_count(),
         "physical_core_count": physical_core_count,
         "physical_core_count_source": (
-            "explicit_server_inventory" if physical_core_count is not None else "not_recorded"
+            "explicit_cli_argument" if physical_core_count is not None else "not_recorded"
         ),
         "available_memory_bytes_at_plan_creation": _available_memory_bytes(),
     }

@@ -15,6 +15,12 @@ from competition.adapters.guanggu_v03 import GuangguV03Adaptation
 from competition.adapters.provisional_v0 import load_provisional_v0_profile
 from competition.adapters.wuhan_v02_case import _write_pipe_types, _write_technologies
 from competition.canonical import CanonicalCaseData, V3_DRAFT_CONTRACT
+from competition.osm_corridor import (
+    CANDIDATE_SOURCE as OSM_CANDIDATE_SOURCE,
+    SPATIAL_STATUS as OSM_SPATIAL_STATUS,
+    build_osm_corridor_network,
+    write_osm_corridor_outputs,
+)
 from competition.provisional_spatial import (
     build_multi_candidate_provisional_network,
     write_provisional_spatial_outputs,
@@ -105,6 +111,8 @@ def _case_config(
     assumptions: dict[str, Any],
     adaptation: GuangguV03Adaptation,
     scope: V03RunScope,
+    *,
+    osm_corridor: bool = False,
 ) -> dict[str, Any]:
     planning = assumptions["planning"]
     economics = assumptions["economics"]
@@ -152,9 +160,16 @@ def _case_config(
         },
         "run": {"profile": scope.profile, "modes": ["central", "distributed", "hybrid"]},
         "spatial": {
-            "input_mode": "feasible_space", "candidate_source": "provided",
+            "input_mode": "roads" if osm_corridor else "feasible_space",
+            "candidate_source": "provided",
             "candidate_site_count_min": 5, "candidate_site_count_max": 5,
             "max_built_sites": 1,
+            "road_constrained": osm_corridor,
+            "greenbelt_alignment_assumed": osm_corridor,
+            "construction_feasibility_verified": False,
+            "spatial_status": (
+                OSM_SPATIAL_STATUS if osm_corridor else "PROVISIONAL_ALGORITHM_VALIDATION"
+            ),
         },
         "demand": {
             "area_scaling_already_applied": True, "includes_dhw": False,
@@ -213,11 +228,17 @@ def prepare_guanggu_v03_v0_case(
     *,
     assumption_profile: str = "provisional_v0",
     profile: str = "v0-smoke",
+    spatial_profile: str = "provisional_geometric",
+    osm_snapshot_path: str | Path | None = None,
 ) -> PreparedGuangguV03Case:
     """Create a self-contained executable V0 case without touching source data."""
 
     if assumption_profile != "provisional_v0":
         raise GuangguV03CaseError("当前只支持 assumption_profile=provisional_v0")
+    if spatial_profile not in {"provisional_geometric", "osm_main_road_provisional"}:
+        raise GuangguV03CaseError(f"不支持 spatial_profile={spatial_profile}")
+    if spatial_profile == "osm_main_road_provisional" and osm_snapshot_path is None:
+        raise GuangguV03CaseError("OSM主干路走廊必须提供冻结的osm_snapshot_path")
     root = Path(work_dir).resolve()
     if root.exists() and any(root.iterdir()):
         raise GuangguV03CaseError(f"工作目录必须为空或不存在: {root}")
@@ -248,14 +269,25 @@ def prepare_guanggu_v03_v0_case(
     selected_external.to_parquet(case_dir / "external_timeseries.parquet", index=False)
     shutil.copy2(adaptation.equipment_performance_path, case_dir / "equipment_performance.csv")
 
-    spatial = build_multi_candidate_provisional_network(
-        selected_buildings,
-        selected_loads,
-        data_version=data.data_version,
-        candidate_count=5,
-        input_building_source="guanggu_v03_03_buildings",
-    )
-    write_provisional_spatial_outputs(spatial, case_dir)
+    osm_corridor = spatial_profile == "osm_main_road_provisional"
+    if osm_corridor:
+        spatial = build_osm_corridor_network(
+            selected_buildings,
+            selected_loads,
+            osm_snapshot_path,
+            data_version=data.data_version,
+            candidate_count=5,
+        )
+        write_osm_corridor_outputs(spatial, case_dir)
+    else:
+        spatial = build_multi_candidate_provisional_network(
+            selected_buildings,
+            selected_loads,
+            data_version=data.data_version,
+            candidate_count=5,
+            input_building_source="guanggu_v03_03_buildings",
+        )
+        write_provisional_spatial_outputs(spatial, case_dir)
     selected_peak = float(selected_loads.groupby("timestamp")["heating_kW"].sum().max())
     _write_technologies(case_dir / "technologies.csv", assumptions, selected_peak_kW=selected_peak)
     technology_table = pd.read_csv(case_dir / "technologies.csv", encoding="utf-8")
@@ -263,7 +295,7 @@ def prepare_guanggu_v03_v0_case(
     technology_table.loc[hp, "performance_model"] = "temperature_interpolated"
     technology_table.to_csv(case_dir / "technologies.csv", index=False, encoding="utf-8")
     _write_pipe_types(case_dir / "pipe_types.csv", assumptions, selected_peak_kW=selected_peak)
-    config = _case_config(assumptions, adaptation, scope)
+    config = _case_config(assumptions, adaptation, scope, osm_corridor=osm_corridor)
     (case_dir / "case_config.yaml").write_text(
         yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
@@ -294,9 +326,21 @@ def prepare_guanggu_v03_v0_case(
             "selected_hour_count": len(scope.timestamps),
             "full_park_peak_timestamp": scope.peak_timestamp,
             "selected_peak_kW_th": selected_peak,
-            "candidate_source": spatial.candidate_source,
-            "road_constrained": False,
+            "candidate_source": (
+                OSM_CANDIDATE_SOURCE if osm_corridor else spatial.candidate_source
+            ),
+            "road_constrained": osm_corridor,
+            "greenbelt_alignment_assumed": osm_corridor,
             "construction_feasibility_verified": False,
+            "spatial_status": (
+                OSM_SPATIAL_STATUS
+                if osm_corridor
+                else "PROVISIONAL_ALGORITHM_VALIDATION"
+            ),
+            "osm_snapshot_sha256": (
+                spatial.metadata["osm_snapshot_sha256"] if osm_corridor else None
+            ),
+            "engineering_use_allowed": False,
         },
     }
     (case_dir / "assumptions_used.yaml").write_text(

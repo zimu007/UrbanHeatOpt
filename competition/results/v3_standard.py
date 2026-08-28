@@ -145,6 +145,14 @@ def _render_figures(
         if not candidate_sites.empty:
             candidate_sites.plot(ax=ax, color="#9467bd", marker="^", markersize=35)
         ax.set_title(f"{mode}: provisional candidate/built network")
+        if case.raw_config.get("spatial", {}).get("road_constrained"):
+            fig.text(
+                0.01,
+                0.01,
+                "Concept roadside/greenbelt corridor; construction not verified. "
+                "Map data © OpenStreetMap contributors, ODbL 1.0.",
+                fontsize=7,
+            )
         ax.set_axis_off()
         path = figures / f"network_{mode}_minimum_cost.png"
         fig.savefig(path, dpi=180)
