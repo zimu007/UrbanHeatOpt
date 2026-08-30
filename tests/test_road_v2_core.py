@@ -145,3 +145,26 @@ def test_export_detects_thermal_dispatch_tamper(tmp_path):
     flow.loc[0,'signed_flow_kW_th']+=10
     flow.to_parquet(root/'network_hourly.parquet',index=False)
     assert not audit_export(case,root)['passed']
+
+
+@pytest.mark.parametrize('target',['pipe_nan','summary_nan','pipe_cost','cost_nan'])
+def test_export_rejects_nonfinite_or_inconsistent_static_records(tmp_path,target):
+    import pandas as pd
+    case=shared_case()
+    root=tmp_path/'solution'
+    export_solution(case,solve(case,'S1'),root)
+    if target=='summary_nan':
+        payload=json.loads((root/'solution_summary.json').read_text(encoding='utf-8'))
+        payload['real_cost_CNY']=float('nan')
+        (root/'solution_summary.json').write_text(json.dumps(payload),encoding='utf-8')
+    else:
+        name='cost_breakdown.csv' if target=='cost_nan' else 'network_decisions.csv'
+        table=pd.read_csv(root/name)
+        key={'cost_nan':'annual_CNY','pipe_nan':'capacity_kW_th','pipe_cost':'initial_investment_CNY'}[target]
+        table.loc[0,key]=float('nan') if target.endswith('_nan') else 1e9
+        table.to_csv(root/name,index=False)
+    try:
+        verdict=audit_export(case,root)
+    except ValueError:
+        return
+    assert not verdict['passed']

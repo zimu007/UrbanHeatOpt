@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from competition.intake.guanggu_v03 import resolve_guanggu_v03_source_roots
 from competition.road_joint_v2.economic_package import (
     PACKAGE_DIRECTORY, PackageError, read_package, effective_parameters, write_gap_report,
+    describe_energy_input,
 )
 
 
@@ -24,7 +25,10 @@ def main():
         loads = pd.read_parquet(roots.delivery_root / '05_building_hourly_loads.parquet')
         # Peak is computed from the complete input, not a smoke subset.
         peak = float(loads.groupby('hour')['heating_kW'].sum().max())
-        snapshot = effective_parameters(package, peak)
+        import yaml
+        profile=yaml.safe_load((Path(__file__).resolve().parents[1]/'competition/configs/guanggu_v03.yaml').read_text(encoding='utf-8'))
+        external=pd.read_parquet(roots.delivery_root/'external_timeseries.parquet')
+        snapshot = effective_parameters(package, peak, energy_context=describe_energy_input(external,profile['technology_rules']['natural_gas_lhv_MJ_per_Nm3']))
         output = Path(args.output_root)
         output.mkdir(parents=True, exist_ok=False)
         (output / 'effective_parameters.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')

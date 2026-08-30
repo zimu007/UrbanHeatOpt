@@ -130,16 +130,28 @@ def audit_export(case: RoadCase, root: str | Path):
     pipes=pd.read_csv(root/'network_decisions.csv').set_index('edge_id')
     flows=pd.read_parquet(root/'network_hourly.parquet')
     summary=json.loads((root/'solution_summary.json').read_text(encoding='utf-8'))
+    reported_cost_table=pd.read_csv(root/'cost_breakdown.csv')
     specs={t.technology_id:t for t in d.technologies}
     levels={x.pipe_type_id:x for x in case.pipe_designs}
     cap_index=caps.set_index(['location_id','technology_id'])
     errors={key:0. for key in ('heat_balance_kW','capacity_kW','energy_conversion_kW','pipe_kW','direction_kW',
          'loss_kW','pump_kW','soc_kWh','tes_power_kW','margin_kW','mode_violation','cost_CNY','carbon_kgCO2e')}
     violations=[]
-    for label, frame in [('capacity',caps),('dispatch',dispatch),('connections',conn),('stations',sites),('storage',storage),('soc',soc),('demand',demand),('network_hourly',flows)]:
+    # DN is deliberately nullable in capacity-only tests; an unbuilt edge also
+    # has no selected lifetime. Do NOT exempt the entire static pipe table.
+    finite_pipes=pipes[['length_m','built','selected_grade_count','capacity_kW_th',
+        'unit_cost_CNY_per_pair_route_m','initial_investment_CNY','pair_loss_kW_per_route_m',
+        'pump_kWh_e_per_kWh_th_m','max_port_flow_kW','max_port_flow_hour','max_utilization',
+        'crf','annualized_investment_CNY']].apply(pd.to_numeric,errors='raise')
+    for label, frame in [('capacity',caps),('dispatch',dispatch),('connections',conn),('stations',sites),('storage',storage),('soc',soc),('demand',demand),('network_hourly',flows),('network_static',finite_pipes),('cost',reported_cost_table)]:
         if not np.isfinite(frame.select_dtypes(include='number').to_numpy()).all():
             raise ValueError(f'导出{label}含NaN/Inf，不能通过QA')
+    for field in ('real_cost_CNY','hns_penalty_CNY','carbon_kgCO2e','carbon_tCO2e','policy_carbon_cost_CNY'):
+        if not isinstance(summary[field],(int,float)) or not np.isfinite(summary[field]):
+            raise ValueError(f'导出summary.{field}含NaN/Inf或非数值')
     def record(key,val):
+        if not np.isfinite(val):
+            raise ValueError(f'独立复算残差{key}为NaN/Inf')
         errors[key]=max(errors[key],float(val))
     def annual_factor(years):
         r=econ.discount_rate
@@ -195,8 +207,16 @@ def audit_export(case: RoadCase, root: str | Path):
             graph.add_edge(edge['node_u'],edge['node_v'])
             loss_total+=edge['length_m']*levels[row.pipe_type_id].pair_loss_kW_per_route_m
             record('pipe_kW',abs(row.capacity_kW_th-levels[row.pipe_type_id].capacity_kW_th))
+            selected=levels[row.pipe_type_id]
+            record('cost_CNY',abs(row.unit_cost_CNY_per_pair_route_m-selected.capex_CNY_per_route_m))
+            record('cost_CNY',abs(row.initial_investment_CNY-edge['length_m']*selected.capex_CNY_per_route_m))
+            record('cost_CNY',abs(row.lifetime_years-selected.lifetime_years))
+            record('cost_CNY',abs(row.crf-annual_factor(selected.lifetime_years)))
+            record('cost_CNY',abs(row.annualized_investment_CNY-edge['length_m']*selected.capex_CNY_per_route_m*annual_factor(selected.lifetime_years)))
         elif abs(row.capacity_kW_th)>1e-6:
             violations.append('unbuilt_capacity')
+        else:
+            record('cost_CNY',max(abs(row.initial_investment_CNY),abs(row.annualized_investment_CNY)))
         record('mode_violation',abs(row.built-round(row.built)))
         if edge['edge_type']=='building_service':
             building=next(n for n in (edge['node_u'],edge['node_v']) if n in d.demand_nodes)
@@ -275,7 +295,7 @@ def audit_export(case: RoadCase, root: str | Path):
     costs['electricity_cost']=fsum(fsum(electricity[h])*econ.electricity_price_CNY_per_kWh_e[h]*econ.time_weight_h_per_year[h] for h in d.hours)
     costs['gas_cost']=fsum(fsum(gas[h])*econ.gas_price_CNY_per_kWh_LHV[h]*econ.time_weight_h_per_year[h] for h in d.hours)
     costs['variable_om']=fsum(variable_cost)
-    reported=pd.read_csv(root/'cost_breakdown.csv').set_index('component')['annual_CNY']
+    reported=reported_cost_table.set_index('component')['annual_CNY']
     record('cost_CNY',max(abs(costs[k]-reported[k]) for k in costs))
     record('cost_CNY',abs(fsum(costs.values())-summary['real_cost_CNY']))
     carbon_e=fsum(fsum(electricity[h])*econ.electricity_carbon_kgCO2e_per_kWh_e[h]*econ.time_weight_h_per_year[h] for h in d.hours)

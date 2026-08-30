@@ -38,8 +38,29 @@ def main() -> int:
     parser.add_argument("--output-root", default="runs")
     parser.add_argument("--run-id")
     parser.add_argument("--guidance-report", type=Path)
+    parser.add_argument("--core-version", choices=("frozen_v1", "road_joint_v2"), default="frozen_v1")
+    parser.add_argument("--osm-snapshot", type=Path)
+    parser.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
     try:
+        if args.core_version == "road_joint_v2":
+            if not args.delivery_root or args.source_profile != "guanggu_v03" or not args.osm_snapshot or not args.run_id:
+                parser.error("道路V2必须提供delivery-root、guanggu_v03、osm-snapshot和唯一run-id")
+            if args.profile!='v1-full' and args.assumption_profile!='provisional_v0':
+                parser.error("道路V2测试必须显式指定--assumption-profile provisional_v0")
+            from competition.road_joint_v2.pipeline import prepare_delivery
+            from competition.road_joint_v2.tasks import run_task
+            try:
+                root = prepare_delivery(args.delivery_root,args.osm_snapshot,args.output_root,args.run_id,profile=args.profile)
+                if args.prepare_only:
+                    print(f"[输入就绪但未求解] {root}")
+                else:
+                    run_task(root,"central-cost")
+                    print(f"[仅集中式成本端点通过] {root}；其余端点/Pareto未完成")
+                return 0
+            except (ValueError,OSError) as exc:
+                print(f"[V2校验或任务未通过] {exc}；阶段状态以准备报告/任务证据为准",file=sys.stderr)
+                return 2
         if args.delivery_root:
             if args.source_profile is None:
                 parser.error("--delivery-root 必须同时提供 --source-profile")

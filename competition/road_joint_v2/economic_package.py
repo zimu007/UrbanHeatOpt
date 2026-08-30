@@ -182,7 +182,7 @@ def read_package(root: str | Path) -> dict:
             "sources": source_map, "pending": pending, "formal_use_allowed": False}
 
 
-def effective_parameters(package: dict, peak_kW: float, *, require_all: bool = True) -> dict:
+def effective_parameters(package: dict, peak_kW: float, *, require_all: bool = True, energy_context: dict | None = None) -> dict:
     if not isfinite(peak_kW) or peak_kW <= 0:
         raise PackageError("全园区峰值必须为正有限数值")
     entries = {key: {"value": val, "unit": unit, "status": "synthetic_test",
@@ -205,11 +205,23 @@ def effective_parameters(package: dict, peak_kW: float, *, require_all: bool = T
                         "source_unit": row["unit"]}
     result = {"scenario_id": "road_v2_economic_20260829_test", "package": package,
               "energy_policy": "preserve_v03_external_timeseries", "full_park_peak_kW": peak_kW,
+              "energy_context": energy_context,
               "entries": entries, "values": {k: v["value"] for k, v in entries.items()},
               "formal_use_allowed": False,
               "variable_om_boundary": "测试中由固定运维总额表示；不代表工程可变运维为零"}
     result["snapshot_sha256"] = sha256(json.dumps(result, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
     return result
+
+
+def describe_energy_input(frame, lhv_MJ_per_Nm3: float) -> dict:
+    """Only describes the existing authoritative time series; never replaces it."""
+    return {
+        'electricity_prices_CNY_per_kWh_e': sorted(float(x) for x in frame.electricity_price_CNY_per_kWh_e.unique()),
+        'gas_prices_CNY_per_Nm3': sorted(float(x) for x in frame.natural_gas_price_CNY_per_Nm3.unique()),
+        'LHV_MJ_per_Nm3': float(lhv_MJ_per_Nm3),
+        'gas_prices_CNY_per_kWh_LHV': sorted(float(x)/(lhv_MJ_per_Nm3/3.6) for x in frame.natural_gas_price_CNY_per_Nm3.unique()),
+        'rule': '逐时绝对价来自v0.3 external_timeseries；此列表仅汇总，不替代时间映射',
+    }
 
 
 # Pending source descriptions are evidence only. Current values come from the
@@ -240,7 +252,7 @@ def gap_records(snapshot: dict) -> list[dict]:
         entries = {key: snapshot["entries"][key] for key in keys if key in snapshot["entries"]}
         fallback = "未进入模型；不得空值补0"
         if row["item_id"] in {"P001", "P003", "P004"}:
-            fallback = "沿用v0.3 external_timeseries及38.931 MJ/Nm3输入边界；绝对逐时值见该次能源快照，不采用新增参考值"
+            fallback = "沿用v0.3 external_timeseries；不采用新增参考值。当前能源快照：" + json.dumps(snapshot.get('energy_context'),ensure_ascii=False)
         if row["item_id"] == "P002":
             fallback = "本测试未纳入基本电费；并非项目无需缴纳"
         records.append({"gap_id": row["item_id"], "parameter_id": row["parameter_id"],
@@ -259,6 +271,13 @@ def gap_records(snapshot: dict) -> list[dict]:
                         "unit": snapshot["entries"][key]["unit"], "required_information": "同边界实测/厂家或专业签认值、来源日期、签认人",
                         "reason": "现值为软件测试假设", "effective": {key: snapshot["entries"][key]},
                         "fallback": "仅算法验证", "keys": [key]})
+    for item in snapshot.get('geometry_failures', []):
+        bid=item['building_id']
+        records.append({'gap_id':'GIS-'+bid,'parameter_id':bid,'name':'建筑合格接入支线',
+            'file':'building_service_connections.geojson','unit':'EPSG:32650 / m',
+            'required_information':'FeatureCollection，LineString；properties包含building_id、attachment_node_id、source_id、approved_by；端点分别位于建筑边界与主次干路；不穿楼、入口夹角≥45°',
+            'reason':','.join(item.get('reasons',[])), 'effective':{},
+            'fallback':'无暂定路径；等待允许避障折线或人工提供接入线；禁止欧氏捷径', 'keys':['geometry','attachment_node_id']})
     return records
 
 
@@ -274,11 +293,12 @@ def write_gap_report(snapshot: dict, path: str | Path) -> None:
     lines = ["# 缺失数据清单", ""]
     for row in gap_records(snapshot):
         numeric = row["unit"] != "categorical/text"
+        spatial=row['file'].endswith('.geojson')
         lines += [f"## {row['gap_id']} · {row['name']}", "",
                   f"- 稳定参数ID：`{row['parameter_id']}`；替换字段：`{', '.join(row['keys']) or row['parameter_id']}`。",
-                  f"- 建议文件：`{row['file']}`；UTF-8 CSV，逗号分隔；主键为 `parameter_id`（逐时价格另加带Asia/Shanghai时区的timestamp）。",
-                  f"- 类型：{'float64，有限非负；比例[0,1]，效率(0,1]，寿命正整数' if numeric else 'string，需明确枚举定义'}；单位：`{row['unit']}`；正式值不允许空。",
-                  "- 通用必需列：parameter_id,value,unit,source_id,source_date,parameter_status,approved_by；设备另含technology_id与报价边界，管型另含pipe_type_id、dn_mm及双管路由计价标志。",
+                  f"- 建议文件：`{row['file']}`；" + ('UTF-8 GeoJSON；主键building_id；几何及attachment_node_id不允许空。' if spatial else 'UTF-8 CSV，逗号分隔；主键为parameter_id（逐时价格另加带Asia/Shanghai时区的timestamp）。'),
+                  f"- 类型：{'LineString几何，唯一字符串ID；坐标float64' if spatial else 'float64，有限非负；比例[0,1]，效率(0,1]，寿命正整数' if numeric else 'string，需明确枚举定义'}；单位：`{row['unit']}`；正式值不允许空。",
+                  "- 通用必需列：" + ('building_id,attachment_node_id,source_id,source_date,approved_by,geometry。' if spatial else 'parameter_id,value,unit,source_id,source_date,parameter_status,approved_by；设备另含technology_id与报价边界，管型另含pipe_type_id、dn_mm及双管路由计价标志。'),
                   f"- 应补内容：{row['required_information']}。影响：{row['reason']}。",
                   f"- 当前暂定值：`{json.dumps(row['effective'], ensure_ascii=False)}`。" if row["effective"] else f"- 当前处理：{row['fallback']}。",
                   "- 允许用途：V0接口联调、算法验证、敏感性；不代表合同价格、实际气质或施工方案。补数后保留ID，更新value/source_id/状态/签认，重新校验与求解。", ""]

@@ -93,8 +93,9 @@ def _solve_point(
     labels: tuple[str, ...],
     objective: str,
     epsilon: float | None = None,
+    model_builder: Callable[[CoreModelInput], Any] | None = None,
 ) -> tuple[ParetoPoint, CoreSolveResult]:
-    model = build_core_model(data)
+    model = (model_builder or build_core_model)(data)
     numerical_reserve = max(1e-12, spec.unserved_tolerance_kWh * 1e-3)
     enforced_unserved_limit = max(
         0.0, spec.unserved_tolerance_kWh - numerical_reserve
@@ -299,6 +300,7 @@ def solve_pareto_task(
     objective: str,
     epsilon_kgCO2e_per_year: float | None = None,
     labels: tuple[str, ...] = (),
+    model_builder: Callable[[CoreModelInput], Any] | None = None,
 ) -> tuple[ParetoPoint, CoreSolveResult]:
     """Solve one independently schedulable point using unchanged core physics."""
 
@@ -317,6 +319,7 @@ def solve_pareto_task(
         labels=resolved_labels,
         objective=objective,
         epsilon=epsilon_kgCO2e_per_year,
+        model_builder=model_builder,
     )
 
 
