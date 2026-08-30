@@ -1,21 +1,34 @@
-# 道路原子边契约 road_atomic_network_2.0.0
+# 道路原子边契约 road_atomic_network_2.1.0
 
 所有几何和长度使用EPSG:32650、米。代码实现位于 `competition/road_joint_v2/network.py`。
 
 ## 数据对象
 
-- nodes：node_id唯一；node_type为road、road_attachment、building；x_m/y_m有限。
+- nodes：node_id唯一；node_type为road、road_attachment、service_junction、building；x_m/y_m有限。building保存Polygon/MultiPolygon，display_point_only=true时坐标只是标记；候选支线分别终止于建筑边界，不将质心至边界虚构成管道。
 - edges：edge_id唯一，node_u/node_v引用nodes且不同；coordinates为按u到v排序的完整折线；length_m与折线长度误差≤1e-6m；edge_type为road或building_service；osm_way_ids保存来源；route_basis固定supply_return_pair_route_m。
 - sites：site_id唯一且独立于道路节点，attachment_node_id引用非建筑节点。当前候选站恰好位于走廊吸附点，站内接管长度0是测试几何约定，不代表工程上没有站内管道。
 - 同一条原子边只代表一条供回水双管路由，路由长度/费用不能乘2。dn_mm未提供时不能声称流速或真实DN通过校核。
+- access_options：option_id、building_id、attachment_node_id、building_boundary_point、coordinates、candidate_rank、length_m及有序edge_ids。物理路径从道路接入点至建筑，长度等于所有原子边之和。
 
 ## 当前生成规则与已知限制
 
-只接受地面primary/secondary及其link；bridge/tunnel或非零layer被排除。共享OSM节点才连通，未把二维交线自动接通。重复方向的完全重合段去重，不模糊合并邻近平行路。无分叉节点仅在公路等级一致、无建筑/站点接入时等价合并，保留原折线和来源。
+planning_corridor_2.1.0允许primary/secondary/tertiary及link、unclassified、residential、living_street、service。bridge/tunnel或非零layer仍不误接为同层道路；管网本身按地下管网规划概念解释，不研究埋深、沟槽等施工细节。施工可实施性不作为本次运行门槛。不新增道路等级附加费用。
 
-建筑接入为边界到道路的最近直线，检查≥45°入口角、不穿楼、不横跨其他道路；建筑保持叶节点。这只是当前生成器的候选搜索范围，失败不证明所有折线路径都不可行。候选站不建设不会关闭attachment_node_id。
+建筑接入为边界到附近道路的最多3条合格直线，按长度和稳定ID排序；取消45°及禁止跨路规则，不新增支线长度硬阈值。仍不穿已知建筑或已提供禁建区。62栋为负荷集合，上游第63栋数据中心仅作障碍。候选不足3条不凑数，没有候选则报错。候选站不建设不会关闭attachment_node_id。
 
-真实数据首次检查有12栋直线接入失败。结果：`runs/road_joint_v2/IMPLEMENT_20260830/spatial/geometry_failures.json`。不得放宽穿楼/角度规则或偷偷回退欧氏网络。已询问是否允许避障折线；确认前阻止真实V2构模。
+仅横穿道路不自动产生三通；明确接入点、道路路口以及正长度共享路由按物理关系连接。共享线段先拆分去重，不重复计费；不同位置平行走廊不合并。微米级坐标归一化仅处理数值误差，不代表工程退距。真实空间新验收输出399节点、578边、5站，源文件哈希不变；完整优化与QA仍另行验收。
+
+每栋接入方案选择变量之和=建筑接网决策；选中方案须建设其完整路径，共享段只建设一次。建成图中建筑度数=接网决策，禁止建筑中转。候选图允许多备选，但连通性不能通过互斥的建筑支线伪造道路连通。
+
+## 可选图层
+
+- 允许走廊：UTF-8 GeoJSON，唯一corridor_id，LineString/MultiLineString，明确CRS；与已准入道路的交点形成候选连接。
+- 禁建区：UTF-8 GeoJSON，唯一area_id，Polygon/MultiPolygon，明确CRS；未提供只标注覆盖未知，不阻止算法验证。
+- 额外建筑障碍：GeoJSON，唯一building_id、Polygon/MultiPolygon、CRS；相同负荷ID的几何不一致必须报冲突，不能改变负荷集合。
+
+## 历史回归
+
+2.0.0单支线和45°等旧规则只保留为显式历史生成器测试，不在公共入口使用。旧结果/MPS保留；新策略、网络、V2代码或参数变更必须生成新的任务和哈希。
 
 ## 新核心热流约定
 

@@ -1,7 +1,8 @@
 """Deterministic road atoms in metres, never terminal-to-terminal path edges.
 
 OSM shared node IDs define connectivity. No planar intersection is invented.
-Primary/secondary surface corridors only; buildings connect at their boundary.
+The old generator is explicit legacy regression only. The public generator
+uses the versioned planning policy (roads, crossings and up to three accesses).
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from pathlib import Path
 import geopandas as gpd
 import networkx as nx
 from pyproj import Transformer
-from shapely.geometry import LineString, Point, mapping
+from shapely.geometry import LineString, Point, mapping, shape
 from shapely.ops import nearest_points, substring
 
 ALLOWED_HIGHWAYS = {"primary", "primary_link", "secondary", "secondary_link"}
@@ -47,7 +48,7 @@ def _eligible(tags):
             and tags.get("location", "surface") not in {"underground", "overground"})
 
 
-def atomize_snapshot(snapshot: dict, buildings: gpd.GeoDataFrame, annual_heat: dict,
+def atomize_snapshot_legacy(snapshot: dict, buildings: gpd.GeoDataFrame, annual_heat: dict,
                      *, candidate_count: int = 5) -> dict:
     if buildings.crs is None or buildings.building_id.duplicated().any():
         raise RoadNetworkError("建筑CRS缺失或ID重复")
@@ -208,12 +209,57 @@ def atomize_snapshot(snapshot: dict, buildings: gpd.GeoDataFrame, annual_heat: d
     return result
 
 
+def atomize_snapshot(snapshot, buildings, annual_heat, *, candidate_count=5,
+                     obstacles=None, corridors=None, forbidden_areas=None, policy=None):
+    from competition.road_joint_v2.planning_network import generate
+    return generate(snapshot, buildings, annual_heat, candidate_count=candidate_count,
+                    obstacles=obstacles, corridors=corridors, forbidden_areas=forbidden_areas, policy=policy)
+
+
+def access_options(network):
+    """Explicit historical one-branch fixtures remain valid regression inputs."""
+    if 'access_options' in network:
+        return network['access_options']
+    buildings = {n['node_id'] for n in network['nodes'] if n['node_type'] == 'building'}
+    result = []
+    for edge in network['edges']:
+        if edge['edge_type'] != 'building_service':
+            continue
+        b = next((n for n in (edge['node_u'], edge['node_v']) if n in buildings), None)
+        if b is None:
+            raise RoadNetworkError('历史支线缺少建筑端点')
+        attachment = edge['node_v'] if b == edge['node_u'] else edge['node_u']
+        xy = edge['coordinates'] if b == edge['node_v'] else edge['coordinates'][::-1]
+        result.append(dict(option_id='legacy_'+edge['edge_id'], building_id=b,
+            attachment_node_id=attachment, edge_ids=[edge['edge_id']], coordinates=xy,
+            building_boundary_point=xy[-1], candidate_rank=1, length_m=edge['length_m']))
+    return result
+
+
+def read_optional_layers(delivery_root, *, obstacle_buildings=None, allowed_corridors=None, forbidden_areas=None):
+    """Existing 63-building GIS is an obstacle layer, never extra demand."""
+    delivery_root = Path(delivery_root)
+    default_obstacles = delivery_root/'光谷软件园GIS成果'/'buildings_clean_named.geojson'
+    choices = dict(obstacles=Path(obstacle_buildings) if obstacle_buildings else default_obstacles if default_obstacles.exists() else None,
+                   corridors=Path(allowed_corridors) if allowed_corridors else None,
+                   forbidden_areas=Path(forbidden_areas) if forbidden_areas else None)
+    layers, paths = {}, []
+    for name, path in choices.items():
+        if path is not None:
+            path = path.resolve(strict=True)
+            layers[name] = gpd.read_file(path)
+            paths.append(path)
+    return layers, paths
+
+
 def validate_network(network: dict) -> None:
     if network.get('crs') != CRS:
         raise RoadNetworkError(f"路网必须采用米制投影{CRS}")
     nodes = {n['node_id']: n for n in network['nodes']}
     if len(nodes) != len(network['nodes']):
         raise RoadNetworkError('重复节点ID')
+    if any(not isfinite(n['x_m']) or not isfinite(n['y_m']) for n in nodes.values()):
+        raise RoadNetworkError('节点坐标非有限')
     edge_ids, physical = set(), set()
     graph = nx.Graph()
     graph.add_nodes_from(nodes)
@@ -228,7 +274,12 @@ def validate_network(network: dict) -> None:
         if abs(line.length - edge['length_m']) > 1e-6:
             raise RoadNetworkError('长度与几何不符')
         for nid, xy in [(u, line.coords[0]), (v, line.coords[-1])]:
-            if Point(xy).distance(Point(nodes[nid]['x_m'], nodes[nid]['y_m'])) > 1e-6:
+            node = nodes[nid]
+            if node.get('display_point_only') and node['node_type'] == 'building':
+                distance = shape(node['geometry']).boundary.distance(Point(xy))
+            else:
+                distance = Point(xy).distance(Point(node['x_m'], node['y_m']))
+            if distance > 1e-6:
                 raise RoadNetworkError('端点坐标不匹配')
         edge_ids.add(edge['edge_id'])
         physical.add(shape_key)
@@ -237,13 +288,48 @@ def validate_network(network: dict) -> None:
     if not sites or len({s['site_id'] for s in sites}) != len(sites):
         raise RoadNetworkError('候选站缺失或ID重复')
     buildings = {key for key, node in nodes.items() if node['node_type'] == 'building'}
-    if not buildings or any(graph.degree(node) != 1 for node in buildings):
+    if not buildings or ('access_options' not in network and any(graph.degree(node) != 1 for node in buildings)):
         raise RoadNetworkError('建筑必须是独立叶节点')
+    options = access_options(network)
+    by_building = {b: [] for b in buildings}
+    option_ids = set()
+    edge_lookup = {e['edge_id']: e for e in network['edges']}
+    for option in options:
+        b, oid = option['building_id'], option['option_id']
+        if b not in buildings or oid in option_ids or not option['edge_ids']:
+            raise RoadNetworkError('接入候选ID、建筑或物理路径非法')
+        option_ids.add(oid)
+        by_building[b].append(option)
+        current = option['attachment_node_id']
+        if current not in nodes or current in buildings:
+            raise RoadNetworkError('接入候选必须从道路开始')
+        visited = {current}
+        length = 0.
+        for eid in option['edge_ids']:
+            edge = edge_lookup.get(eid)
+            if edge is None or current not in (edge['node_u'], edge['node_v']):
+                raise RoadNetworkError('接入候选路径不连续')
+            current = edge['node_v'] if current == edge['node_u'] else edge['node_u']
+            if current in visited or (current in buildings and current != b):
+                raise RoadNetworkError('接入候选穿过建筑或包含环路')
+            visited.add(current)
+            length += edge['length_m']
+        if current != b or abs(length-option['length_m']) > 1e-6:
+            raise RoadNetworkError('接入候选终点或物理长度不匹配')
+    if any(not 1 <= len(row) <= 3 for row in by_building.values()):
+        raise RoadNetworkError('每栋必须具有1..3条合格接入候选')
+    # Candidate connectivity must NEVER use a building as a bridge between
+    # roads: the alternatives are mutually exclusive in the actual model.
+    road_graph = nx.Graph()
+    road_graph.add_nodes_from(n for n in nodes if n not in buildings)
+    road_graph.add_edges_from((e['node_u'], e['node_v']) for e in network['edges']
+                             if e['edge_type'] == 'road')
     for site in sites:
         attachment = site['attachment_node_id']
         if attachment not in nodes or attachment in buildings:
             raise RoadNetworkError('站点必须关联独立道路节点')
-        if not buildings <= nx.node_connected_component(graph, attachment):
+        reachable = nx.node_connected_component(road_graph, attachment)
+        if not all(any(o['attachment_node_id'] in reachable for o in row) for row in by_building.values()):
             raise RoadNetworkError(f"候选站{site['site_id']}不能到达所有建筑")
 
 
@@ -257,3 +343,7 @@ def write_network(network: dict, root: str | Path):
         payload = dict(type='FeatureCollection', crs={'type':'name','properties':{'name':CRS}}, features=[
             dict(type='Feature', properties={k:v for k,v in row.items() if k != 'coordinates'}, geometry=mapping(geom(row))) for row in rows])
         (root / f'candidate_{name}.geojson').write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    if 'access_options' in network:
+        import pandas as pd
+        pd.DataFrame([{**o, 'edge_ids': json.dumps(o['edge_ids'])} for o in network['access_options']]).to_csv(root/'candidate_access_options.csv', index=False)
+        pd.DataFrame(network.get('access_diagnostics', [])).to_csv(root/'building_access_diagnostics.csv', index=False)

@@ -3,7 +3,7 @@ from shapely.geometry import Polygon, LineString
 import geopandas as gpd
 
 from competition.road_joint_v2.network import (
-    RoadNetworkError, atomize_snapshot, access_angle, validate_network,
+    RoadNetworkError, atomize_snapshot_legacy as atomize_snapshot, access_angle, validate_network,
 )
 
 
