@@ -2,12 +2,13 @@
 
 ## 1. 结论与范围
 
-截至 2026-08-11，现有 Conda 环境 `urbanheatopt_env` 已通过竞赛版前置环境检查：
+截至 2026-08-30，Conda 环境 `urbanheatopt_env` 的批准依赖基线已通过竞赛版前置环境检查：
 
 - Python 和主要计算、GIS、优化依赖版本符合本报告记录；
 - PyArrow 采用 conda-forge 的固定 CPU 构建，没有 Arrow CUDA 包；
 - 带 `Asia/Shanghai` 时区的 Parquet 数据可以精确写入并读回；
 - Pyomo APPSI 可以调用 HiGHS，并在一变量测试模型上返回 `optimal`；
+- HighsPy `1.15.1` 已在隔离环境中通过求解器接口、`road_joint_v2` 小型真求解和 `v3_smoke_case` 完整管线回归；
 - `GDAL_DATA`、`PROJ_DATA` 和 `CONDA_PREFIX` 在正确激活后有效。
 
 本报告只证明当前环境与依赖清单具备继续开发 P0 的条件。默认求解器已在后续 `SOLVER-01` 节点切换为 HiGHS；本报告仍不证明标准输入校验器、合成案例或完整竞赛流程已经实现。
@@ -40,6 +41,8 @@ conda install -n urbanheatopt_env --override-channels -c conda-forge `
 
 dry-run 结果为 `UNLINK=0`、`LINK=47`、`FETCH=47`。因此实际安装只新增 PyArrow、pytest 及必要依赖，没有卸载或替换现有包。若省略 OpenSSL 的精确构建保护，求解器会把 `openssl 3.6.3 hf411b9b_0` 换成 `hf411b9b_1`，不再满足零替换要求。
 
+2026-08-30 的求解器更新只将 pip 提供的 HighsPy 从 `1.11.0` 升级到 `1.15.1`；其他固定包和 Conda 构建不变。正式切换前先在独立覆盖环境完成了兼容和数值回归，避免长时间求解进程加载的 DLL 被原位替换。
+
 ## 3. 当前关键版本和构建
 
 | 包 | 版本 | 构建/来源 |
@@ -57,7 +60,7 @@ dry-run 结果为 `UNLINK=0`、`LINK=47`、`FETCH=47`。因此实际安装只新
 | SciPy | 1.18.0 | `pypi_0`，保留既有来源 |
 | NetworkX | 3.6.1 | `pyhcf101f3_0` / conda-forge |
 | Pyomo | 6.8.2 | `py312h275cf98_1` / conda-forge |
-| HighsPy | 1.11.0 | `pypi_0`，保留既有来源 |
+| HighsPy | 1.15.1 | `pypi_0`，保留 pip 来源 |
 | PyArrow | 25.0.0 | `py312h2e8e312_0` / conda-forge |
 | PyArrow core | 25.0.0 | `py312h12c7521_0_cpu` / conda-forge |
 | libarrow | 25.0.0 | `h20c36f3_3_cpu` / conda-forge |
@@ -66,7 +69,7 @@ dry-run 结果为 `UNLINK=0`、`LINK=47`、`FETCH=47`。因此实际安装只新
 | jsonschema | 4.26.0 | conda-forge；契约提交中登记为直接依赖 |
 | OpenSSL | 3.6.3 | `hf411b9b_0` / conda-forge |
 
-安装前后的 Python、NumPy、Pandas、GeoPandas、Fiona、GEOS、GDAL、PyProj、Shapely、Scikit-learn、SciPy、NetworkX、Pyomo、HighsPy 和 OpenSSL 版本/构建均未变化。
+除明确升级的 HighsPy 外，Python、NumPy、Pandas、GeoPandas、Fiona、GEOS、GDAL、PyProj、Shapely、Scikit-learn、SciPy、NetworkX、Pyomo 和 OpenSSL 的版本/构建均未变化。
 
 `jsonschema 4.26.0` 在现有环境中已经由 Jupyter 依赖链安装；输入契约开始直接使用 Draft 2020-12 校验后，将其加入 `environment.yml` 只用于声明直接依赖，没有执行新的环境安装或包替换。
 
@@ -96,7 +99,7 @@ Windows 上 Conda 25.11.1 默认捕获中文子进程输出时会触发 GBK/UTF-
 ## 5. 已知风险与后续边界
 
 - `environment.yml` 是直接依赖清单，不是所有间接包的逐字节锁文件；未来仓库更新后，间接依赖构建可能变化。当前精确 Windows 构建已记录在本报告中。
-- 为满足“现有核心包零替换”，当前已安装环境中的 SciPy 和 HighsPy 保留 pip 来源，没有在本节点迁移。为避免全新环境发生 Conda/Pip 双重覆盖，`environment.yml` 将 SciPy 作为 conda-forge 直接依赖；因此真正重建新环境后仍需做数值回归。HighsPy 继续由 pip 提供。
+- SciPy 保留现有 pip 来源；HighsPy 也继续由 pip 提供，但已有意升级到 `1.15.1`。为避免全新环境发生 Conda/Pip 双重覆盖，`environment.yml` 将 SciPy 作为 conda-forge 直接依赖；因此真正重建新环境后仍需做数值回归。
 - 只对全新环境方案做了 dry-run，没有实际新建并从头运行第二个环境，因此路线图“新环境按说明可以安装和运行”仍未勾选。
 - 顶层激活包装脚本依赖尚未初始化的 `Conda-Activation-Scripts` 子模块，并使用相对路径。本节点没有初始化或删除子模块；当前应使用直接 `conda activate` 或本报告中的 `conda run` 命令。
 - 后续 `SOLVER-01` 已将项目默认求解器切换为 HiGHS，并增加 `optimal` 加载门禁；尚未用完整 UrbanHeatOpt 案例验证成本模型和结果导出。

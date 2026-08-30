@@ -1,5 +1,20 @@
 # UrbanHeatOpt 竞赛版变更记录
 
+## 2026-08-30 — SOLVER-RUNTIME-01 升级 HiGHS 并行 MIP 基线
+
+### 更改内容与目的
+
+- 将 `environment.yml` 和环境门禁的 HighsPy 版本从 `1.11.0` 同步锁定为 `1.15.1`，并新增回归测试防止两处版本再次漂移。
+- 此升级针对原规模全季 MIP：HiGHS `1.15` 首次提供并行 MIP 求解器，`1.13` 也包含面向大列数模型的 presolve 加速。参见 [HiGHS 官方发布记录](https://github.com/ERGO-Code/HiGHS/releases)。
+- 求解器名称、Pyomo APPSI 接口、目标函数、约束、gap、随机种子和数值容差都未改变。
+
+### 验证与边界
+
+- 在不改动原 `urbanheatopt_env` 的独立 Windows Python 3.12 覆盖环境中，HighsPy runtime/distribution 均为 `1.15.1`，Pyomo `6.8.2` 的 APPSI 最小二进制 MIP 返回 `optimal`。
+- 求解器接口定向测试 `18 passed`，`road_joint_v2` 核心与小型三模式 epsilon 真求解 `18 passed`，`v3_smoke_case` 完整管线成功。
+- 新旧版本 smoke 的 11 个点 ID 和年成本完全一致，碳排最大差 `1.46e-11 kgCO2e/year`（相对 `1.93e-16`），未供热与 epsilon 差为零，全部终止状态为 `optimal`。
+- 这些小样验证证明接口和数值结果兼容，不预先声称 62 栋×2160 小时模型已求完或一定加速。Windows 长时间任务仍必须使用纯英文 `TEMP/TMP/TMPDIR` 路径。
+
 ## 2026-08-28 — SERVER-FULL-02 完成服务器执行门禁与运行手册
 
 ### 更改内容与目的

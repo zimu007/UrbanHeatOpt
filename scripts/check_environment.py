@@ -21,7 +21,7 @@ EXPECTED_VERSIONS = {
     "Python": "3.12.2",
     "fiona": "1.10.1",
     "geopandas": "1.0.1",
-    "highspy": "1.11.0",
+    "highspy": "1.15.1",
     "jsonschema": "4.26.0",
     "networkx": "3.6.1",
     "numpy": "2.1.3",

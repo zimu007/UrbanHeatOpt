@@ -37,6 +37,6 @@ dependencies:
   - termcolor=2.1.0
   - pip:
       - contextily==1.6.2
-      - highspy==1.11.0
+      - highspy==1.15.1
       - overpass==0.2.5
       - sphinxcontrib-mermaid==1.0.0

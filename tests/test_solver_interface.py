@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from runpy import run_path
 
 import pytest
 import yaml
@@ -12,6 +13,22 @@ from model import HeatNetworkModel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_highspy_environment_pin_matches_runtime_gate() -> None:
+    environment = yaml.safe_load(
+        (PROJECT_ROOT / "environment.yml").read_text(encoding="utf-8")
+    )
+    pip_dependencies = next(
+        row["pip"]
+        for row in environment["dependencies"]
+        if isinstance(row, dict) and "pip" in row
+    )
+    checker = run_path(str(PROJECT_ROOT / "scripts" / "check_environment.py"))
+    expected = checker["EXPECTED_VERSIONS"]["highspy"]
+
+    assert expected == "1.15.1"
+    assert f"highspy=={expected}" in pip_dependencies
 
 
 def _solver_config(**overrides: object) -> dict[str, object]:
