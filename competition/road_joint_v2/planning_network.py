@@ -314,6 +314,7 @@ def generate(snapshot, buildings, annual_heat, *, candidate_count=5, obstacles=N
         site['attachment_node_id'] = find(site['attachment_node_id'])
     network = dict(contract_version='road_atomic_network_2.1.0', crs=CRS, nodes=result_nodes, edges=edges,
         sites=sites, access_options=options, access_diagnostics=diagnostic,
+        planning_obstacles=[dict(building_id=b, geometry=mapping(g), included_in_loads=b in polygons) for b, g in sorted(all_polygons.items())],
         metadata=dict(network_policy_version=policy.version, policy=asdict(policy), road_constrained=True,
             installation_concept='underground_planning', construction_details_modeled=False,
             construction_feasibility_verified=False, construction_feasibility_required=False,

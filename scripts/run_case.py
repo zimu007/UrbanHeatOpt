@@ -41,6 +41,9 @@ def main() -> int:
     parser.add_argument("--core-version", choices=("frozen_v1", "road_joint_v2"), default="frozen_v1")
     parser.add_argument("--osm-snapshot", type=Path)
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--allowed-corridors", type=Path)
+    parser.add_argument("--forbidden-areas", type=Path)
+    parser.add_argument("--obstacle-buildings", type=Path)
     args = parser.parse_args()
     try:
         if args.core_version == "road_joint_v2":
@@ -51,7 +54,8 @@ def main() -> int:
             from competition.road_joint_v2.pipeline import prepare_delivery
             from competition.road_joint_v2.tasks import run_task
             try:
-                root = prepare_delivery(args.delivery_root,args.osm_snapshot,args.output_root,args.run_id,profile=args.profile)
+                root = prepare_delivery(args.delivery_root,args.osm_snapshot,args.output_root,args.run_id,profile=args.profile,
+                    allowed_corridors=args.allowed_corridors,forbidden_areas=args.forbidden_areas,obstacle_buildings=args.obstacle_buildings)
                 if args.prepare_only:
                     print(f"[输入就绪但未求解] {root}")
                 else:

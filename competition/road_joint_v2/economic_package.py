@@ -275,9 +275,9 @@ def gap_records(snapshot: dict) -> list[dict]:
         bid=item['building_id']
         records.append({'gap_id':'GIS-'+bid,'parameter_id':bid,'name':'建筑合格接入支线',
             'file':'building_service_connections.geojson','unit':'EPSG:32650 / m',
-            'required_information':'FeatureCollection，LineString；properties包含building_id、attachment_node_id、source_id、approved_by；端点分别位于建筑边界与主次干路；不穿楼、入口夹角≥45°',
+            'required_information':'FeatureCollection，LineString；properties包含building_id、attachment_node_id、source_id；端点分别位于建筑边界与道路/允许走廊；不穿已知建筑或禁建区；允许跨道路、不限制转角',
             'reason':','.join(item.get('reasons',[])), 'effective':{},
-            'fallback':'无暂定路径；等待允许避障折线或人工提供接入线；禁止欧氏捷径', 'keys':['geometry','attachment_node_id']})
+            'fallback':'当前无合格规划路径，需补允许走廊或接入线；不是缺少施工审查，不使用任意建筑间捷径', 'keys':['geometry','attachment_node_id']})
     return records
 
 
@@ -300,6 +300,7 @@ def write_gap_report(snapshot: dict, path: str | Path) -> None:
                   f"- 类型：{'LineString几何，唯一字符串ID；坐标float64' if spatial else 'float64，有限非负；比例[0,1]，效率(0,1]，寿命正整数' if numeric else 'string，需明确枚举定义'}；单位：`{row['unit']}`；正式值不允许空。",
                   "- 通用必需列：" + ('building_id,attachment_node_id,source_id,source_date,approved_by,geometry。' if spatial else 'parameter_id,value,unit,source_id,source_date,parameter_status,approved_by；设备另含technology_id与报价边界，管型另含pipe_type_id、dn_mm及双管路由计价标志。'),
                   f"- 应补内容：{row['required_information']}。影响：{row['reason']}。",
+                  '- 对本轮的影响：已有明确测试假设时不阻塞源荷匹配/优化能力验证；真实报价、DN与施工资料用于提高经济结论可信度，不作为施工图验收要求。',
                   f"- 当前暂定值：`{json.dumps(row['effective'], ensure_ascii=False)}`。" if row["effective"] else f"- 当前处理：{row['fallback']}。",
                   "- 允许用途：V0接口联调、算法验证、敏感性；不代表合同价格、实际气质或施工方案。补数后保留ID，更新value/source_id/状态/签认，重新校验与求解。", ""]
     path.write_text("\n".join(lines), encoding="utf-8")

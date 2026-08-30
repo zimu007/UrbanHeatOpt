@@ -8,6 +8,48 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
+def render_candidate_preview(network, out):
+    """This is a candidate map, explicitly NOT a selected-network result."""
+    from shapely.geometry import shape
+    out=Path(out)
+    out.mkdir(parents=True,exist_ok=False)
+    nodes={n['node_id']:n for n in network['nodes']}
+    buildings=[n for n in nodes.values() if n['node_type']=='building']
+    for zoom in (False,True):
+        fig,ax=plt.subplots(figsize=(11,8),layout='constrained')
+        for edge in network['edges']:
+            xs,ys=zip(*edge['coordinates'])
+            ax.plot(xs,ys,color='#8595a2' if edge['edge_type']=='road' else '#ea8c26',
+                    lw=.9 if edge['edge_type']=='road' else 1.2,alpha=.85,zorder=1)
+        for item in network.get('planning_obstacles',[]):
+            geometry=shape(item['geometry'])
+            for poly in geometry.geoms if geometry.geom_type=='MultiPolygon' else [geometry]:
+                xs,ys=poly.exterior.xy
+                ax.fill(xs,ys,color='#80b6d5' if item['included_in_loads'] else '#bd7272',alpha=.7,zorder=2)
+        for site in network['sites']:
+            node=nodes[site['attachment_node_id']]
+            ax.scatter(node['x_m'],node['y_m'],color='#b41954',marker='*',s=100,zorder=3)
+            ax.annotate(site['site_id'][-2:],(node['x_m'],node['y_m']),xytext=(5,5),textcoords='offset points')
+        if zoom and buildings:
+            ax.set_xlim(min(n['x_m'] for n in buildings)-150,max(n['x_m'] for n in buildings)+150)
+            ax.set_ylim(min(n['y_m'] for n in buildings)-150,max(n['y_m'] for n in buildings)+150)
+        ax.set_aspect('equal')
+        ax.set(title=f"Planning candidates only - NO optimization result | {len(buildings)} loads\n"
+                     'Gray: corridors; orange: access alternatives; stars: candidate stations',
+               xlabel='EPSG:32650 Easting (m)',ylabel='Northing (m)')
+        fig.text(.01,.005,'Road source: OpenStreetMap contributors / ODbL | No construction feasibility claim',fontsize=8)
+        fig.savefig(out/('candidate_detail.png' if zoom else 'candidate_overview.png'),dpi=150)
+        plt.close(fig)
+    checks={}
+    for file in out.glob('*.png'):
+        data=plt.imread(file)
+        checks[file.name]=dict(width=int(data.shape[1]),height=int(data.shape[0]),nonblank=bool(data.std()>.01))
+    (out/'render_validation.json').write_text(json.dumps(checks,indent=2),encoding='utf-8')
+    if not checks or not all(c['nonblank'] for c in checks.values()):
+        raise ValueError('候选图渲染为空')
+    return checks
+
+
 def render_figures(root):
     root=Path(root)
     out=root/'figures'

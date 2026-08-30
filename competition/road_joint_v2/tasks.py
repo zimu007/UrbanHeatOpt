@@ -144,12 +144,24 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
     write_json(attempt/'task_request.json',dict(task=task,settings=asdict(resolved),epsilon=epsilon,
         building_count=len(case.common.demand_nodes),hour_count=len(case.common.hours),case_sha256=plan['case_sha256']))
     try:
+        def measured_builder(_):
+            from time import perf_counter
+            write_json(attempt/'model_build_started.json',dict(
+                started_at=datetime.now(timezone.utc).isoformat(), building_count=len(case.common.demand_nodes),
+                hour_count=len(case.common.hours), edge_count=len(case.network['edges']),
+                core_version='road_joint_v2', solver_instantiated=False))
+            clock=perf_counter()
+            model=build_road_model(case)
+            write_json(attempt/'model_build_completed.json',dict(
+                seconds=perf_counter()-clock, variables=model.nvariables(), constraints=model.nconstraints(),
+                completed_at=datetime.now(timezone.utc).isoformat(), solver_instantiated=False))
+            return model
         # Keep the requested epsilon exact. Adding the same tolerance to the
         # mathematical cap and the dominance filter can retain a spurious
         # expensive carbon endpoint after round-off at their common boundary.
         point,solution=solve_pareto_task(case.common,resolved,ParetoSpec(plan['point_count'],carbon_tolerance_kgCO2e_per_year=0.),
             point_id=task_id,objective=task['objective'],epsilon_kgCO2e_per_year=epsilon,
-            model_builder=lambda _:build_road_model(case))
+            model_builder=measured_builder)
         evidence=get_solver_evidence(solution.solver_results)
         gap=evidence.get('relative_mip_gap')
         if gap is None or gap>resolved.mip_gap+1e-12:

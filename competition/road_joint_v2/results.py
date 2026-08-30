@@ -13,6 +13,7 @@ from pyomo.environ import value
 from shapely.geometry import LineString, mapping
 
 from competition.road_joint_v2.core import RoadCase
+from competition.road_joint_v2.network import access_options
 
 
 def _json(path, data):
@@ -46,6 +47,12 @@ def export_solution(case: RoadCase, model, root: str | Path):
     pd.DataFrame(dispatch).to_parquet(root/'dispatch_hourly.parquet',index=False)
     buildings = [dict(building_id=b,connected=value(m.connected[b]),local_installed=value(m.local_installed[b])) for b in d.demand_nodes]
     pd.DataFrame(buildings).to_csv(root/'building_connection.csv',index=False)
+    accesses = [dict(**option, selected=value(m.access_selected[option['option_id']])) for option in access_options(net)]
+    pd.DataFrame([{k: json.dumps(v) if isinstance(v, (list, dict)) else v for k, v in row.items()}
+                  for row in accesses]).to_csv(root/'access_decisions.csv', index=False)
+    _json(root/'access_decisions.geojson', dict(type='FeatureCollection', crs={'type':'name','properties':{'name':net['crs']}},
+        features=[dict(type='Feature', properties={k:v for k,v in row.items() if k != 'coordinates'},
+                       geometry=mapping(LineString(row['coordinates']))) for row in accesses]))
     pd.DataFrame([dict(**site,built=value(m.station_built[site['site_id']])) for site in net['sites']]).to_csv(root/'station_decisions.csv',index=False)
     storage = [dict(site_id=s,built=value(m.tes_built[s]),energy_capacity_kWh=value(m.tes_energy[s]),
         charge_capacity_kW=value(m.tes_charge_capacity[s]),discharge_capacity_kW=value(m.tes_discharge_capacity[s]),
@@ -72,7 +79,9 @@ def export_solution(case: RoadCase, model, root: str | Path):
             pair_loss_kW_per_route_m=pipe.pair_loss_kW_per_route_m if pipe else 0.,
             pump_kWh_e_per_kWh_th_m=pipe.pumping_kWh_e_per_kWh_th_m if pipe else 0.,
             parameter_version=case.parameter_version,pipe_design_status='synthetic_capacity_only',
-            road_constrained=True,construction_feasibility_verified=False)
+            road_constrained=True,construction_feasibility_verified=False,
+            network_policy_version=net.get('metadata', {}).get('network_policy_version', 'legacy_single_access'),
+            installation_concept=net.get('metadata', {}).get('installation_concept', 'historical_test'))
         flow_peak, peak_hour = 0.0, d.hours[0]
         for h in d.hours:
             pos,neg = (value(sum(getattr(m,attr)[e,k,h] for k in m.K)) for attr in ('forward','reverse'))
@@ -107,7 +116,9 @@ def export_solution(case: RoadCase, model, root: str | Path):
         real_cost_CNY=value(m.annual_real_cost_CNY_per_year),hns_penalty_CNY=value(m.annual_hns_penalty_CNY_per_year),
         carbon_kgCO2e=value(m.annual_operating_physical_carbon_kgCO2e_per_year),
         carbon_tCO2e=value(m.annual_operating_physical_carbon_kgCO2e_per_year)/1000,
-        policy_carbon_cost_CNY=value(m.policy_carbon_cost),formal_engineering_result=False)
+        policy_carbon_cost_CNY=value(m.policy_carbon_cost),formal_engineering_result=False,
+        execution_purpose='source_load_matching_and_optimization_validation',
+        network_policy_version=net.get('metadata', {}).get('network_policy_version', 'legacy_single_access'))
     _json(root/'solution_summary.json',summary)
     qa = audit_export(case,root)
     _json(root/'qa_summary.json',qa)
@@ -130,6 +141,7 @@ def audit_export(case: RoadCase, root: str | Path):
     pipes=pd.read_csv(root/'network_decisions.csv').set_index('edge_id')
     flows=pd.read_parquet(root/'network_hourly.parquet')
     summary=json.loads((root/'solution_summary.json').read_text(encoding='utf-8'))
+    access_table=pd.read_csv(root/'access_decisions.csv').set_index('option_id')
     reported_cost_table=pd.read_csv(root/'cost_breakdown.csv')
     specs={t.technology_id:t for t in d.technologies}
     levels={x.pipe_type_id:x for x in case.pipe_designs}
@@ -143,7 +155,7 @@ def audit_export(case: RoadCase, root: str | Path):
         'unit_cost_CNY_per_pair_route_m','initial_investment_CNY','pair_loss_kW_per_route_m',
         'pump_kWh_e_per_kWh_th_m','max_port_flow_kW','max_port_flow_hour','max_utilization',
         'crf','annualized_investment_CNY']].apply(pd.to_numeric,errors='raise')
-    for label, frame in [('capacity',caps),('dispatch',dispatch),('connections',conn),('stations',sites),('storage',storage),('soc',soc),('demand',demand),('network_hourly',flows),('network_static',finite_pipes),('cost',reported_cost_table)]:
+    for label, frame in [('access',access_table),('capacity',caps),('dispatch',dispatch),('connections',conn),('stations',sites),('storage',storage),('soc',soc),('demand',demand),('network_hourly',flows),('network_static',finite_pipes),('cost',reported_cost_table)]:
         if not np.isfinite(frame.select_dtypes(include='number').to_numpy()).all():
             raise ValueError(f'导出{label}含NaN/Inf，不能通过QA')
     for field in ('real_cost_CNY','hns_penalty_CNY','carbon_kgCO2e','carbon_tCO2e','policy_carbon_cost_CNY'):
@@ -161,6 +173,24 @@ def audit_export(case: RoadCase, root: str | Path):
         if len(frame)!=len(expected) or actual!=set(expected):
             violations.append(label+'_coverage')
     expected_rows(demand,['building_id','hour'],d.heat_demand_kW,'demand')
+    expected_options=access_options(net)
+    expected_rows(access_table,['option_id'],[(o['option_id'],) for o in expected_options],'access')
+    edge_users={e['edge_id']:[] for e in net['edges']}
+    selected_by_building={b:[] for b in d.demand_nodes}
+    for option in expected_options:
+        row=access_table.loc[option['option_id']]
+        record('mode_violation',max(abs(row.selected-round(row.selected)), -row.selected, row.selected-1))
+        if row.building_id!=option['building_id'] or row.attachment_node_id!=option['attachment_node_id'] or json.loads(row.edge_ids)!=option['edge_ids']:
+            violations.append('access_path_mismatch')
+        record('cost_CNY',abs(row.length_m-option['length_m']))
+        selected_by_building[option['building_id']].append(row.selected)
+        for eid in option['edge_ids']:
+            edge_users[eid].append(row.selected)
+            record('mode_violation',max(0.,row.selected-pipes.loc[eid,'built']))
+    for b, selected in selected_by_building.items():
+        record('mode_violation',abs(fsum(selected)-conn.loc[b,'connected']))
+        leaf_degree=fsum(pipes.loc[e['edge_id'],'built'] for e in net['edges'] if b in (e['node_u'],e['node_v']))
+        record('mode_violation',abs(leaf_degree-conn.loc[b,'connected']))
     expected_rows(soc,['site_id','hour'],[(s,h) for s in sites.index for h in d.hours],'storage')
     expected_rows(flows,['edge_id','hour'],[(e['edge_id'],h) for e in net['edges'] for h in d.hours],'network')
     expected_dispatch=[(s,t.technology_id,h) for s in sites.index for t in d.technologies if t.applicable_scope=='central' for h in d.hours]
@@ -218,9 +248,8 @@ def audit_export(case: RoadCase, root: str | Path):
         else:
             record('cost_CNY',max(abs(row.initial_investment_CNY),abs(row.annualized_investment_CNY)))
         record('mode_violation',abs(row.built-round(row.built)))
-        if edge['edge_type']=='building_service':
-            building=next(n for n in (edge['node_u'],edge['node_v']) if n in d.demand_nodes)
-            record('mode_violation',abs(row.built-conn.loc[building,'connected']))
+        if edge['edge_type']!='road':
+            record('mode_violation',max(0.,row.built-fsum(edge_users[edge['edge_id']])))
     edge_lookup={e['edge_id']:e for e in net['edges']}
     for row in flows.itertuples(index=False):
         edge=edge_lookup[row.edge_id]; choice=pipes.loc[row.edge_id]

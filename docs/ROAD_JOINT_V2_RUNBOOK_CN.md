@@ -1,92 +1,72 @@
-# 道路原子边V2运行与验收手册
+# 道路原子边V2：规划优化运行与验收手册
 
-本页适用于`road_joint_v2`测试数学模型，不代表正式工程版。旧`competition/core_model.py`保留不变；旧结果与旧MPS不能作为V2成功标记。
+本轮定位是**源荷匹配与规划优化能力验证，不是施工图设计**。缺少施工审查、埋深、沟槽、产权等资料不阻止本轮运行。经济假设仍须显式记录；热平衡、容量、共享管段、TES、成本与碳排必须严格验算。
 
-## 1. 当前能够做什么
-
-代码自动读取v0.2范围中的有效v0.3交付、设备LHV补丁和经济扩展包，依次执行：
+## 1. 当前主线和新规则
 
 ```text
-426文件库存/哈希 → 源校验 → 62栋×2160小时标准化复验
-→ 经济参数ID/状态/单位/来源校验 → 有效参数快照和桌面缺口清单
-→ 道路原子化与建筑支线几何校验 → 唯一V2 Builder
-→ 新核心、独立端点与ε任务 → 决策导出 → 独立QA
+v0.2自动发现 → v0.3/设备LHV补丁/经济包校验
+→ 62栋×2160h标准数据复验 → planning_corridor_2.1.0候选网络
+→ 道路V2唯一Builder → 三模式/ε-constraint → 导出和独立QA
 ```
 
-本次真实流程在支线几何校验停止：12栋建筑的最近直线候选均未满足约束。未删除建筑、未放宽45°或穿楼规则、未退回欧氏最短路径边，也没有启动真实全季求解。这是当前生成器搜索能力的限制，不等于12栋不存在可行折线接入。
+- 允许现有主次干路、三级和普通道路，也可提供允许敷设走廊。取消45°和禁止跨路限制，不新增道路等级费用。
+- 每栋最多3个边界接入候选，优化器只选其中一个；已建建筑保持叶节点，不能为其他建筑转接。共享路由先原子拆分，一次建设、一次双管路由计费。
+- 62栋是负荷；自动读取的上游63栋GIS包含不供暖的数据中心，只用于障碍检查。缺少禁建区图层仅标注覆盖未知。
+- 5个站是代码生成的**候选**，优化器最多建设1个；地图上的候选线不是已建结果。
+- 沿道路的地下管网是规划概念；不模拟施工细节。geometry、路口流量和容量仍是真实数学约束，不可用“非工程比赛”绕过。
+- 旧冻结核心不变，显式V2入口没有旧模型回退。历史12栋接入阻塞属于已废止几何政策，不能作为当前状态。
+- 源校验、标准校验、空间校验、模型就绪、构模完成、求解完成和QA通过必须分开报告。准备通过不等于完成运行。
 
-源数据通过、标准数据通过、空间通过、模型就绪、求解执行是不同状态。`preparation_status.json`只描述准备阶段；其中`solver_executed=false`不会被某个后续任务的成功改写。实际求解状态应看该任务的`success.json`、`solver_evidence.json`及`qa_summary.json`。
+## 2. VS Code中准备完整62栋供暖季
 
-## 2. VS Code操作
-
-打开`D:\co_WH_heatOPT\UrbanHeatOpt`文件夹，在PowerShell终端执行。不要在旧Codex worktree中运行，不需要编辑Python源文件。
+打开 `D:\co_WH_heatOPT\UrbanHeatOpt`，在该目录的PowerShell终端执行：
 
 ```powershell
 Set-Location 'D:\co_WH_heatOPT\UrbanHeatOpt'
 conda run --no-capture-output -n urbanheatopt_env python scripts/check_environment.py
-conda run --no-capture-output -n urbanheatopt_env python scripts/run_case.py --help
-```
 
-每次用新的运行ID，禁止复用已有目录：
-
-```powershell
-$roadRunId = 'ROAD_V2_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
+$roadRunId = 'ROAD_PLANNING_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
 conda run --no-capture-output -n urbanheatopt_env python scripts/run_case.py `
   --delivery-root 'D:\co_WH_heatOPT\IN_DATA\原始输入数据\v0.2' `
-  --source-profile guanggu_v03 `
-  --assumption-profile provisional_v0 `
-  --core-version road_joint_v2 `
-  --profile v0-full-season `
+  --source-profile guanggu_v03 --assumption-profile provisional_v0 `
+  --core-version road_joint_v2 --profile v0-full-season `
   --osm-snapshot 'runs/guanggu_v03/v0_full_season/LOCAL_FULL_TRIAL_20260829T091000/spatial/osm_overpass_snapshot.json' `
-  --output-root 'runs/road_joint_v2' `
-  --run-id $roadRunId `
-  --prepare-only
+  --output-root 'runs/road_joint_v2' --run-id $roadRunId --prepare-only
 ```
 
-OSM路径是本地已有、已批准的道路快照，不是旧核心MPS。该命令不联网、不上传数据、不运行优化。没有此快照的电脑必须先获得同一授权文件；不要用旧任务成功标记代替道路输入。
+只读复用已有OSM快照，不联网，不读v0.1，不修改输入。其他电脑需复制同一授权输入和道路快照。运行ID必须全新。
 
-当前正确结果是Python返回`2`，并输出具体12栋ID/失败原因；不会产生`case.json`和全季任务。Conda某些版本会把子进程的`2`包装成自身退出码`1`，应核对子进程记录。Python的`1`代表程序异常，`0`仅代表本命令相应阶段通过，不等于全季完成。
+可选参数：`--allowed-corridors <GeoJSON>`、`--forbidden-areas <GeoJSON>`、`--obstacle-buildings <GeoJSON>`。格式见 `docs/ROAD_ATOMIC_NETWORK_CONTRACT_CN.md`，不需要改Python字段。显式提供的文件不存在/格式错误会失败；没有禁建区资料不阻止本轮验证。
 
-`--core-version`不能省略：默认保留旧冻结竞赛核心的兼容入口，但**显式V2路径没有旧核心回退**。`v1-full`仍会阻止暂行经济/空间参数成为正式结论。
+预期准备成功：Python退出0，`preparation_status.json`的source/canonical/spatial/model_ready为true，solver_executed仍为false。输出包含：
+- validation：426个交付/补丁文件的库存、哈希、标准化输入与复验。
+- effective_parameters.json：全部实际参数及来源、单位、暂定状态。
+- spatial：原子节点/边/站GIS、candidate_access_options.csv、building_access_diagnostics.csv及preview候选地图。
+- case.json：62栋×2160小时不可变模型输入。
+- task_plan.json：6个端点+三模式各11个ε点，数学代码、参数、输入哈希冻结。
 
-## 3. 输出在哪里
+`v0-full-season`在这里表示全规模规划验证，不是缩减时段。`v1-full`名称未在这条任务链发布，不能借改标志冒称完成；无需为本轮补齐施工图资料。
 
-真实输入审计与几何阻塞的最新完整证据：
+## 3. 先运行一个完整端点，再运行其他任务
 
-```text
-D:\co_WH_heatOPT\UrbanHeatOpt\runs\road_joint_v2\IMPLEMENT_20260830\verification_signed\
-  environment.log                    环境检查原始日志
-  tests.log                          本次全量测试日志
-  verification_evidence.json         命令、时间、退出码、输入完整性、测试产物路径
-  source_hashes_before.json           426源文件SHA-256
-  v2_input_gate.log                   真实公共入口的直接Python退出证据
-  real_input_gate\
-    preparation_status.json          各阶段真实状态与12栋失败清单
-    effective_parameters.json        本次有效参数、来源、单位与版本哈希
-    input_guidance_CN.md              源/标准数据校验详细说明
-    validation\                     全季标准化快照、输入清单和复验报告
-```
-
-小案例图表、21个端点/ε任务、代表解复核、各任务MPS/日志/QA位于该次pytest产物的`test_task_guard_and_small_thre0/v2/`。精确路径以`verification_evidence.json`的`pytest_artifacts`为准，避免把旧测试结果冒充新证据。该案例是**2栋×2小时合成数据**，并非光谷62栋全季；另有62×2160合成数据的Builder形状测试，只验证没有丢行，不进行该规模优化。
-
-桌面`C:\Users\leonl\Desktop\缺失数据清单.md`只列缺口。由代码依据本次有效参数快照和几何失败生成，已有同名文件先备份成时间戳`.bak.md`。目前含原25项待确认、7项额外字段/口径、12栋接入支线；不把日志和项目总结混在里面。
-
-## 4. 几何通过之后如何运行
-
-以下命令现在不应强行执行：当前真实准备未通过，没有合法V2任务计划。待确认接入办法、实现并通过空间测试后，重新准备生成新的运行目录。
+推荐使用带内存保护的单进程命令：
 
 ```powershell
-conda run --no-capture-output -n urbanheatopt_env python scripts/run_road_v2_task.py `
+conda run --no-capture-output -n urbanheatopt_env python scripts/run_road_v2_guarded.py `
   --run-root "runs/road_joint_v2/$roadRunId" --task-id central-cost
 ```
 
-首先仅执行一个集中式成本端点，默认8线程、6小时、扫描gap≤1%。尚未实测新V2全季内存，不能预先宣称32核可以同时跑多少任务。只有此端点通过，其余任务才解锁。进程保留自己的工作预留记录，不能同时重复执行同一个逻辑任务。崩溃留下未收口预留时应检查进程和证据，不要手改成功状态。
+- 所有62栋、2160小时、TES和管段决策保留；默认8线程，求解器6小时上限，扫描gap≤1%。
+- 内存保护默认预算为启动时可用内存的75%，同时保留系统余量；`--memory-budget-gib`只可进一步降低本次预算，不会放宽75%上限。
+- 监控只终止它自己启动的计算进程，不修改模型。保护触发属于资源未通过，不属于模型不可行，更不属于求解完成。
+- 保存resource_monitor中的精确命令、内存时序、日志、退出码和停止原因；构模开始/完成标记在任务attempt目录。没有model_build_completed就不能说完整模型已建成；没有求解证据不能说求解器已开始。
+- 可选`--max-wall-seconds`只控制本次安全监控最长时间，不改变求解器gap和模型。默认比求解器上限多1800秒，留给构模及MPS导出。
+- 首个集中式成本端点通过后才解锁其他端点；此前不启动多进程。服务器并发数必须依据实测内存决定。
 
-其他端点ID：`central-carbon`、`distributed-cost`、`distributed-carbon`、`hybrid-cost`、`hybrid-carbon`。全部六端点通过后才允许每模式`epsilon-000`至`epsilon-010`，例如`hybrid-epsilon-010`。全季任务总计39个，未减少小时、建筑、储热变量或模式。任务CLI是显式单任务执行器；自动32核并发调度仍需在首任务内存测量后接入和验收，不承诺当前已有安全的多进程批跑。
+其他端点：central-carbon、distributed-cost、distributed-carbon、hybrid-cost、hybrid-carbon。六端点全部通过后才解锁central/distributed/hybrid的epsilon-000至epsilon-010，仍是39个完整模型任务。逐个将task-id替换即可。
 
-每个任务有独立MPS、SHA-256、求解日志、gap/最优界/内存峰值、决策文件与独立QA。完成任务按输出哈希校验后跳过；失败重试保留旧`attempt_XXXX`。代码、参数、网络、原始输入或case哈希变化时拒绝旧计划，必须重建新目录。
-
-扫描全部完成后：
+全部扫描通过后：
 
 ```powershell
 conda run --no-capture-output -n urbanheatopt_env python scripts/run_road_v2_task.py `
@@ -95,25 +75,25 @@ conda run --no-capture-output -n urbanheatopt_env python scripts/run_road_v2_tas
   --run-root "runs/road_joint_v2/$roadRunId" --task-id refine
 ```
 
-`assemble`形成三模式和合并非支配前沿、图表、暂选代表规则，不能代替0.1%复核。`refine`重新求解至gap≤0.1%，不复用旧解作为新证明。最低碳端点先求碳界，再在该界下最小化成本，避免同碳排下任意昂贵容量被当作有效代表。
+代表解按0.1%重新认证；政策碳上限未给定就标注缺失，不捏造第四个方案。提供上限使用`--policy-carbon-cap`，单位kgCO2e/year。规则重合明确记录，不人为凑四个不同方案。
 
-尚未提供政策碳上限，因此真实运行的政策代表规则保持“未指定”，不编造第四个方案。获得上限后应在新的完整运行配置中使用`--policy-carbon-cap`，单位为`kgCO2e/year`（不是吨）；代码对该上限分别求三模式最低成本，再比较，不使用最近网格点替代。若某模式政策任务不可行会保留失败证据并停止认证，不能强行补数凑方案。
+## 4. 怎样确认结果可信
 
-0.1%认证仅针对对应MILP目标，不意味着连续Pareto前沿或全局膝点具有0.1%误差。候选网络和经济假设仍是软件验证场景。
+每个任务位于`tasks/<task-id>/attempt_XXXX/`：
 
-## 5. 结果与QA口径
+- task_request.json记录62栋、2160小时、模式、ε及求解配置。
+- model_build_started/completed.json分别证明构模尝试和完整构模；model.mps及SHA证明求解问题。
+- solver.log、solver_evidence.json记录实际gap、上下界、时间和内存。
+- solution/access_decisions.csv及GeoJSON记录每栋候选与实际选择；network_decisions及network_hourly记录唯一管段、容量、方向、端口热量、损失和泵耗。
+- capacity、dispatch、building、station、storage记录真实决策变量；成本、碳排和节点平衡由导出明细独立复算。
+- qa_summary.json须通过热平衡≤1e-6kW、成本/碳重算≤1e-6、连接/容量/储热/峰值裕度/未供热检查。
+- 只有success.json及其哈希校验有效，才是该任务通过；单个任务通过不等于全季三模式Pareto完成。
 
-每个`tasks/<task-id>/attempt_XXXX/solution/`输出：设备容量与逐时热出力/用能、建筑互斥接入、站点、TES容量/逐时SOC、原子管段静态表及GeoJSON、逐时两端热功率/方向/热损/泵耗/利用率、成本分项、碳排汇总、独立复算和节点热平衡。
+已完成任务会校验后跳过；失败可用同命令产生新attempt，旧证据不删除。未收口进程的reservation不可手改，先检查实际进程。代码或输入变化必须重新准备RUN_ID，不能修改旧哈希“放行”。
 
-- 一条物理边按双管路由米只计费一次，接入设施费用不重复包含支管。
-- 测试容量档不是DN；`dn_mm`为空、`pipe_design_status=synthetic_capacity_only`。
-- 中点有符号流与两端热功率分别导出；发送端含管损的功率受容量约束。
-- 独立QA读导出明细与不可变输入，重算CRF、成本、碳排、路口守恒、容量、连通、方向、未供热、TES循环及20%峰值裕度。
-- 正式输入仍62栋、2160个连续小时、每行1h；不做代表日、不减少TES。
-- 价格沿用v0.3时序；新增8月价格/冬季倍率/3.712元m³和35.544MJ/Nm³只登记，不覆盖。LHV锅炉效率0.94。
-- 新经济包采用8项已允许的设备参数，其余费用/管损/泵耗测试值显式存入快照。基本电费未纳入，不能说实际费用为零。
+费用仍沿用已批准经济包和显式测试值；LHV、45/40℃、20%裕度和公共时间权重不变。真实报价可后续补充以提高经济解释力，不影响现在检验数学和程序是否正确。
 
-## 6. 复验与故障排查
+## 5. 测试、最新输出和排错
 
 ```powershell
 $checkId = 'CHECK_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
@@ -123,14 +103,14 @@ conda run --no-capture-output -n urbanheatopt_env python scripts/record_road_v2_
   --osm-snapshot 'runs/guanggu_v03/v0_full_season/LOCAL_FULL_TRIAL_20260829T091000/spatial/osm_overpass_snapshot.json'
 ```
 
-此命令记录环境、全量pytest、真实输入门禁、源哈希前后比对。测试含小模型求解；真实入口仅prepare-only。检查器返回0可能意味着“正确阻止未就绪真实网络”，务必阅读`v2_input_gate`子记录及`preparation_status.json`。
+检查器执行环境、全量测试、真实prepare-only和前后输入哈希。以该次verification_evidence.json和子命令退出码为准，不能用旧pytest缓存或历史结果替代。
 
-- WinError206/路径过长：本次首次深目录复验确实出现3项失败，原日志保留于`verification_final/`；现在测试使用短且唯一的`runs/q_<ID>`，不修改Windows注册表，不覆盖旧证据。
-- 文件缺失/ID、单位、状态非法：修正交付，保留稳定参数ID，不直接改代码默认值或把空白补0。
-- 几何失败：查看建筑ID/原因，提供或确认合法接入办法；不要删除建筑和关键道路来换成功。
-- 求解未达到gap/独立QA失败：该任务不写success，不生成全季成功声明；保留MPS、日志、最优界与失败报告。
-- 新参数/代码后旧任务被拒绝：这是预期哈希保护，生成新RUN_ID，不强行更新旧成功标记。
+本轮工作输出根目录：`D:\co_WH_heatOPT\UrbanHeatOpt\runs\road_joint_v2\PLANNING_20260830\`。其中baseline是修改前证据，其他子目录见本轮INDEX.md；它们不提交Git。桌面`缺失数据清单.md`由有效参数快照自动更新，原文件先保留时间戳备份；已解除的12栋几何缺口不再作为当前待补数据。
 
-## 7. 待用户确认的唯一当前空间问题
-
-是否允许建筑支线使用确定性避障折线（接入主次干路、入口≥45°、不穿楼、建筑保持叶节点）？建议允许并新增几何回归；另一途径是提供12栋的人工接入GeoJSON。确认前不会自行放宽规则。站点用地仍是走廊吸附测试点，空间与经济结果不得称为施工方案。
+排错：
+- 退出2：阅读具体输入/空间/资源/任务门禁证据；不是一概“模型错误”。
+- 文件、字段、ID、时间、单位异常：纠正交付，不把空值补0。
+- 内存保护：保留日志，关闭其他高占用程序或换更多内存机器；不删除建筑、小时或储热变量。
+- 求解达到时限但无认证gap：保留可行解信息/上下界，延长资源需要新明确配置，不宣称最优。
+- 独立QA失败：该结果不合格，不能仅凭optimal通过。
+- 路径过长：使用已有短且唯一的runs/q_<ID>测试目录，不修改注册表。

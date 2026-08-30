@@ -15,7 +15,7 @@ import pandas as pd
 
 from competition.core_model import CoreModelInput, validate_core_input, ThermalStorageSpec
 from competition.costing.annualized import capital_recovery_factor as crf
-from competition.road_joint_v2.network import validate_network
+from competition.road_joint_v2.network import validate_network, access_options
 
 
 @dataclass(frozen=True)
@@ -79,6 +79,9 @@ def build_road_model(case: RoadCase):
     validate_case(case)
     d, net, econ = case.common, case.network, case.common.economics
     edges = {e['edge_id']: e for e in net['edges']}
+    options = {o['option_id']: o for o in access_options(net)}
+    building_options = {b: [o for o, row in options.items() if row['building_id'] == b] for b in d.demand_nodes}
+    edge_options = {e: [o for o, row in options.items() if e in row['edge_ids']] for e in edges}
     stations = {s['site_id']: s['attachment_node_id'] for s in net['sites']}
     levels = {x.pipe_type_id: x for x in case.pipe_designs}
     central = {t.technology_id: t for t in d.technologies if t.applicable_scope == 'central'}
@@ -103,6 +106,8 @@ def build_road_model(case: RoadCase):
     m.T = p.Set(initialize=tuple(central), ordered=True)
     m.E = p.Set(initialize=tuple(edges), ordered=True)
     m.K = p.Set(initialize=tuple(levels), ordered=True)
+    m.ACCESS = p.Set(initialize=tuple(options), ordered=True)
+    m.access_selected = p.Var(m.ACCESS, domain=p.Binary)
     m.time_weight_h_per_year = p.Param(m.HOURS, initialize=dict(econ.time_weight_h_per_year))
     m.station_built = p.Var(m.S, domain=p.Binary)
     m.connected = p.Var(m.DEMAND_NODES, domain=p.Binary)
@@ -166,6 +171,8 @@ def build_road_model(case: RoadCase):
             c(m.soc[s,h] == m.soc[s,d.hours[i-1]]*(1-st.standing_loss_fraction_per_hour)
               + st.charge_efficiency*m.charge[s,h] - m.discharge[s,h]/st.discharge_efficiency)
     for b in d.demand_nodes:
+        c(sum(m.access_selected[o] for o in building_options[b]) == m.connected[b])
+        c(sum(m.built[e] for e, _ in incident[b]) == m.connected[b])
         c(m.connected[b]+m.local_installed[b] == 1)
         c(m.connected[b] <= sum(m.station_built[s] for s in stations))
         c(m.local_capacity[b] <= local.capacity_max_kW*m.local_installed[b])
@@ -194,9 +201,10 @@ def build_road_model(case: RoadCase):
     for e, edge in edges.items():
         c(sum(m.grade[e,k] for k in levels) == m.built[e])
         c(m.built[e] <= sum(m.station_built[s] for s in stations))
-        if edge['edge_type'] == 'building_service':
-            b = next(n for n in (edge['node_u'],edge['node_v']) if n in d.demand_nodes)
-            c(m.built[e] == m.connected[b])
+        for o in edge_options[e]:
+            c(m.built[e] >= m.access_selected[o])
+        if edge['edge_type'] != 'road':
+            c(m.built[e] <= sum(m.access_selected[o] for o in edge_options[e]))
         c(m.commodity[e] <= len(d.demand_nodes)*m.built[e])
         c(m.commodity[e] >= -len(d.demand_nodes)*m.built[e])
         for h in d.hours:

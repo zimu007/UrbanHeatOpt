@@ -345,5 +345,8 @@ def write_network(network: dict, root: str | Path):
         (root / f'candidate_{name}.geojson').write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
     if 'access_options' in network:
         import pandas as pd
-        pd.DataFrame([{**o, 'edge_ids': json.dumps(o['edge_ids'])} for o in network['access_options']]).to_csv(root/'candidate_access_options.csv', index=False)
+        pd.DataFrame([{k: json.dumps(v) if isinstance(v,(dict,list,tuple)) else v for k,v in o.items()}
+                      for o in network['access_options']]).to_csv(root/'candidate_access_options.csv', index=False)
         pd.DataFrame(network.get('access_diagnostics', [])).to_csv(root/'building_access_diagnostics.csv', index=False)
+        from competition.road_joint_v2.figures import render_candidate_preview
+        render_candidate_preview(network, root/'preview')
