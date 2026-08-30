@@ -322,6 +322,10 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
                 seconds=perf_counter()-clock, variables=model.nvariables(), constraints=model.nconstraints(),
                 flow_formulation=('aggregate_uniform_pumping' if model.uniform_pumping_flow.value
                                   else 'grade_indexed_pumping'),
+                service_leaf_flow_elimination=bool(model.service_leaf_flow_elimination.value),
+                eliminated_service_leaf_edge_count=len(model.SERVICE_LEAF_E),
+                deterministic_demand_dispatch=bool(model.deterministic_demand_dispatch.value),
+                distributed_fastpath=bool(model.distributed_fastpath.value),
                 completed_at=datetime.now(timezone.utc).isoformat(), solver_instantiated=False))
             return model
         # Keep the requested epsilon exact. Adding the same tolerance to the

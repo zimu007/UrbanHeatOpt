@@ -63,8 +63,106 @@ def test_uniform_pumping_uses_aggregate_flow_and_nonuniform_falls_back():
     assert len(aggregate.reverse) == edge_hours
     assert len(grade_indexed.forward) == edge_hours*len(grade_indexed.K)
     assert len(grade_indexed.reverse) == edge_hours*len(grade_indexed.K)
-    assert grade_indexed.nvariables()-aggregate.nvariables() == 4*edge_hours
-    assert grade_indexed.nconstraints()-aggregate.nconstraints() == len(aggregate.K)*edge_hours
+    optimized_edge_hours = len(aggregate.FLOW_E)*len(aggregate.HOURS)
+    assert grade_indexed.nvariables()-aggregate.nvariables() == 4*optimized_edge_hours
+    assert grade_indexed.nconstraints()-aggregate.nconstraints() == len(aggregate.K)*optimized_edge_hours
+
+
+def test_service_leaf_flows_are_exact_expressions_and_keep_public_interface():
+    case = shared_case()
+    model = solve(case, 'S1')
+
+    assert tuple(model.SERVICE_LEAF_E) == ('branchA', 'branchB')
+    assert tuple(model.FLOW_E) == ('trunk',)
+    assert len(model.forward) == len(model.E)*len(model.HOURS)
+    assert len(model._forward_var) == len(model.FLOW_E)*len(model.HOURS)
+    for edge, building in (('branchA', 'A'), ('branchB', 'B')):
+        for hour in model.HOURS:
+            expected = case.common.heat_demand_kW[building,hour] + value(model.edge_loss[edge])/2
+            assert value(model.forward[edge,hour]) == pytest.approx(expected)
+            assert value(model.reverse[edge,hour]) == 0
+            assert value(model.direction[edge,hour]) == 1
+
+
+def test_service_leaf_node_u_uses_reverse_expression_and_exports_qa(tmp_path):
+    case = shared_case()
+    network = case.network
+    branch = next(edge for edge in network['edges'] if edge['edge_id'] == 'branchA')
+    branch['node_u'], branch['node_v'] = branch['node_v'], branch['node_u']
+    branch['coordinates'] = branch['coordinates'][::-1]
+    case = replace(case, network_json=json.dumps(network))
+    model = solve(case, 'S1')
+
+    for hour in model.HOURS:
+        expected = case.common.heat_demand_kW['A',hour] + value(model.edge_loss['branchA'])/2
+        assert value(model.forward['branchA',hour]) == 0
+        assert value(model.reverse['branchA',hour]) == pytest.approx(expected)
+        assert value(model.direction['branchA',hour]) == 0
+    assert export_solution(case, model, tmp_path/'solution')['passed']
+
+
+def test_exact_reductions_match_same_case_general_flow_fallback():
+    optimized_case = shared_case('central')
+    optimized = solve(optimized_case, 'S1')
+    fallback_case = replace(optimized_case,
+        common=replace(optimized_case.common, allow_unserved=True))
+    fallback = build_road_model(fallback_case)
+    fallback.station_built['S1'].fix(1)
+    for building in fallback.DEMAND_NODES:
+        for hour in fallback.HOURS:
+            fallback.unserved_heat_kW[building,hour].fix(0)
+    solve_pyomo_model(fallback)
+
+    assert not value(fallback.service_leaf_flow_elimination)
+    assert value(optimized.annual_real_cost_CNY_per_year) == pytest.approx(
+        value(fallback.annual_real_cost_CNY_per_year), abs=1e-8)
+    assert value(optimized.annual_operating_physical_carbon_kgCO2e_per_year) == pytest.approx(
+        value(fallback.annual_operating_physical_carbon_kgCO2e_per_year), abs=1e-8)
+    for edge in optimized.E:
+        for hour in optimized.HOURS:
+            assert value(optimized.flow[edge,hour]) == pytest.approx(
+                value(fallback.flow[edge,hour]), abs=1e-8)
+
+
+def test_service_leaf_elimination_falls_back_when_dispatch_is_not_determined():
+    case = shared_case()
+    case = replace(case, common=replace(case.common, allow_unserved=True))
+    model = build_road_model(case)
+
+    assert not value(model.service_leaf_flow_elimination)
+    assert len(model.SERVICE_LEAF_E) == 0
+    assert len(model.FLOW_E) == len(model.E)
+    assert len(model._forward_var) == len(model.E)*len(model.HOURS)
+
+
+def test_reverse_upper_bound_implies_direction_not_built_without_redundant_row():
+    case = shared_case('hybrid')
+    case = replace(case, common=replace(case.common, allow_unserved=True))
+    model = build_road_model(case)
+    for building in model.DEMAND_NODES:
+        model.connected[building].fix(0)
+    model.built['trunk'].fix(0)
+    model._direction_var['trunk', 1].fix(1)
+    with pytest.raises(SolverNotOptimalError):
+        solve_pyomo_model(model)
+
+
+def test_fixed_modes_and_demand_identity_remove_only_determined_variables():
+    central = build_road_model(shared_case('central'))
+    distributed = solve(shared_case('distributed'))
+    hybrid = build_road_model(shared_case('hybrid'))
+
+    assert value(central.deterministic_demand_dispatch)
+    assert central.nvariables() == 69
+    assert distributed.nvariables() == len(distributed.DEMAND_NODES)
+    assert distributed.nconstraints() == 3*len(distributed.DEMAND_NODES)
+    assert hybrid.nvariables() == 73
+    for building in distributed.DEMAND_NODES:
+        assert value(distributed.local_installed[building]) == 1
+        for hour in distributed.HOURS:
+            assert value(distributed.local_heat[building,hour]) == shared_case().common.heat_demand_kW[building,hour]
+            assert value(distributed.network_heat[building,hour]) == 0
+            assert value(distributed.unserved_heat_kW[building,hour]) == 0
 
 
 def test_nonuniform_pumping_fallback_exports_grade_weighted_flow(tmp_path):

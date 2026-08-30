@@ -106,7 +106,7 @@ def test_shared_access_tail_costs_once_and_selected_path_is_complete(tmp_path):
     case = replace(case, network_json=json.dumps(net))
     model = solve(case, 'S1')
     assert value(model.built['tail']) == 1
-    assert value(model.built['farA'])+value(model.built['branchA']) == 1
+    assert value(model.built['farA'])+value(model.built['branchA']) == pytest.approx(1)
     assert export_solution(case, model, tmp_path/'solution')['passed']
 
 

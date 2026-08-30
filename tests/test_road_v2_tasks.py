@@ -144,6 +144,10 @@ def test_task_records_aggregate_flow_formulation(tmp_path):
     run_task(root,'central-cost',settings=SolverSettings(mip_gap=0.,threads=1))
     build=json.loads((root/'tasks'/'central-cost'/'attempt_0001'/'model_build_completed.json').read_text(encoding='utf-8'))
     assert build['flow_formulation']=='aggregate_uniform_pumping'
+    assert build['service_leaf_flow_elimination'] is True
+    assert build['eliminated_service_leaf_edge_count'] == 2
+    assert build['deterministic_demand_dispatch'] is True
+    assert build['distributed_fastpath'] is False
 
 
 def test_first_full_season_task_and_worker_reservation_guards(tmp_path,monkeypatch):
