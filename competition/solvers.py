@@ -137,9 +137,21 @@ def _peak_working_set_bytes() -> int | None:
         return None
 
 
-def _write_model_snapshot(model: Any, filename: str | None) -> tuple[str | None, str | None]:
+def _streaming_sha256(path: Path) -> str:
+    """Hash a potentially multi-gigabyte artifact without loading it into RAM."""
+
+    digest = sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_model_snapshot(
+    model: Any, filename: str | None
+) -> tuple[str | None, str | None, int | None, int | None]:
     if filename is None:
-        return None, None
+        return None, None, None, None
     path = Path(filename).expanduser().resolve()
     if path.exists():
         raise FileExistsError(f"MPS 证据文件已存在，拒绝覆盖：{path}")
@@ -147,10 +159,13 @@ def _write_model_snapshot(model: Any, filename: str | None) -> tuple[str | None,
     model.write(
         str(path),
         format=ProblemFormat.mps,
-        io_options={"symbolic_solver_labels": True},
+        # Numeric labels preserve the exact coefficients and ordering while
+        # avoiding repeated long Pyomo component names in very large MPS files.
+        io_options={"symbolic_solver_labels": False},
     )
-    digest = sha256(path.read_bytes()).hexdigest()
-    return str(path), digest
+    digest = _streaming_sha256(path)
+    stat = path.stat()
+    return str(path), digest, int(stat.st_size), int(stat.st_mtime_ns)
 
 
 def _result_metrics(results: Any) -> dict[str, Any]:
@@ -242,7 +257,12 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
 
     resolved = settings if settings is not None else SolverSettings()
     validate_solver_settings(resolved)
-    model_path, model_sha256 = _write_model_snapshot(model, resolved.model_file)
+    (
+        model_path,
+        model_sha256,
+        model_size_bytes,
+        model_mtime_ns,
+    ) = _write_model_snapshot(model, resolved.model_file)
     log_path = (
         str(Path(resolved.log_file).expanduser().resolve())
         if resolved.log_file is not None
@@ -334,6 +354,9 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
         "peak_working_set_after_bytes": _peak_working_set_bytes(),
         "model_file": model_path,
         "model_sha256": model_sha256,
+        "model_size_bytes": model_size_bytes,
+        "model_mtime_ns": model_mtime_ns,
+        "model_label_style": "numeric" if model_path is not None else None,
         "solver_log_file": log_path,
         "python_version": platform.python_version(),
         "platform": platform.platform(),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from hashlib import sha256
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -1686,8 +1687,37 @@ def test_competition_solver_writes_mps_hash_log_and_evidence(tmp_path) -> None:
     assert evidence["model_sha256"] == __import__("hashlib").sha256(
         model_file.read_bytes()
     ).hexdigest()
+    assert evidence["model_size_bytes"] == model_file.stat().st_size
+    assert evidence["model_mtime_ns"] == model_file.stat().st_mtime_ns
+    assert evidence["model_label_style"] == "numeric"
     assert evidence["has_feasible_solution"] is True
     assert evidence["relative_mip_gap"] == pytest.approx(0.0)
     assert evidence["peak_working_set_after_bytes"] is None or evidence[
         "peak_working_set_after_bytes"
     ] > 0
+
+
+def test_model_snapshot_uses_numeric_labels_and_streaming_hash(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeModel:
+        def write(self, filename: str, *, format: object, io_options: dict) -> None:
+            captured["format"] = format
+            captured["io_options"] = io_options
+            Path(filename).write_bytes(b"streamed-mps-evidence")
+
+    def forbid_read_bytes(self: Path) -> bytes:
+        raise AssertionError("multi-gigabyte MPS must not use Path.read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", forbid_read_bytes)
+    target = tmp_path / "model.mps"
+    path, digest, size, mtime_ns = solver_module._write_model_snapshot(
+        FakeModel(), str(target)
+    )
+    assert path == str(target.resolve())
+    assert digest == sha256(b"streamed-mps-evidence").hexdigest()
+    assert size == len(b"streamed-mps-evidence")
+    assert mtime_ns == target.stat().st_mtime_ns
+    assert captured["io_options"] == {"symbolic_solver_labels": False}

@@ -1,5 +1,7 @@
 from pathlib import Path
 import json
+import os
+import shutil
 from unittest.mock import patch
 
 import pytest
@@ -38,6 +40,10 @@ def test_task_guard_and_small_three_mode_epsilon_run(tmp_path):
         for task in plan['tasks']:
             run_task(root,task['task_id'],settings=settings)
     frontier=assemble(root)
+    scan_audit=json.loads((root/'scan_integrity_audit.json').read_text(encoding='utf-8'))
+    assert scan_audit['status']=='passed'
+    assert scan_audit['task_count']==len(plan['tasks'])
+    assert all(row['verification']=='full_sha256' for row in scan_audit['tasks'])
     assert set(frontier.mode_frontiers)=={'central','distributed','hybrid'}
     assert all(frontier.mode_frontiers.values())
     assert len(frontier.mode_frontiers['central'])>=3
@@ -51,7 +57,21 @@ def test_task_guard_and_small_three_mode_epsilon_run(tmp_path):
     images=json.loads((root/'figures'/'render_validation.json').read_text(encoding='utf-8'))
     assert len(images)==6 and all(item['nonblank'] for item in images.values())
     policy_cap=max(p.annual_operating_carbon_kgCO2e_per_year for p in frontier.combined_frontier)
-    refined=refine_representatives(root,policy_carbon_cap=policy_cap,settings=settings)
+    from competition.road_joint_v2 import tasks as task_module
+    real_hash=task_module.file_hash
+    scan_mps_rehashes=[]
+    def track_scan_mps(path):
+        candidate=Path(path)
+        if candidate.name=='model.mps' and 'tasks' in candidate.parts:
+            scan_mps_rehashes.append(candidate)
+        return real_hash(candidate)
+    with patch.object(task_module,'file_hash',side_effect=track_scan_mps):
+        refined=refine_representatives(root,policy_carbon_cap=policy_cap,settings=settings)
+    assert scan_mps_rehashes==[]
+    final_audit=json.loads((root/'integrity_audit.json').read_text(encoding='utf-8'))
+    assert final_audit['status']=='passed'
+    assert final_audit['scan_task_count']==len(plan['tasks'])
+    assert final_audit['refinement_task_count']>0
     assert all(row['certified_at_0_1_percent'] for row in refined.values())
     assert all(row['point']['reported_mip_gap']<=.001 for row in refined.values())
     assert refined['minimum_carbon']['point']['annual_real_cost_CNY_per_year']<=max(p.annual_real_cost_CNY_per_year for p in frontier.combined_frontier)+1e-4
@@ -64,7 +84,6 @@ def test_task_guard_and_small_three_mode_epsilon_run(tmp_path):
     with patch('competition.road_joint_v2.tasks.build_road_model',side_effect=AssertionError('不能重复求解')):
         run_task(root,'central-cost',settings=settings)
     # Keep the successful evidence replayable; tamper only with a separate copy.
-    import shutil
     tampered=tmp_path/'tampered_case'
     tampered.mkdir()
     shutil.copy2(root/'case.json',tampered/'case.json')
@@ -74,6 +93,49 @@ def test_task_guard_and_small_three_mode_epsilon_run(tmp_path):
     (tampered/'case.json').write_text(json.dumps(payload),encoding='utf-8')
     with pytest.raises(ValueError,match='哈希改变'):
         run_task(tampered,'central-cost',settings=settings)
+
+
+def test_mps_hash_is_reused_then_deferred_with_metadata_guard(tmp_path,monkeypatch):
+    from competition.road_joint_v2 import tasks
+    root=tmp_path/'deferred_mps'
+    create_plan(shared_case(),root,full_scale=False,point_count=5)
+    real_hash=tasks.file_hash
+
+    def forbid_redundant_mps_hash(path):
+        if Path(path).name=='model.mps':
+            raise AssertionError('MPS digest must be reused or deferred here')
+        return real_hash(Path(path))
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(tasks,'file_hash',forbid_redundant_mps_hash)
+        run_task(root,'central-cost',settings=SolverSettings(mip_gap=0.,threads=1))
+        with pytest.raises(ValueError,match='六端点'):
+            run_task(root,'central-epsilon-000',settings=SolverSettings(mip_gap=0.,threads=1))
+
+    model=root/'tasks'/'central-cost'/'attempt_0001'/'model.mps'
+    stat=model.stat()
+    os.utime(model,ns=(stat.st_atime_ns,stat.st_mtime_ns+1_000_000_000))
+    with pytest.raises(ValueError,match='MPS元数据'):
+        run_task(root,'central-epsilon-000',settings=SolverSettings(mip_gap=0.,threads=1))
+
+
+def test_assemble_full_hash_catches_mps_change_with_restored_metadata(tmp_path):
+    root=tmp_path/'full_audit'
+    plan=create_plan(shared_case(),root,full_scale=False,point_count=5)
+    settings=SolverSettings(mip_gap=0.,threads=1)
+    for task in plan['tasks']:
+        run_task(root,task['task_id'],settings=settings)
+    model=root/'tasks'/'central-cost'/'attempt_0001'/'model.mps'
+    stat=model.stat()
+    with model.open('r+b') as stream:
+        original=stream.read(1)
+        stream.seek(0)
+        stream.write(b'X' if original!=b'X' else b'Y')
+    os.utime(model,ns=(stat.st_atime_ns,stat.st_mtime_ns))
+    assert model.stat().st_size==stat.st_size
+    assert model.stat().st_mtime_ns==stat.st_mtime_ns
+    with pytest.raises(ValueError,match='已完成结果被修改'):
+        assemble(root)
 
 
 def test_task_records_aggregate_flow_formulation(tmp_path):
