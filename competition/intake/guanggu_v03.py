@@ -20,6 +20,10 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from competition.road_joint_v2.economic_package import (
+    PACKAGE_DIRECTORY, PACKAGE_FILES, PackageError, read_package,
+)
+
 
 EQUIPMENT_PATCH_FILES = (
     "06_equipment_performance.csv",
@@ -237,6 +241,8 @@ def _classify_inventory(
         parts = relative.split("/")
         if len(parts) == 1 and relative in root_files:
             category_counts["root_delivery"] += 1
+        elif len(parts) == 2 and parts[0] == PACKAGE_DIRECTORY and parts[1] in PACKAGE_FILES:
+            category_counts["economic_extension_20260829"] += 1
         elif parts[0] in directories:
             category_counts[str(directories[parts[0]])] += 1
         else:
@@ -256,16 +262,31 @@ def _validate_inventory(
     report.inventory.update(
         {"total_files": len(files), "extensions": dict(sorted(extensions.items()))}
     )
+    extension_files = [path for path in files if path.relative_to(root).parts[0] == PACKAGE_DIRECTORY]
+    baseline_files = [path for path in files if path not in extension_files]
+    baseline_extensions = Counter(path.suffix.lower() for path in baseline_files)
+    report.inventory["baseline_file_count"] = len(baseline_files)
+    report.inventory["economic_extension_file_count"] = len(extension_files)
+    if extension_files:
+        package_root = root / PACKAGE_DIRECTORY
+        for name in PACKAGE_FILES:
+            if not (package_root / name).is_file():
+                _issue(report, "ECONOMIC_EXTENSION_FILE_MISSING", f"经济扩展包缺文件: {name}", package_root)
+        try:
+            package = read_package(package_root)
+            report.datasets["economic_extension"] = package
+        except (PackageError, OSError, UnicodeError) as exc:
+            _issue(report, "ECONOMIC_EXTENSION_INVALID", str(exc), package_root)
     expected = profile["expected_inventory"]
-    if len(files) != int(expected["total_files"]):
+    if len(baseline_files) != int(expected["total_files"]):
         _issue(
             report,
             "INVENTORY_COUNT_MISMATCH",
-            f"期望 {expected['total_files']} 个文件，实际 {len(files)}",
+            f"原始基线期望 {expected['total_files']} 个文件，实际 {len(baseline_files)}（扩展包单独校验）",
             root,
         )
     for extension, count in expected["extensions"].items():
-        actual = extensions.get(extension, 0)
+        actual = baseline_extensions.get(extension, 0)
         if actual != int(count):
             _issue(
                 report,
