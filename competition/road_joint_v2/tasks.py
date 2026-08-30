@@ -154,6 +154,8 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
             model=build_road_model(case)
             write_json(attempt/'model_build_completed.json',dict(
                 seconds=perf_counter()-clock, variables=model.nvariables(), constraints=model.nconstraints(),
+                flow_formulation=('aggregate_uniform_pumping' if model.uniform_pumping_flow.value
+                                  else 'grade_indexed_pumping'),
                 completed_at=datetime.now(timezone.utc).isoformat(), solver_instantiated=False))
             return model
         # Keep the requested epsilon exact. Adding the same tolerance to the

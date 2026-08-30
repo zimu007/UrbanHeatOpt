@@ -76,6 +76,14 @@ def test_task_guard_and_small_three_mode_epsilon_run(tmp_path):
         run_task(tampered,'central-cost',settings=settings)
 
 
+def test_task_records_aggregate_flow_formulation(tmp_path):
+    root=tmp_path/'flow_evidence'
+    create_plan(shared_case(),root,full_scale=False,point_count=5)
+    run_task(root,'central-cost',settings=SolverSettings(mip_gap=0.,threads=1))
+    build=json.loads((root/'tasks'/'central-cost'/'attempt_0001'/'model_build_completed.json').read_text(encoding='utf-8'))
+    assert build['flow_formulation']=='aggregate_uniform_pumping'
+
+
 def test_first_full_season_task_and_worker_reservation_guards(tmp_path,monkeypatch):
     from competition.road_joint_v2 import tasks
     plan=create_plan(shared_case(),tmp_path/'case',point_count=5,full_scale=False)

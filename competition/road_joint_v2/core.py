@@ -84,6 +84,13 @@ def build_road_model(case: RoadCase):
     edge_options = {e: [o for o, row in options.items() if e in row['edge_ids']] for e in edges}
     stations = {s['site_id']: s['attachment_node_id'] for s in net['sites']}
     levels = {x.pipe_type_id: x for x in case.pipe_designs}
+    pumping_rates = {x.pumping_kWh_e_per_kWh_th_m for x in levels.values()}
+    # When all grades have exactly the same pumping coefficient, grade-indexed
+    # directional flows carry no information.  The selected grade already
+    # enters edge_capacity/edge_loss, and exactly one grade can be active.
+    # Use exact equality here: an approximate match would change the objective.
+    uniform_pumping = len(pumping_rates) == 1
+    uniform_pumping_rate = next(iter(pumping_rates)) if uniform_pumping else None
     central = {t.technology_id: t for t in d.technologies if t.applicable_scope == 'central'}
     local = next(t for t in d.technologies if t.applicable_scope == 'local')
     nodes = [n['node_id'] for n in net['nodes']]
@@ -121,8 +128,13 @@ def build_road_model(case: RoadCase):
     m.unserved_heat_kW = p.Var(m.DEMAND_NODES, m.HOURS, domain=p.NonNegativeReals)
     m.built = p.Var(m.E, domain=p.Binary)
     m.grade = p.Var(m.E, m.K, domain=p.Binary)
-    m.forward = p.Var(m.E, m.K, m.HOURS, domain=p.NonNegativeReals)
-    m.reverse = p.Var(m.E, m.K, m.HOURS, domain=p.NonNegativeReals)
+    m.uniform_pumping_flow = p.Param(initialize=uniform_pumping, within=p.Boolean)
+    if uniform_pumping:
+        m.forward = p.Var(m.E, m.HOURS, domain=p.NonNegativeReals)
+        m.reverse = p.Var(m.E, m.HOURS, domain=p.NonNegativeReals)
+    else:
+        m.forward = p.Var(m.E, m.K, m.HOURS, domain=p.NonNegativeReals)
+        m.reverse = p.Var(m.E, m.K, m.HOURS, domain=p.NonNegativeReals)
     m.direction = p.Var(m.E, m.HOURS, domain=p.Binary)
     m.commodity = p.Var(m.E, domain=p.Reals)
     m.commodity_supply = p.Var(m.S, domain=p.NonNegativeReals)
@@ -194,9 +206,18 @@ def build_road_model(case: RoadCase):
             m.station_built[s].fix(0)
     m.edge_capacity = p.Expression(m.E, rule=lambda _,e: sum(levels[k].capacity_kW_th*m.grade[e,k] for k in levels))
     m.edge_loss = p.Expression(m.E, rule=lambda _,e: edges[e]['length_m']*sum(levels[k].pair_loss_kW_per_route_m*m.grade[e,k] for k in levels))
-    m.flow = p.Expression(m.E,m.HOURS, rule=lambda _,e,h: sum(m.forward[e,k,h]-m.reverse[e,k,h] for k in levels))
-    m.abs_flow = p.Expression(m.E,m.HOURS, rule=lambda _,e,h: sum(m.forward[e,k,h]+m.reverse[e,k,h] for k in levels))
-    m.pump = p.Expression(m.E,m.HOURS, rule=lambda _,e,h: edges[e]['length_m']*sum(levels[k].pumping_kWh_e_per_kWh_th_m*(m.forward[e,k,h]+m.reverse[e,k,h]) for k in levels))
+    if uniform_pumping:
+        m.flow = p.Expression(m.E,m.HOURS, rule=lambda _,e,h: m.forward[e,h]-m.reverse[e,h])
+        m.abs_flow = p.Expression(m.E,m.HOURS, rule=lambda _,e,h: m.forward[e,h]+m.reverse[e,h])
+        m.pump = p.Expression(m.E,m.HOURS, rule=lambda _,e,h:
+            edges[e]['length_m']*uniform_pumping_rate*m.abs_flow[e,h])
+    else:
+        m.flow = p.Expression(m.E,m.HOURS, rule=lambda _,e,h:
+            sum(m.forward[e,k,h]-m.reverse[e,k,h] for k in levels))
+        m.abs_flow = p.Expression(m.E,m.HOURS, rule=lambda _,e,h:
+            sum(m.forward[e,k,h]+m.reverse[e,k,h] for k in levels))
+        m.pump = p.Expression(m.E,m.HOURS, rule=lambda _,e,h: edges[e]['length_m']*sum(
+            levels[k].pumping_kWh_e_per_kWh_th_m*(m.forward[e,k,h]+m.reverse[e,k,h]) for k in levels))
     big_m = max(x.capacity_kW_th for x in levels.values())
     for e, edge in edges.items():
         c(sum(m.grade[e,k] for k in levels) == m.built[e])
@@ -208,14 +229,17 @@ def build_road_model(case: RoadCase):
         c(m.commodity[e] <= len(d.demand_nodes)*m.built[e])
         c(m.commodity[e] >= -len(d.demand_nodes)*m.built[e])
         for h in d.hours:
+            forward = m.forward[e,h] if uniform_pumping else sum(m.forward[e,k,h] for k in levels)
+            reverse = m.reverse[e,h] if uniform_pumping else sum(m.reverse[e,k,h] for k in levels)
             c(m.direction[e,h] <= m.built[e])
-            c(sum(m.forward[e,k,h] for k in levels) <= big_m*m.direction[e,h])
-            c(sum(m.reverse[e,k,h] for k in levels) <= big_m*(m.built[e]-m.direction[e,h]))
+            c(forward <= big_m*m.direction[e,h])
+            c(reverse <= big_m*(m.built[e]-m.direction[e,h]))
             c(m.abs_flow[e,h] + m.edge_loss[e]/2 <= m.edge_capacity[e])
-            c(sum(m.forward[e,k,h] for k in levels) >= m.edge_loss[e]/2 - big_m*(1-m.direction[e,h]))
-            c(sum(m.reverse[e,k,h] for k in levels) >= m.edge_loss[e]/2 - big_m*m.direction[e,h])
-            for k, level in levels.items():
-                c(m.forward[e,k,h]+m.reverse[e,k,h] <= level.capacity_kW_th*m.grade[e,k])
+            c(forward >= m.edge_loss[e]/2 - big_m*(1-m.direction[e,h]))
+            c(reverse >= m.edge_loss[e]/2 - big_m*m.direction[e,h])
+            if not uniform_pumping:
+                for k, level in levels.items():
+                    c(m.forward[e,k,h]+m.reverse[e,k,h] <= level.capacity_kW_th*m.grade[e,k])
     for n in nodes:
         balance = sum(sign*m.commodity[e] for e,sign in incident[n])+sum(m.commodity_supply[s] for s in sources[n])
         c(balance == (m.connected[n] if n in d.demand_nodes else 0))

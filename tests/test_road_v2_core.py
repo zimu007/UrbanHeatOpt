@@ -44,6 +44,36 @@ def solve(case, fixed_site=None):
     return m
 
 
+def with_pumping_rates(case, rates):
+    return replace(case, pipe_designs=tuple(
+        replace(level, pumping_kWh_e_per_kWh_th_m=rate)
+        for level, rate in zip(case.pipe_designs, rates, strict=True)
+    ))
+
+
+def test_uniform_pumping_uses_aggregate_flow_and_nonuniform_falls_back():
+    case = shared_case()
+    aggregate = build_road_model(case)
+    grade_indexed = build_road_model(with_pumping_rates(case, (1e-5, 2e-5, 3e-5)))
+    edge_hours = len(aggregate.E)*len(aggregate.HOURS)
+
+    assert value(aggregate.uniform_pumping_flow) is True
+    assert value(grade_indexed.uniform_pumping_flow) is False
+    assert len(aggregate.forward) == edge_hours
+    assert len(aggregate.reverse) == edge_hours
+    assert len(grade_indexed.forward) == edge_hours*len(grade_indexed.K)
+    assert len(grade_indexed.reverse) == edge_hours*len(grade_indexed.K)
+    assert grade_indexed.nvariables()-aggregate.nvariables() == 4*edge_hours
+    assert grade_indexed.nconstraints()-aggregate.nconstraints() == len(aggregate.K)*edge_hours
+
+
+def test_nonuniform_pumping_fallback_exports_grade_weighted_flow(tmp_path):
+    case = with_pumping_rates(shared_case(), (1e-5, 2e-5, 3e-5))
+    model = solve(case, 'S1')
+    assert value(model.uniform_pumping_flow) is False
+    assert export_solution(case, model, tmp_path/'solution')['passed']
+
+
 def test_shared_300m_cost_capacity_loss_and_junction_balance():
     case = shared_case()
     m = solve(case, 'S1')

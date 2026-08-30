@@ -84,7 +84,11 @@ def export_solution(case: RoadCase, model, root: str | Path):
             installation_concept=net.get('metadata', {}).get('installation_concept', 'historical_test'))
         flow_peak, peak_hour = 0.0, d.hours[0]
         for h in d.hours:
-            pos,neg = (value(sum(getattr(m,attr)[e,k,h] for k in m.K)) for attr in ('forward','reverse'))
+            if m.uniform_pumping_flow.value:
+                pos,neg = value(m.forward[e,h]),value(m.reverse[e,h])
+            else:
+                pos,neg = (value(sum(getattr(m,attr)[e,k,h] for k in m.K))
+                           for attr in ('forward','reverse'))
             signed, loss = pos-neg, value(m.edge_loss[e])
             port_u, port_v = signed+loss/2, -signed+loss/2  # Positive = withdrawal from node into edge.
             port_peak = max(abs(port_u),abs(port_v))
