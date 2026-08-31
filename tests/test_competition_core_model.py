@@ -1669,7 +1669,9 @@ def test_competition_solver_writes_mps_hash_log_and_evidence(tmp_path) -> None:
     model.objective = Objective(expr=model.x)
     model.lower = Constraint(expr=model.x >= 1)
     model_file = tmp_path / "model.mps"
-    log_file = tmp_path / "solver.log"
+    # Exercise the Windows HighsPy Unicode-log workaround even on CI accounts
+    # whose temporary root is otherwise ASCII-only.
+    log_file = tmp_path / "中文日志" / "solver.log"
     evidence_file = tmp_path / "solver_evidence.json"
     results = solve_pyomo_model(
         model,

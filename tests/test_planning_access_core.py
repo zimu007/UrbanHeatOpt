@@ -133,4 +133,4 @@ def test_generated_multichoice_network_runs_three_mode_pareto(tmp_path):
     assert set(result.mode_frontiers)=={'central','distributed','hybrid'}
     assert all(result.mode_frontiers.values())
     for task in plan['tasks']:
-        assert json.loads((root/'tasks'/task['task_id']/'success.json').read_text())['qa']['passed']
+        assert json.loads((root/'tasks'/task['task_id']/'success.json').read_text(encoding='utf-8'))['qa']['passed']

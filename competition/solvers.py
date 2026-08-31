@@ -11,9 +11,12 @@ from numbers import Integral, Real
 import os
 from pathlib import Path
 import platform
+import shutil
 import sys
+import tempfile
 from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 from pyomo.opt import ProblemFormat, SolverFactory, TerminationCondition
 
@@ -168,6 +171,47 @@ def _write_model_snapshot(
     return str(path), digest, int(stat.st_size), int(stat.st_mtime_ns)
 
 
+def _highs_log_proxy(path: Path) -> Path | None:
+    """Return an ASCII-only Windows proxy for a non-ASCII HiGHS log path.
+
+    HighsPy 1.15.1 can solve models whose Python-side paths contain Unicode,
+    but its native log writer may silently skip such a path on Windows.  The
+    requested log remains the public evidence path; only the native write is
+    redirected and copied back after ``solve`` returns.  ASCII run roots keep
+    their direct path so long-running logs remain observable in real time.
+    """
+
+    if os.name != "nt" or str(path).isascii():
+        return None
+    candidates: list[Path] = []
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        value = os.environ.get(name)
+        if value:
+            candidates.append(Path(value))
+    try:
+        candidates.append(Path(tempfile.gettempdir()))
+    except (OSError, RuntimeError):
+        pass
+    candidates.append(Path.cwd())
+    for directory in candidates:
+        try:
+            directory = directory.expanduser().resolve()
+        except OSError:
+            continue
+        if not str(directory).isascii() or not directory.is_dir():
+            continue
+        for _ in range(10):
+            proxy = directory / (
+                f"urbanheatopt_highs_{os.getpid()}_{uuid4().hex}.log"
+            )
+            if not proxy.exists():
+                return proxy
+    raise RuntimeError(
+        "HighsPy on Windows requires an ASCII TEMP/TMP/TMPDIR or working "
+        f"directory to preserve the requested Unicode solver log: {path}"
+    )
+
+
 def _result_metrics(results: Any) -> dict[str, Any]:
     problem = results.problem
     lower = _optional_finite(getattr(problem, "lower_bound", None))
@@ -277,6 +321,7 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
     started_clock = perf_counter()
     peak_before = _peak_working_set_bytes()
 
+    highs_log_proxy = None
     if resolved.name == "highs":
         factory_name = "appsi_highs"
         options = {
@@ -291,7 +336,8 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
         if resolved.threads > 1:
             options["parallel"] = "on"
         if log_path is not None:
-            options["log_file"] = log_path
+            highs_log_proxy = _highs_log_proxy(Path(log_path))
+            options["log_file"] = str(highs_log_proxy or log_path)
     else:
         factory_name = "gurobi"
         options = {
@@ -310,12 +356,24 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
             "不会自动切换到其他求解器"
         )
 
-    results = solver.solve(
-        model,
-        tee=resolved.tee,
-        load_solutions=False,
-        options=options,
-    )
+    try:
+        results = solver.solve(
+            model,
+            tee=resolved.tee,
+            load_solutions=False,
+            options=options,
+        )
+    finally:
+        if highs_log_proxy is not None:
+            # HiGHS keeps the log handle open after run() on Windows.  Resetting
+            # this one option flushes and closes it without clearing the solved
+            # model or result object needed below.
+            native_highs = getattr(solver, "_solver_model", None)
+            if native_highs is not None:
+                native_highs.setOptionValue("log_file", "")
+            if highs_log_proxy.is_file():
+                shutil.copyfile(highs_log_proxy, Path(log_path))
+                highs_log_proxy.unlink()
     finished_at = datetime.now(timezone.utc)
     metrics = _result_metrics(results)
     termination = results.solver.termination_condition
@@ -358,6 +416,9 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
         "model_mtime_ns": model_mtime_ns,
         "model_label_style": "numeric" if model_path is not None else None,
         "solver_log_file": log_path,
+        "solver_log_transport": (
+            "ascii_proxy" if highs_log_proxy is not None else "direct"
+        ) if log_path is not None else None,
         "python_version": platform.python_version(),
         "platform": platform.platform(),
         "logical_cpu_count": os.cpu_count(),
