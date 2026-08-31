@@ -75,8 +75,106 @@ def validate_case(case: RoadCase):
         raise ValueError('V2必须提供电气碳因子')
 
 
-def build_road_model(case: RoadCase):
+def classify_direction_pair(
+    forward_kW: float,
+    reverse_kW: float,
+    pair_loss_kW: float,
+    *,
+    tolerance_kW: float = 1e-6,
+):
+    """Classify one relaxed pair without changing model state."""
+    values = (forward_kW, reverse_kW, pair_loss_kW, tolerance_kW)
+    if any(isinstance(value, bool) or not isfinite(value) for value in values):
+        raise ValueError('direction audit values must be finite numbers')
+    if pair_loss_kW < 0 or tolerance_kW < 0:
+        raise ValueError('pair_loss_kW and tolerance_kW must be nonnegative')
+    half_loss_kW = pair_loss_kW/2
+    counterflow_kW = max(0.0, min(forward_kW, reverse_kW))
+    loss_shortfall_kW = max(0.0, half_loss_kW-max(forward_kW, reverse_kW))
+    liftable = (
+        min(forward_kW, reverse_kW) <= tolerance_kW
+        and max(forward_kW, reverse_kW) >= half_loss_kW-tolerance_kW
+    )
+    return {
+        'liftable': liftable,
+        'direction': int(forward_kW > reverse_kW),
+        'counterflow_kW': counterflow_kW,
+        'loss_shortfall_kW': loss_shortfall_kW,
+    }
+
+
+def classify_direction_solution(model, *, tolerance_kW: float = 1e-6):
+    """Audit non-leaf flow pairs and identify pairs requiring exactification."""
+    if isinstance(tolerance_kW, bool) or not isfinite(tolerance_kW) or tolerance_kW < 0:
+        raise ValueError('tolerance_kW must be a finite nonnegative number')
+    exact_pairs = frozenset(tuple(pair) for pair in model.EXACT_DIRECTION_PAIRS)
+    violation_pairs = []
+    violations = []
+    inferred_directions = {}
+    max_counterflow_kW = 0.0
+    max_loss_shortfall_kW = 0.0
+    exact_violation_count = 0
+    uniform_pumping = bool(p.value(model.uniform_pumping_flow))
+    for edge in model.FLOW_E:
+        for hour in model.HOURS:
+            if uniform_pumping:
+                forward_kW = p.value(model.forward[edge, hour], exception=False)
+                reverse_kW = p.value(model.reverse[edge, hour], exception=False)
+            else:
+                forward_kW = p.value(sum(model.forward[edge, grade, hour] for grade in model.K), exception=False)
+                reverse_kW = p.value(sum(model.reverse[edge, grade, hour] for grade in model.K), exception=False)
+            pair_loss_kW = p.value(model.edge_loss[edge], exception=False)
+            if any(value is None or not isfinite(value) for value in (forward_kW, reverse_kW, pair_loss_kW)):
+                raise ValueError(f'direction pair {(edge, hour)!r} has no finite solution value')
+            result = classify_direction_pair(
+                float(forward_kW), float(reverse_kW), float(pair_loss_kW),
+                tolerance_kW=tolerance_kW,
+            )
+            pair = (edge, hour)
+            inferred_directions[pair] = result['direction']
+            max_counterflow_kW = max(max_counterflow_kW, result['counterflow_kW'])
+            max_loss_shortfall_kW = max(max_loss_shortfall_kW, result['loss_shortfall_kW'])
+            if not result['liftable']:
+                violation_pairs.append(pair)
+                exact = pair in exact_pairs
+                exact_violation_count += int(exact)
+                violations.append({
+                    'edge_id': edge,
+                    'hour': hour,
+                    'forward_kW': float(forward_kW),
+                    'reverse_kW': float(reverse_kW),
+                    'pair_loss_kW': float(pair_loss_kW),
+                    'exact': exact,
+                    **result,
+                })
+    pair_count = len(model.FLOW_E)*len(model.HOURS)
+    return {
+        'liftable': not violation_pairs,
+        'violation_pairs': tuple(violation_pairs),
+        'violations': tuple(violations),
+        'inferred_directions': inferred_directions,
+        'metrics': {
+            'pair_count': pair_count,
+            'exact_pair_count': len(exact_pairs),
+            'relaxed_pair_count': pair_count-len(exact_pairs),
+            'violation_count': len(violation_pairs),
+            'exact_violation_count': exact_violation_count,
+            'max_counterflow_kW': max_counterflow_kW,
+            'max_loss_shortfall_kW': max_loss_shortfall_kW,
+            'tolerance_kW': tolerance_kW,
+        },
+    }
+
+
+def build_road_model(
+    case: RoadCase,
+    *,
+    direction_relaxation: bool = False,
+    exact_direction_pairs=(),
+):
     validate_case(case)
+    if not isinstance(direction_relaxation, bool):
+        raise ValueError('direction_relaxation must be boolean')
     d, net, econ = case.common, case.network, case.common.economics
     edges = {e['edge_id']: e for e in net['edges']}
     options = {o['option_id']: o for o in access_options(net)}
@@ -124,6 +222,29 @@ def build_road_model(case: RoadCase):
     service_leaf_edges = frozenset(service_leaf_edge_ids)
     service_leaf_building = {e: candidate_leaf_edges[e] for e in service_leaf_edges}
     flow_edges = tuple(e for e in edges if e not in service_leaf_edges)
+    flow_direction_pairs = tuple(
+        (e, h) for e in (() if distributed_fastpath else flow_edges) for h in d.hours
+    )
+    try:
+        requested_exact_pairs = frozenset(tuple(pair) for pair in exact_direction_pairs)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('exact_direction_pairs must contain (edge_id, hour) pairs') from exc
+    if any(len(pair) != 2 for pair in requested_exact_pairs):
+        raise ValueError('exact_direction_pairs must contain (edge_id, hour) pairs')
+    valid_direction_pairs = frozenset(flow_direction_pairs)
+    unknown_exact_pairs = requested_exact_pairs - valid_direction_pairs
+    if unknown_exact_pairs:
+        raise ValueError(f'exact_direction_pairs contains invalid pairs: {sorted(unknown_exact_pairs, key=repr)!r}')
+    if not direction_relaxation and requested_exact_pairs:
+        raise ValueError('exact_direction_pairs is only valid when direction_relaxation=True')
+    exact_direction_pair_ids = (
+        tuple(pair for pair in flow_direction_pairs if pair in requested_exact_pairs)
+        if direction_relaxation else flow_direction_pairs
+    )
+    exact_direction_pair_set = frozenset(exact_direction_pair_ids)
+    relaxed_direction_pair_ids = tuple(
+        pair for pair in flow_direction_pairs if pair not in exact_direction_pair_set
+    )
     st = d.storage or ThermalStorageSpec('disabled', 1, 1, 1, 1, 1, 0, 0, 0, 0, 1)
     def ratio(t, h):
         return d.heat_pump_capacity_ratio_by_hour.get((t, h), 1.0)
@@ -141,9 +262,12 @@ def build_road_model(case: RoadCase):
     m.ACCESS = p.Set(initialize=tuple(options), ordered=True)
     m.FLOW_E = p.Set(initialize=() if distributed_fastpath else flow_edges, ordered=True)
     m.SERVICE_LEAF_E = p.Set(initialize=() if distributed_fastpath else service_leaf_edge_ids, ordered=True)
+    m.EXACT_DIRECTION_PAIRS = p.Set(dimen=2, initialize=exact_direction_pair_ids, ordered=True)
+    m.RELAXED_DIRECTION_PAIRS = p.Set(dimen=2, initialize=relaxed_direction_pair_ids, ordered=True)
     m.deterministic_demand_dispatch = p.Param(initialize=deterministic_dispatch, within=p.Boolean)
     m.distributed_fastpath = p.Param(initialize=distributed_fastpath, within=p.Boolean)
     m.service_leaf_flow_elimination = p.Param(initialize=bool(service_leaf_edges), within=p.Boolean)
+    m.direction_relaxation = p.Param(initialize=direction_relaxation, within=p.Boolean)
     if distributed_fastpath:
         m.access_selected = p.Param(m.ACCESS, initialize=0.0)
     else:
@@ -220,11 +344,24 @@ def build_road_model(case: RoadCase):
             0.0 if distributed_fastpath else
             ((leaf_grade_magnitude(e,k,h) if service_leaf_building[e] == edges[e]['node_u'] else 0.0)
              if e in service_leaf_edges else m._reverse_var[e,k,h]))
-    m._direction_var = p.Var(m.FLOW_E, m.HOURS, domain=p.Binary)
-    m.direction = p.Expression(m.E, m.HOURS, rule=lambda _,e,h:
-        0.0 if distributed_fastpath else
-        ((m.built[e] if service_leaf_building[e] == edges[e]['node_v'] else 0.0)
-         if e in service_leaf_edges else m._direction_var[e,h]))
+    if direction_relaxation:
+        m._direction_var = p.Var(m.EXACT_DIRECTION_PAIRS, domain=p.Binary)
+        public_direction_pairs = tuple(
+            (e, h) for e in edges for h in d.hours
+            if distributed_fastpath or e in service_leaf_edges or (e, h) in exact_direction_pair_set
+        )
+        m.DIRECTION_PAIRS = p.Set(dimen=2, initialize=public_direction_pairs, ordered=True)
+        m.direction = p.Expression(m.DIRECTION_PAIRS, rule=lambda _,e,h:
+            0.0 if distributed_fastpath else
+            ((m.built[e] if service_leaf_building[e] == edges[e]['node_v'] else 0.0)
+             if e in service_leaf_edges else m._direction_var[e,h]))
+    else:
+        # Keep the default component shape and indexing unchanged.
+        m._direction_var = p.Var(m.FLOW_E, m.HOURS, domain=p.Binary)
+        m.direction = p.Expression(m.E, m.HOURS, rule=lambda _,e,h:
+            0.0 if distributed_fastpath else
+            ((m.built[e] if service_leaf_building[e] == edges[e]['node_v'] else 0.0)
+             if e in service_leaf_edges else m._direction_var[e,h]))
     if distributed_fastpath:
         m.commodity = p.Expression(m.E, rule=lambda *_: 0.0)
         m.commodity_supply = p.Expression(m.S, rule=lambda *_: 0.0)
@@ -322,6 +459,10 @@ def build_road_model(case: RoadCase):
             sum(m.forward[e,k,h]+m.reverse[e,k,h] for k in levels))
         m.pump = p.Expression(m.E,m.HOURS, rule=lambda _,e,h: edges[e]['length_m']*sum(
             levels[k].pumping_kWh_e_per_kWh_th_m*(m.forward[e,k,h]+m.reverse[e,k,h]) for k in levels))
+    m.direction_relaxation_lower = p.Constraint(
+        m.RELAXED_DIRECTION_PAIRS,
+        rule=lambda _, e, h: m.abs_flow[e, h] >= m.edge_loss[e]/2,
+    )
     big_m = max(x.capacity_kW_th for x in levels.values())
     if not distributed_fastpath:
         for e, edge in edges.items():
@@ -343,11 +484,14 @@ def build_road_model(case: RoadCase):
             for h in d.hours:
                 forward = m.forward[e,h] if uniform_pumping else sum(m.forward[e,k,h] for k in levels)
                 reverse = m.reverse[e,h] if uniform_pumping else sum(m.reverse[e,k,h] for k in levels)
-                c(forward <= big_m*m.direction[e,h])
-                c(reverse <= big_m*(m.built[e]-m.direction[e,h]))
-                c(m.abs_flow[e,h] + m.edge_loss[e]/2 <= m.edge_capacity[e])
-                c(forward >= m.edge_loss[e]/2 - big_m*(1-m.direction[e,h]))
-                c(reverse >= m.edge_loss[e]/2 - big_m*m.direction[e,h])
+                if (e, h) in exact_direction_pair_set:
+                    c(forward <= big_m*m.direction[e,h])
+                    c(reverse <= big_m*(m.built[e]-m.direction[e,h]))
+                    c(m.abs_flow[e,h] + m.edge_loss[e]/2 <= m.edge_capacity[e])
+                    c(forward >= m.edge_loss[e]/2 - big_m*(1-m.direction[e,h]))
+                    c(reverse >= m.edge_loss[e]/2 - big_m*m.direction[e,h])
+                else:
+                    c(m.abs_flow[e,h] + m.edge_loss[e]/2 <= m.edge_capacity[e])
                 if not uniform_pumping:
                     for k, level in levels.items():
                         c(m.forward[e,k,h]+m.reverse[e,k,h] <= level.capacity_kW_th*m.grade[e,k])

@@ -13,7 +13,11 @@ from competition.solvers import SolverSettings, get_solver_evidence
 from competition.road_joint_v2 import FROZEN_LEGACY_CORE_SHA256
 from competition.road_joint_v2.economic_package import file_hash
 from competition.road_joint_v2.builder import save_case, load_case
-from competition.road_joint_v2.core import build_road_model
+from competition.road_joint_v2.core import build_road_model, classify_direction_solution
+from competition.road_joint_v2.budget import (
+    apply_budget_network_design,
+    build_budget_network_design,
+)
 from competition.road_joint_v2.results import export_solution
 
 REPOSITORY=Path(__file__).resolve().parents[2]
@@ -35,7 +39,15 @@ def mathematics_hashes():
     return result
 
 
-def create_plan(case, root, *, input_paths=None, point_count=11, full_scale=True):
+def create_plan(
+    case,
+    root,
+    *,
+    input_paths=None,
+    point_count=11,
+    full_scale=True,
+    budget_metadata=None,
+):
     root=Path(root)
     root.mkdir(parents=True,exist_ok=True)
     if full_scale and (len(case.common.demand_nodes)!=62 or len(case.common.hours)!=2160):
@@ -44,6 +56,11 @@ def create_plan(case, root, *, input_paths=None, point_count=11, full_scale=True
         raise ValueError('测试5点；全季11点')
     if full_scale and point_count!=11:
         raise ValueError('全季不得减少11个epsilon点')
+    budget_profile=budget_metadata is not None
+    if budget_profile and (full_scale or point_count!=5):
+        raise ValueError('budget_50m profile requires full_scale=False and point_count=5')
+    if budget_profile and len(case.common.hours)>168:
+        raise ValueError('budget_50m profile accepts at most 168 representative hours')
     if (root/'task_plan.json').exists() or (root/'case.json').exists():
         raise FileExistsError('V2计划已存在，禁止覆盖')
     save_case(case,root/'case.json')
@@ -52,13 +69,25 @@ def create_plan(case, root, *, input_paths=None, point_count=11, full_scale=True
     tasks += [dict(task_id=f'{mode}-epsilon-{i:03d}',mode=mode,objective='cost',phase='epsilon',epsilon_index=i)
               for mode in ('central','distributed','hybrid') for i in range(point_count)]
     input_hashes={str(Path(p).resolve()):file_hash(Path(p)) for p in (input_paths or [])}
+    budget_design=build_budget_network_design(case) if budget_profile else None
     plan=dict(schema='road_joint_v2_tasks_1',core_version='road_joint_v2',created_at=datetime.now(timezone.utc).isoformat(),
               git_sha=subprocess.check_output(['git','rev-parse','HEAD'],cwd=REPOSITORY,text=True).strip(),
               python_version=platform.python_version(),case_sha256=file_hash(root/'case.json'),
               mathematics_sha256=mathematics_hashes(),source_sha256=input_hashes,tasks=tasks,
               point_count=point_count,full_scale=full_scale,solver_executed=False,
-              scan_gap=.01,representative_gap=.001,threads=8 if full_scale else 1,
-              time_limit_seconds=21600 if full_scale else 60,
+              scan_gap=.03 if budget_profile else .01,
+              representative_gap=.03 if budget_profile else .001,
+              threads=4 if budget_profile else (8 if full_scale else 1),
+              time_limit_seconds=150 if budget_profile else (21600 if full_scale else 60),
+              execution_profile='budget_50m_v1' if budget_profile else 'strict_v2',
+              result_qualification=('budgeted_approximate_representative_horizon'
+                                    if budget_profile else 'strict_model_horizon'),
+              wallclock_budget_seconds=3000 if budget_profile else None,
+              feasibility_tolerance=1e-7 if budget_profile else 1e-9,
+              direction_relaxation=budget_profile,
+              direction_lift_required=budget_profile,
+              budget_metadata=dict(budget_metadata) if budget_profile else None,
+              budget_network_design=budget_design,
               engineering_result=False)
     write_json(root/'task_plan.json',plan)
     return plan
@@ -303,12 +332,16 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
     write_json(reservation,dict(pid=os.getpid(),attempt=attempt.name,created_at=datetime.now(timezone.utc).isoformat()))
     case=load_case(root/'case.json').with_mode(task['mode'])
     resolved=settings or SolverSettings(threads=plan['threads'],mip_gap=gap_limit,time_limit_seconds=plan['time_limit_seconds'])
+    if plan.get('execution_profile')=='budget_50m_v1':
+        resolved=replace(resolved,feasibility_tolerance=plan['feasibility_tolerance'])
     if resolved.mip_gap>gap_limit:
         write_json(attempt/'failure.json',dict(error='gap过宽',solver_success=False))
         raise ValueError(f'任务gap不得宽于冻结门槛 {gap_limit}')
     resolved=replace(resolved,log_file=str(attempt/'solver.log'),model_file=str(attempt/'model.mps'),evidence_file=str(attempt/'solver_evidence.json'))
     write_json(attempt/'task_request.json',dict(task=task,settings=asdict(resolved),epsilon=epsilon,
-        building_count=len(case.common.demand_nodes),hour_count=len(case.common.hours),case_sha256=plan['case_sha256']))
+        building_count=len(case.common.demand_nodes),hour_count=len(case.common.hours),case_sha256=plan['case_sha256'],
+        execution_profile=plan.get('execution_profile','strict_v2'),
+        result_qualification=plan.get('result_qualification','strict_model_horizon')))
     try:
         def measured_builder(_):
             from time import perf_counter
@@ -317,7 +350,10 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
                 hour_count=len(case.common.hours), edge_count=len(case.network['edges']),
                 core_version='road_joint_v2', solver_instantiated=False))
             clock=perf_counter()
-            model=build_road_model(case)
+            direction_relaxation=bool(plan.get('direction_relaxation',False))
+            model=build_road_model(case,direction_relaxation=direction_relaxation)
+            if plan.get('execution_profile')=='budget_50m_v1':
+                apply_budget_network_design(model,case,plan['budget_network_design'])
             write_json(attempt/'model_build_completed.json',dict(
                 seconds=perf_counter()-clock, variables=model.nvariables(), constraints=model.nconstraints(),
                 flow_formulation=('aggregate_uniform_pumping' if model.uniform_pumping_flow.value
@@ -326,6 +362,10 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
                 eliminated_service_leaf_edge_count=len(model.SERVICE_LEAF_E),
                 deterministic_demand_dispatch=bool(model.deterministic_demand_dispatch.value),
                 distributed_fastpath=bool(model.distributed_fastpath.value),
+                direction_relaxation=direction_relaxation,
+                exact_direction_pair_count=len(model.EXACT_DIRECTION_PAIRS),
+                relaxed_direction_pair_count=len(model.RELAXED_DIRECTION_PAIRS),
+                budget_network_design_applied=(plan.get('execution_profile')=='budget_50m_v1'),
                 completed_at=datetime.now(timezone.utc).isoformat(), solver_instantiated=False))
             return model
         # Keep the requested epsilon exact. Adding the same tolerance to the
@@ -334,6 +374,15 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
         point,solution=solve_pareto_task(case.common,resolved,ParetoSpec(plan['point_count'],carbon_tolerance_kgCO2e_per_year=0.),
             point_id=task_id,objective=task['objective'],epsilon_kgCO2e_per_year=epsilon,
             model_builder=measured_builder)
+        direction_audit=None
+        if bool(plan.get('direction_relaxation',False)) and not bool(solution.model.distributed_fastpath.value):
+            direction_audit=classify_direction_solution(solution.model,tolerance_kW=1e-6)
+            if plan.get('direction_lift_required') and not direction_audit['liftable']:
+                raise ValueError(
+                    'budget direction relaxation is not liftable: '
+                    f"violations={direction_audit['metrics']['violation_count']}, "
+                    f"max_counterflow_kW={direction_audit['metrics']['max_counterflow_kW']}"
+                )
         evidence=get_solver_evidence(solution.solver_results)
         gap=evidence.get('relative_mip_gap')
         if gap is None or gap>resolved.mip_gap+1e-12:
@@ -345,7 +394,10 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
         output_hashes,completion_integrity=_completion_outputs(root,attempt,evidence)
         write_json(task_root/'success.json',dict(point=asdict(point),qa=qa,
             model_core='road_joint_v2',output_sha256=output_hashes,
-            completion_integrity=completion_integrity))
+            completion_integrity=completion_integrity,
+            execution_profile=plan.get('execution_profile','strict_v2'),
+            result_qualification=plan.get('result_qualification','strict_model_horizon'),
+            direction_audit=(direction_audit['metrics'] if direction_audit else None)))
         del solution
         gc.collect()
         return point
@@ -363,10 +415,13 @@ def assemble(root, *, policy_carbon_cap=None):
         raise ValueError('全部端点与epsilon任务尚未完成，不能生成全季完成报告')
     result=assemble_pareto_run(tuple(points),ParetoSpec(plan['point_count']))
     write_json(root/'pareto_frontiers.json',dict(modes={mode:[asdict(p) for p in row] for mode,row in result.mode_frontiers.items()},
-        combined=[asdict(p) for p in result.combined_frontier],method='epsilon_constraint'))
+        combined=[asdict(p) for p in result.combined_frontier],method='epsilon_constraint',
+        execution_profile=plan.get('execution_profile','strict_v2'),
+        result_qualification=plan.get('result_qualification','strict_model_horizon')))
     representatives=select_representative_points(result.combined_frontier,policy_carbon_constraint_kgCO2e_per_year=policy_carbon_cap)
     write_json(root/'representatives_provisional.json',dict(rules=representatives,certified_at_0_1_percent=False,
-        note='仅选择；尚未执行0.1%重新求解，不宣称最终代表解认证完成'))
+        note=(f"仅选择；尚未执行{plan['representative_gap']:.3%} gap复核求解，"
+              "不宣称最终代表解认证完成")))
     from competition.road_joint_v2.figures import render_figures
     render_figures(root)
     write_json(root/'scan_integrity_audit.json',_integrity_audit_payload(
@@ -376,7 +431,7 @@ def assemble(root, *, policy_carbon_cap=None):
 
 
 def refine_representatives(root, *, policy_carbon_cap=None, settings=None):
-    """Fresh 0.1% solves; missing policy cap stays missing, never invented.
+    """Fresh gap-certified solves; missing policy cap stays missing, never invented.
 
     A policy-cap recommendation is solved separately in all three modes, not
     substituted with the nearest grid point. Other rules refine their selected
@@ -450,7 +505,10 @@ def refine_representatives(root, *, policy_carbon_cap=None, settings=None):
         overlaps=[other for other in solved.values() if other.point_id!=winner.point_id and other.mode==winner.mode
             and abs(other.annual_real_cost_CNY_per_year-winner.annual_real_cost_CNY_per_year)<=1e-6
             and abs(other.annual_operating_carbon_kgCO2e_per_year-winner.annual_operating_carbon_kgCO2e_per_year)<=1e-6]
-        final[rule]=dict(point=asdict(winner),certified_at_0_1_percent=True,objective_overlap_with=[p.point_id for p in overlaps])
+        final[rule]=dict(point=asdict(winner),
+            certified_at_0_1_percent=plan['representative_gap']<=.001+1e-15,
+            certified_mip_gap=plan['representative_gap'],
+            objective_overlap_with=[p.point_id for p in overlaps])
     refinement_audit_records=[]
     for job in solved:
         verified=_completed(root,job,'refinements',audit_records=refinement_audit_records)
@@ -471,6 +529,10 @@ def refine_representatives(root, *, policy_carbon_cap=None, settings=None):
     if not target.exists():
         write_json(target,dict(rules=final,policy_cap_unit='kgCO2e/year',
             carbon_endpoint_certificate=asdict(carbon_bound) if carbon_bound else None,
-            qualification='规则来源于已计算离散前沿；0.1%是各复核MILP的gap，不是连续前沿/全局膝点误差。',
+            qualification=(plan.get('result_qualification','strict_model_horizon')
+                if plan.get('execution_profile')=='budget_50m_v1'
+                else '规则来源于已计算离散前沿；0.1%是各复核MILP的gap，不是连续前沿/全局膝点误差。'),
+            execution_profile=plan.get('execution_profile','strict_v2'),
+            certified_mip_gap=plan['representative_gap'],
             engineering_result=False))
     return final

@@ -1563,6 +1563,7 @@ def test_competition_solver_keeps_infeasible_variables_unloaded() -> None:
     ("settings", "message"),
     [
         (SolverSettings(name="cbc"), "name"),
+        (SolverSettings(presolve="auto"), "presolve"),
         (SolverSettings(mip_gap=-0.1), "mip_gap"),
         (SolverSettings(mip_gap=1.0), "mip_gap"),
         (SolverSettings(threads=2), "threads"),
@@ -1639,7 +1640,7 @@ def test_competition_highs_uses_reproducible_options_and_delays_loading(
     model.x = Var()
     model.objective = Objective(expr=model.x)
     model.lower = Constraint(expr=model.x >= 1)
-    solve_pyomo_model(model, SolverSettings(mip_gap=0.015))
+    solve_pyomo_model(model, SolverSettings(mip_gap=0.015, presolve="off"))
 
     assert captured["factory_name"] == "appsi_highs"
     assert captured["exception_flag"] is False
@@ -1647,6 +1648,7 @@ def test_competition_highs_uses_reproducible_options_and_delays_loading(
     assert solve_kwargs["tee"] is False
     assert solve_kwargs["load_solutions"] is False
     assert solve_kwargs["options"] == {
+        "presolve": "off",
         "mip_rel_gap": 0.015,
         "threads": 1,
         "time_limit": 60.0,
@@ -1658,9 +1660,52 @@ def test_competition_highs_uses_reproducible_options_and_delays_loading(
     assert value(model.x) == pytest.approx(1.0)
 
 
+def test_competition_presolve_setting_does_not_change_gurobi_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    fake_results = SimpleNamespace(
+        solver=SimpleNamespace(
+            status="error", termination_condition=TerminationCondition.infeasible
+        ),
+        problem=SimpleNamespace(
+            lower_bound=None, upper_bound=None, sense="minimize"
+        ),
+        solution=[],
+    )
+
+    class CapturingSolver:
+        def available(self, *, exception_flag: bool = True) -> bool:
+            return True
+
+        def solve(self, *args: object, **kwargs: object) -> object:
+            captured["solve_kwargs"] = kwargs
+            return fake_results
+
+    monkeypatch.setattr(solver_module, "SolverFactory", lambda _: CapturingSolver())
+    with pytest.raises(SolverNotOptimalError):
+        solve_pyomo_model(
+            ConcreteModel(), SolverSettings(name="gurobi", presolve="off")
+        )
+
+    assert captured["solve_kwargs"]["options"] == {
+        "MIPGap": 0.0,
+        "Threads": 1,
+        "TimeLimit": 60.0,
+        "Seed": 202611,
+    }
+    assert "presolve" not in fake_results.urbanheatopt_evidence
+
+
 @pytest.mark.parametrize("threads", [1, 4, 8])
 def test_competition_solver_accepts_frozen_server_thread_counts(threads: int) -> None:
     validate_solver_settings(SolverSettings(threads=threads))
+
+
+@pytest.mark.parametrize("presolve", ["choose", "on", "off"])
+def test_competition_solver_accepts_highs_presolve_modes(presolve: str) -> None:
+    assert SolverSettings().presolve == "choose"
+    validate_solver_settings(SolverSettings(presolve=presolve))
 
 
 def test_competition_solver_writes_mps_hash_log_and_evidence(tmp_path) -> None:
@@ -1676,6 +1721,7 @@ def test_competition_solver_writes_mps_hash_log_and_evidence(tmp_path) -> None:
     results = solve_pyomo_model(
         model,
         SolverSettings(
+            presolve="on",
             model_file=str(model_file),
             log_file=str(log_file),
             evidence_file=str(evidence_file),
@@ -1686,6 +1732,8 @@ def test_competition_solver_writes_mps_hash_log_and_evidence(tmp_path) -> None:
     assert log_file.is_file() and log_file.stat().st_size > 0
     assert evidence_file.is_file()
     assert evidence["accepted"] is True
+    assert evidence["presolve"] == "on"
+    assert json.loads(evidence_file.read_text(encoding="utf-8"))["presolve"] == "on"
     assert evidence["model_sha256"] == __import__("hashlib").sha256(
         model_file.read_bytes()
     ).hexdigest()

@@ -34,6 +34,8 @@ class SolverSettings:
     log_file: str | None = None
     model_file: str | None = None
     evidence_file: str | None = None
+    presolve: str = "choose"
+    feasibility_tolerance: float = 1e-9
 
 
 class SolverNotOptimalError(RuntimeError):
@@ -267,6 +269,12 @@ def validate_solver_settings(settings: SolverSettings) -> None:
         raise TypeError("settings 必须是 SolverSettings")
     if settings.name not in {"highs", "gurobi"}:
         raise ValueError("name 只能是 'highs' 或 'gurobi'")
+    if not isinstance(settings.presolve, str) or settings.presolve not in {
+        "choose",
+        "on",
+        "off",
+    }:
+        raise ValueError("presolve 只能是 'choose'、'on' 或 'off'")
 
     mip_gap = _finite_real(settings.mip_gap, "mip_gap")
     if not 0 <= mip_gap < 1:
@@ -282,6 +290,13 @@ def validate_solver_settings(settings: SolverSettings) -> None:
     time_limit = _finite_real(settings.time_limit_seconds, "time_limit_seconds")
     if time_limit <= 0:
         raise ValueError("time_limit_seconds 必须大于 0")
+
+    feasibility_tolerance = _finite_real(
+        settings.feasibility_tolerance,
+        "feasibility_tolerance",
+    )
+    if not 1e-10 <= feasibility_tolerance <= 1e-4:
+        raise ValueError("feasibility_tolerance must be between 1e-10 and 1e-4")
 
     if (
         isinstance(settings.random_seed, bool)
@@ -325,13 +340,14 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
     if resolved.name == "highs":
         factory_name = "appsi_highs"
         options = {
+            "presolve": resolved.presolve,
             "mip_rel_gap": float(resolved.mip_gap),
             "threads": int(resolved.threads),
             "time_limit": float(resolved.time_limit_seconds),
             "random_seed": int(resolved.random_seed),
-            "primal_feasibility_tolerance": 1e-9,
-            "dual_feasibility_tolerance": 1e-9,
-            "mip_feasibility_tolerance": 1e-9,
+            "primal_feasibility_tolerance": float(resolved.feasibility_tolerance),
+            "dual_feasibility_tolerance": float(resolved.feasibility_tolerance),
+            "mip_feasibility_tolerance": float(resolved.feasibility_tolerance),
         }
         if resolved.threads > 1:
             options["parallel"] = "on"
@@ -401,6 +417,7 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
             else "not_gap_certified"
         ),
         "configured_mip_gap": float(resolved.mip_gap),
+        "configured_feasibility_tolerance": float(resolved.feasibility_tolerance),
         "threads": int(resolved.threads),
         "time_limit_seconds": float(resolved.time_limit_seconds),
         "random_seed": int(resolved.random_seed),
@@ -424,6 +441,8 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
         "logical_cpu_count": os.cpu_count(),
         **metrics,
     }
+    if resolved.name == "highs":
+        evidence["presolve"] = resolved.presolve
     evidence_path = _write_evidence(resolved.evidence_file, evidence)
     if evidence_path is not None:
         evidence["solver_evidence_file"] = evidence_path

@@ -6,7 +6,13 @@ from pyomo.environ import value
 
 from competition.core_model import CoreModelInput, EconomicInput, TechnologySpec, ThermalStorageSpec, build_core_model
 from competition.solvers import SolverSettings, solve_pyomo_model, SolverNotOptimalError
-from competition.road_joint_v2.core import RoadCase, PipeDesign, build_road_model
+from competition.road_joint_v2.core import (
+    RoadCase,
+    PipeDesign,
+    build_road_model,
+    classify_direction_pair,
+    classify_direction_solution,
+)
 from competition.road_joint_v2.results import export_solution, audit_export
 
 
@@ -66,6 +72,92 @@ def test_uniform_pumping_uses_aggregate_flow_and_nonuniform_falls_back():
     optimized_edge_hours = len(aggregate.FLOW_E)*len(aggregate.HOURS)
     assert grade_indexed.nvariables()-aggregate.nvariables() == 4*optimized_edge_hours
     assert grade_indexed.nconstraints()-aggregate.nconstraints() == len(aggregate.K)*optimized_edge_hours
+
+
+def test_direction_relaxation_reduces_binary_and_constraint_counts():
+    exact = build_road_model(shared_case())
+    relaxed = build_road_model(shared_case(), direction_relaxation=True)
+    pair_count = len(exact.FLOW_E)*len(exact.HOURS)
+
+    assert tuple(exact.EXACT_DIRECTION_PAIRS) == (('trunk', 1), ('trunk', 2))
+    assert tuple(relaxed.EXACT_DIRECTION_PAIRS) == ()
+    assert tuple(relaxed.RELAXED_DIRECTION_PAIRS) == (('trunk', 1), ('trunk', 2))
+    assert len(exact._direction_var)-len(relaxed._direction_var) == pair_count
+    assert exact.nvariables()-relaxed.nvariables() == pair_count
+    assert exact.nconstraints()-relaxed.nconstraints() == 3*pair_count
+
+    distributed = build_road_model(shared_case('distributed'), direction_relaxation=True)
+    assert tuple(distributed.EXACT_DIRECTION_PAIRS) == ()
+    assert tuple(distributed.RELAXED_DIRECTION_PAIRS) == ()
+    assert len(distributed._direction_var) == 0
+
+
+def test_direction_relaxation_adds_convex_hull_loss_lower_bound():
+    model = build_road_model(shared_case(), direction_relaxation=True)
+    row = model.direction_relaxation_lower['trunk', 1]
+    for grade in model.K:
+        model.grade['trunk', grade].set_value(int(grade == 'test_1'))
+    half_loss = value(model.edge_loss['trunk'])/2
+    model._forward_var['trunk', 1].set_value(half_loss-.1)
+    model._reverse_var['trunk', 1].set_value(0)
+    assert value(row.body) > value(row.upper)
+    model._forward_var['trunk', 1].set_value(half_loss)
+    assert value(row.body) == pytest.approx(value(row.upper))
+
+
+def test_direction_solution_classification_is_fully_liftable_and_infers_output():
+    model = build_road_model(shared_case(), direction_relaxation=True)
+    model.station_built['S1'].fix(1)
+    solve_pyomo_model(model)
+
+    audit = classify_direction_solution(model)
+    assert audit['liftable']
+    assert audit['violation_pairs'] == ()
+    assert audit['metrics']['pair_count'] == 2
+    assert audit['metrics']['relaxed_pair_count'] == 2
+    assert audit['inferred_directions'] == {('trunk', 1): 1, ('trunk', 2): 1}
+
+
+def test_direction_solution_classification_detects_counterflow_and_loss_shortfall():
+    model = build_road_model(shared_case(), direction_relaxation=True)
+    model.station_built['S1'].fix(1)
+    solve_pyomo_model(model)
+    half_loss = value(model.edge_loss['trunk'])/2
+
+    model._forward_var['trunk', 1].set_value(half_loss)
+    model._reverse_var['trunk', 1].set_value(half_loss)
+    counterflow = classify_direction_solution(model)
+    assert counterflow['violation_pairs'] == (('trunk', 1),)
+    assert counterflow['violations'][0]['counterflow_kW'] == pytest.approx(half_loss)
+    assert counterflow['violations'][0]['loss_shortfall_kW'] == 0
+
+    model._forward_var['trunk', 1].set_value(0)
+    model._reverse_var['trunk', 1].set_value(0)
+    shortfall = classify_direction_solution(model)
+    assert shortfall['violation_pairs'] == (('trunk', 1),)
+    assert shortfall['violations'][0]['counterflow_kW'] == 0
+    assert shortfall['violations'][0]['loss_shortfall_kW'] == pytest.approx(half_loss)
+    assert classify_direction_pair(half_loss, 0, 2*half_loss)['direction'] == 1
+    assert classify_direction_pair(0, half_loss, 2*half_loss)['direction'] == 0
+
+
+def test_direction_relaxation_restores_selected_exact_pair():
+    relaxed = build_road_model(shared_case(), direction_relaxation=True)
+    restored = build_road_model(
+        shared_case(),
+        direction_relaxation=True,
+        exact_direction_pairs=(('trunk', 1),),
+    )
+
+    assert tuple(restored.EXACT_DIRECTION_PAIRS) == (('trunk', 1),)
+    assert tuple(restored.RELAXED_DIRECTION_PAIRS) == (('trunk', 2),)
+    assert ('trunk', 1) in restored._direction_var
+    assert ('trunk', 2) not in restored._direction_var
+    assert restored.nvariables()-relaxed.nvariables() == 1
+    assert restored.nconstraints()-relaxed.nconstraints() == 3
+    restored.station_built['S1'].fix(1)
+    solve_pyomo_model(restored)
+    assert classify_direction_solution(restored)['liftable']
 
 
 def test_service_leaf_flows_are_exact_expressions_and_keep_public_interface():

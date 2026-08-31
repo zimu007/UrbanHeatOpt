@@ -12,7 +12,7 @@ import numpy as np
 from pyomo.environ import value
 from shapely.geometry import LineString, mapping
 
-from competition.road_joint_v2.core import RoadCase
+from competition.road_joint_v2.core import RoadCase, classify_direction_solution
 from competition.road_joint_v2.network import access_options
 
 
@@ -24,6 +24,9 @@ def export_solution(case: RoadCase, model, root: str | Path):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=False)
     m, d, net = model, case.common, case.network
+    inferred_directions = {}
+    if bool(value(getattr(m, 'direction_relaxation', False))):
+        inferred_directions = classify_direction_solution(m)['inferred_directions']
     specs = {x.technology_id: x for x in d.technologies}
     local = next(x for x in d.technologies if x.applicable_scope == 'local')
     timestamps = dict(zip(d.hours, case.timestamps))
@@ -94,8 +97,11 @@ def export_solution(case: RoadCase, model, root: str | Path):
             port_peak = max(abs(port_u),abs(port_v))
             if port_peak > flow_peak:
                 flow_peak, peak_hour = port_peak, h
+            direction = (inferred_directions[e,h]
+                if (e,h) in inferred_directions and (e,h) not in m.DIRECTION_PAIRS
+                else value(m.direction[e,h]))
             edge_hourly.append(dict(edge_id=e,hour=h,timestamp=timestamps[h],signed_flow_kW_th=signed,
-                forward_kW_th=pos,reverse_kW_th=neg,direction=value(m.direction[e,h]),
+                forward_kW_th=pos,reverse_kW_th=neg,direction=direction,
                 port_u_withdrawal_kW_th=port_u,port_v_withdrawal_kW_th=port_v,
                 loss_kW_th=loss,pump_kW_e=value(m.pump[e,h]),
                 utilization=port_peak/row['capacity_kW_th'] if row['capacity_kW_th']>0 else 0.,
@@ -262,9 +268,12 @@ def audit_export(case: RoadCase, root: str | Path):
         pump=edge['length_m']*abs(row.signed_flow_kW_th)*level.pumping_kWh_e_per_kWh_th_m if level else 0.
         record('loss_kW',abs(loss-row.loss_kW_th))
         record('pump_kW',abs(pump-row.pump_kW_e))
+        record('direction_kW',max(0.,-row.forward_kW_th,-row.reverse_kW_th))
         record('direction_kW',min(abs(row.forward_kW_th),abs(row.reverse_kW_th)))
+        record('direction_kW',max(0.,abs(row.direction-round(row.direction)),-row.direction,row.direction-1))
         record('direction_kW',max(0.,row.forward_kW_th*(1-row.direction),row.reverse_kW_th*row.direction))
         record('direction_kW',abs(row.signed_flow_kW_th-row.forward_kW_th+row.reverse_kW_th))
+        record('direction_kW',max(0.,loss/2-max(row.forward_kW_th,row.reverse_kW_th)))
         u,v=row.signed_flow_kW_th+loss/2,-row.signed_flow_kW_th+loss/2
         record('heat_balance_kW',max(abs(u-row.port_u_withdrawal_kW_th),abs(v-row.port_v_withdrawal_kW_th)))
         record('pipe_kW',max(0.,abs(u)-choice.capacity_kW_th,abs(v)-choice.capacity_kW_th))
