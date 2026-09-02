@@ -24,6 +24,7 @@ def export_solution(case: RoadCase, model, root: str | Path):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=False)
     m, d, net = model, case.common, case.network
+    uniform_pumping = bool(value(m.uniform_pumping_flow))
     inferred_directions = {}
     if bool(value(getattr(m, 'direction_relaxation', False))):
         inferred_directions = classify_direction_solution(m)['inferred_directions']
@@ -86,13 +87,14 @@ def export_solution(case: RoadCase, model, root: str | Path):
             network_policy_version=net.get('metadata', {}).get('network_policy_version', 'legacy_single_access'),
             installation_concept=net.get('metadata', {}).get('installation_concept', 'historical_test'))
         flow_peak, peak_hour = 0.0, d.hours[0]
+        loss = value(m.edge_loss[e])
         for h in d.hours:
-            if m.uniform_pumping_flow.value:
+            if uniform_pumping:
                 pos,neg = value(m.forward[e,h]),value(m.reverse[e,h])
             else:
                 pos,neg = (value(sum(getattr(m,attr)[e,k,h] for k in m.K))
                            for attr in ('forward','reverse'))
-            signed, loss = pos-neg, value(m.edge_loss[e])
+            signed = pos-neg
             port_u, port_v = signed+loss/2, -signed+loss/2  # Positive = withdrawal from node into edge.
             port_peak = max(abs(port_u),abs(port_v))
             if port_peak > flow_peak:
@@ -121,12 +123,15 @@ def export_solution(case: RoadCase, model, root: str | Path):
     _json(root/'network_decisions.geojson',dict(type='FeatureCollection',crs={'type':'name','properties':{'name':net['crs']}},features=features))
     names = ['device_investment','fixed_om','pipe_investment','station_investment','connection_investment',
              'storage_investment','electricity_cost','gas_cost','variable_om']
-    pd.DataFrame([dict(component=name,annual_CNY=value(getattr(m,name))) for name in names]).to_csv(root/'cost_breakdown.csv',index=False)
+    reported_costs = {name: value(getattr(m,name)) for name in names}
+    pd.DataFrame([dict(component=name,annual_CNY=reported_costs[name]) for name in names]).to_csv(root/'cost_breakdown.csv',index=False)
+    carbon = value(m.annual_operating_physical_carbon_kgCO2e_per_year)
+    hns_penalty = value(m.annual_hns_penalty_CNY_per_year)
     summary = dict(mode=d.mode,model_version='road_joint_v2',building_count=len(d.demand_nodes),hour_count=len(d.hours),
-        real_cost_CNY=value(m.annual_real_cost_CNY_per_year),hns_penalty_CNY=value(m.annual_hns_penalty_CNY_per_year),
-        carbon_kgCO2e=value(m.annual_operating_physical_carbon_kgCO2e_per_year),
-        carbon_tCO2e=value(m.annual_operating_physical_carbon_kgCO2e_per_year)/1000,
-        policy_carbon_cost_CNY=value(m.policy_carbon_cost),formal_engineering_result=False,
+        real_cost_CNY=fsum(reported_costs.values()),hns_penalty_CNY=hns_penalty,
+        carbon_kgCO2e=carbon,
+        carbon_tCO2e=carbon/1000,
+        policy_carbon_cost_CNY=carbon/1000*case.common.economics.policy_carbon_price_CNY_per_tCO2e,formal_engineering_result=False,
         execution_purpose='source_load_matching_and_optimization_validation',
         network_policy_version=net.get('metadata', {}).get('network_policy_version', 'legacy_single_access'))
     _json(root/'solution_summary.json',summary)

@@ -1566,6 +1566,14 @@ def test_competition_solver_keeps_infeasible_variables_unloaded() -> None:
         (SolverSettings(presolve="auto"), "presolve"),
         (SolverSettings(mip_gap=-0.1), "mip_gap"),
         (SolverSettings(mip_gap=1.0), "mip_gap"),
+        (
+            SolverSettings(mip_gap=0.02, time_limit_acceptance_mip_gap=0.01),
+            "time_limit_acceptance_mip_gap",
+        ),
+        (
+            SolverSettings(time_limit_acceptance_mip_gap=1.0),
+            "time_limit_acceptance_mip_gap",
+        ),
         (SolverSettings(threads=2), "threads"),
         (SolverSettings(threads=16), "threads"),
         (SolverSettings(time_limit_seconds=0), "time_limit_seconds"),

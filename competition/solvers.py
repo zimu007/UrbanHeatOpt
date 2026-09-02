@@ -27,6 +27,7 @@ class SolverSettings:
 
     name: str = "highs"
     mip_gap: float = 0.0
+    time_limit_acceptance_mip_gap: float | None = None
     threads: int = 1
     time_limit_seconds: float = 60.0
     random_seed: int = 202611
@@ -61,6 +62,11 @@ class SolverNotOptimalError(RuntimeError):
         self.solver_evidence_file = evidence.get("solver_evidence_file")
         self.time_limit_seconds = float(settings.time_limit_seconds)
         self.mip_gap_target = float(settings.mip_gap)
+        self.time_limit_acceptance_mip_gap = (
+            float(settings.time_limit_acceptance_mip_gap)
+            if settings.time_limit_acceptance_mip_gap is not None
+            else float(settings.mip_gap)
+        )
         self.threads = int(settings.threads)
         self.random_seed = int(settings.random_seed)
         super().__init__(
@@ -336,6 +342,16 @@ def validate_solver_settings(settings: SolverSettings) -> None:
     if not 0 <= mip_gap < 1:
         raise ValueError("mip_gap 必须在 [0, 1) 内")
 
+    if settings.time_limit_acceptance_mip_gap is not None:
+        acceptance_gap = _finite_real(
+            settings.time_limit_acceptance_mip_gap,
+            "time_limit_acceptance_mip_gap",
+        )
+        if not mip_gap <= acceptance_gap < 1:
+            raise ValueError(
+                "time_limit_acceptance_mip_gap must be in [mip_gap, 1)"
+            )
+
     if (
         isinstance(settings.threads, bool)
         or not isinstance(settings.threads, Integral)
@@ -460,10 +476,15 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
     metrics = _result_metrics(results)
     termination = results.solver.termination_condition
     gap = metrics["relative_mip_gap"]
+    time_limit_acceptance_gap = (
+        float(resolved.time_limit_acceptance_mip_gap)
+        if resolved.time_limit_acceptance_mip_gap is not None
+        else float(resolved.mip_gap)
+    )
     certified = bool(
         metrics["has_feasible_solution"]
         and gap is not None
-        and gap <= float(resolved.mip_gap) + 1e-12
+        and gap <= time_limit_acceptance_gap + 1e-12
     )
     accepted = termination == TerminationCondition.optimal or (
         termination == TerminationCondition.maxTimeLimit and certified
@@ -483,6 +504,7 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
             else "not_gap_certified"
         ),
         "configured_mip_gap": float(resolved.mip_gap),
+        "time_limit_acceptance_mip_gap": time_limit_acceptance_gap,
         "configured_feasibility_tolerance": float(resolved.feasibility_tolerance),
         "threads": int(resolved.threads),
         "time_limit_seconds": float(resolved.time_limit_seconds),
