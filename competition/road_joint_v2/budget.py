@@ -333,6 +333,42 @@ def apply_budget_network_design(model, case: RoadCase, design: dict) -> None:
             model.grade[edge, selected_pipe_type].fix(1)
 
 
+def initialize_budget_hybrid_mip_start(
+    model,
+    case: RoadCase,
+    design: dict,
+    *,
+    policy: str,
+) -> None:
+    """Initialize a feasible all-central or all-distributed hybrid topology."""
+
+    if case.common.mode != "hybrid":
+        raise ValueError("budget hybrid MIP start 只能用于 hybrid 模式")
+    if policy not in {"all_central", "all_distributed"}:
+        raise ValueError("budget hybrid MIP start policy 必须是 all_central 或 all_distributed")
+    selected = float(policy == "all_central")
+    selected_site = design["site_id"]
+    selected_edges = frozenset(design["selected_edge_ids"])
+    selected_options = frozenset(design["selected_access_options"].values())
+    pipe_type_by_edge = design["pipe_type_by_edge"]
+    for building in model.DEMAND_NODES:
+        model.connected[building].set_value(selected)
+    for site in model.S:
+        if site == selected_site:
+            model.station_built[site].set_value(selected)
+            for technology in model.T:
+                model.installed[site, technology].set_value(selected)
+    for option in model.ACCESS:
+        if option in selected_options:
+            model.access_selected[option].set_value(selected)
+    for edge in model.E:
+        if edge not in selected_edges:
+            continue
+        model.built[edge].set_value(selected)
+        model.grade[edge, pipe_type_by_edge[edge]].set_value(selected)
+    model._urbanheatopt_mip_start_policy = f"budget_hybrid_{policy}"
+
+
 def build_budget_case(
     full_case: RoadCase,
     *,

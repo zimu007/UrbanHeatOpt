@@ -48,6 +48,14 @@ def test_task_guard_and_small_three_mode_epsilon_run(tmp_path):
     assert all(frontier.mode_frontiers.values())
     assert len(frontier.mode_frontiers['central'])>=3
     assert len(frontier.combined_frontier)>=3
+    epsilon_request=json.loads((root/'tasks'/'central-epsilon-000'/'attempt_0001'/'task_request.json').read_text(encoding='utf-8'))
+    carbon_endpoint=json.loads((root/'tasks'/'central-carbon'/'success.json').read_text(encoding='utf-8'))['point']
+    epsilon_result=json.loads((root/'tasks'/'central-epsilon-000'/'success.json').read_text(encoding='utf-8'))['point']
+    assert epsilon_request['epsilon']==carbon_endpoint['annual_operating_carbon_kgCO2e_per_year']
+    assert epsilon_request['epsilon_constraint_tolerance_kgCO2e_per_year']==1e-6
+    assert epsilon_request['enforced_epsilon_upper_bound_kgCO2e_per_year']==pytest.approx(epsilon_request['epsilon']+1e-6)
+    assert epsilon_result['epsilon_kgCO2e_per_year']==epsilon_request['epsilon']
+    assert epsilon_result['annual_operating_carbon_kgCO2e_per_year']<=epsilon_request['epsilon']+1e-6
     # Carbon-only capacities may be arbitrary; the epsilon=carbon endpoint
     # solve must remove the more expensive same-carbon decision from frontier.
     minimum_carbon=min(p.annual_operating_carbon_kgCO2e_per_year for p in frontier.mode_frontiers['central'])
@@ -161,6 +169,28 @@ def test_first_full_season_task_and_worker_reservation_guards(tmp_path,monkeypat
     (occupied/'worker_reservation.json').write_text(json.dumps({'pid':1,'attempt':'attempt_0001'}),encoding='utf-8')
     with pytest.raises(ValueError,match='已有工作进程'):
         run_task(tmp_path/'case','central-cost')
+
+
+def test_failed_worker_reservation_is_archived_before_retry(tmp_path,monkeypatch):
+    root=tmp_path/'retry_failed_worker'
+    create_plan(shared_case(),root,point_count=5,full_scale=False)
+    task_root=root/'tasks'/'central-cost'
+    failed_attempt=task_root/'attempt_0001'
+    failed_attempt.mkdir(parents=True)
+    (failed_attempt/'failure.json').write_text(json.dumps({'error':'synthetic failure'}),encoding='utf-8')
+    reservation={'pid':1,'attempt':'attempt_0001','created_at':'synthetic'}
+    (task_root/'worker_reservation.json').write_text(json.dumps(reservation),encoding='utf-8')
+    monkeypatch.setattr(
+        'competition.road_joint_v2.tasks.build_road_model',
+        lambda *_args,**_kwargs: (_ for _ in ()).throw(RuntimeError('stop after reservation rollover')),
+    )
+    with pytest.raises(RuntimeError,match='reservation rollover'):
+        run_task(root,'central-cost',settings=SolverSettings(mip_gap=0.,threads=1))
+    archived=json.loads((failed_attempt/'worker_reservation.json').read_text(encoding='utf-8'))
+    active=json.loads((task_root/'worker_reservation.json').read_text(encoding='utf-8'))
+    assert archived==reservation
+    assert active['attempt']=='attempt_0002'
+    assert (task_root/'attempt_0002'/'failure.json').exists()
 
 
 def test_real_pipeline_stops_before_solver_when_geometry_fails(tmp_path,monkeypatch):

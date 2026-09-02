@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from pyomo.environ import Objective
+from pyomo.environ import Objective, value
 import pytest
 
 from competition.core_model import CoreModelInput, EconomicInput, SegmentSpec, TechnologySpec
-from competition.pareto import ParetoSpec, solve_case_pareto, solve_mode_pareto
+from competition.pareto import ParetoSpec, solve_case_pareto, solve_mode_pareto, solve_pareto_task
 from competition.solvers import SolverSettings
 
 
@@ -71,6 +71,41 @@ def test_cost_and_carbon_endpoints_switch_the_same_model_physics() -> None:
 def test_pareto_spec_rejects_invalid_point_count() -> None:
     with pytest.raises(ValueError, match="point_count"):
         solve_mode_pareto(_data(), SolverSettings(), ParetoSpec(point_count=2))
+
+
+def test_epsilon_constraint_tolerance_is_independent_from_frontier_tolerance() -> None:
+    requested_epsilon = 0.0
+    spec = ParetoSpec(
+        point_count=0,
+        carbon_tolerance_kgCO2e_per_year=0.0,
+        epsilon_constraint_tolerance_kgCO2e_per_year=1e-6,
+    )
+    point, solution = solve_pareto_task(
+        _data(),
+        SolverSettings(mip_gap=0),
+        spec,
+        point_id="central-epsilon-boundary",
+        objective="cost",
+        epsilon_kgCO2e_per_year=requested_epsilon,
+    )
+    assert point.epsilon_kgCO2e_per_year == requested_epsilon
+    assert value(solution.model.pareto_carbon_limit.upper) == pytest.approx(1e-6)
+    assert point.annual_operating_carbon_kgCO2e_per_year <= requested_epsilon + 1e-6
+
+
+def test_epsilon_constraint_tolerance_must_be_finite_and_nonnegative() -> None:
+    with pytest.raises(ValueError, match="epsilon_constraint_tolerance"):
+        solve_pareto_task(
+            _data(),
+            SolverSettings(mip_gap=0),
+            ParetoSpec(
+                point_count=0,
+                epsilon_constraint_tolerance_kgCO2e_per_year=-1e-6,
+            ),
+            point_id="invalid-epsilon-tolerance",
+            objective="cost",
+            epsilon_kgCO2e_per_year=0.0,
+        )
 
 
 def test_endpoint_only_mode_solves_exactly_two_points() -> None:

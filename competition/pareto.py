@@ -23,6 +23,7 @@ class ParetoSpec:
     unserved_tolerance_kWh: float = 1e-6
     cost_tolerance_CNY_per_year: float = 1e-6
     carbon_tolerance_kgCO2e_per_year: float = 1e-6
+    epsilon_constraint_tolerance_kgCO2e_per_year: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,8 +79,11 @@ def _validate_spec(spec: ParetoSpec) -> None:
         "unserved_tolerance_kWh",
         "cost_tolerance_CNY_per_year",
         "carbon_tolerance_kgCO2e_per_year",
+        "epsilon_constraint_tolerance_kgCO2e_per_year",
     ):
         number = getattr(spec, field)
+        if number is None and field == "epsilon_constraint_tolerance_kgCO2e_per_year":
+            continue
         if isinstance(number, bool) or not isinstance(number, (int, float)) or not isfinite(float(number)) or number < 0:
             raise ValueError(f"Pareto {field} 必须是有限非负数")
 
@@ -109,9 +113,14 @@ def _solve_point(
         <= enforced_unserved_limit
     )
     if epsilon is not None:
+        epsilon_tolerance = (
+            spec.carbon_tolerance_kgCO2e_per_year
+            if spec.epsilon_constraint_tolerance_kgCO2e_per_year is None
+            else spec.epsilon_constraint_tolerance_kgCO2e_per_year
+        )
         model.pareto_carbon_limit = Constraint(
             expr=model.annual_operating_physical_carbon_kgCO2e_per_year
-            <= float(epsilon) + spec.carbon_tolerance_kgCO2e_per_year
+            <= float(epsilon) + epsilon_tolerance
         )
     if objective == "carbon":
         model.annual_cost_objective.deactivate()
@@ -304,6 +313,7 @@ def solve_pareto_task(
 ) -> tuple[ParetoPoint, CoreSolveResult]:
     """Solve one independently schedulable point using unchanged core physics."""
 
+    _validate_spec(spec)
     resolved_labels = labels or (
         ("cost_endpoint",)
         if objective == "cost" and epsilon_kgCO2e_per_year is None

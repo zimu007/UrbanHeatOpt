@@ -262,6 +262,62 @@ def _write_evidence(path_value: str | None, payload: dict[str, Any]) -> str | No
     return str(path)
 
 
+def _install_highs_mip_start(solver: Any, model: Any) -> dict[str, Any]:
+    """Pass initialized discrete Pyomo values to the native HiGHS model."""
+
+    import numpy as np
+    import pyomo
+    from pyomo.core.base.var import Var
+
+    solver.set_instance(model)
+    native = getattr(solver, "_solver_model", None)
+    variable_map = getattr(solver, "_pyomo_var_to_solver_var_map", None)
+    if native is None or not isinstance(variable_map, dict):
+        raise RuntimeError("appsi_highs 不支持当前模型的原生 MIP start 注入")
+    indices: list[int] = []
+    values: list[float] = []
+    unmapped_count = 0
+    for variable in model.component_data_objects(Var, active=True, descend_into=True):
+        if not variable.is_integer() or variable.value is None:
+            continue
+        normalized = float(variable.value)
+        if not isfinite(normalized):
+            raise ValueError(f"MIP start 变量 {variable.name} 不是有限数值")
+        solver_index = variable_map.get(id(variable))
+        if solver_index is None:
+            unmapped_count += 1
+            continue
+        indices.append(int(solver_index))
+        values.append(normalized)
+    if not indices:
+        raise ValueError("模型请求 MIP start，但没有已初始化的离散变量")
+    index_array = np.asarray(indices, dtype=np.int32)
+    value_array = np.asarray(values, dtype=np.float64)
+    evidence = {
+        "mip_start_adapter": "pyomo_appsi_highs_native_after_update_v1",
+        "mip_start_pyomo_version": str(pyomo.__version__),
+        "mip_start_highs_version": str(native.version()),
+        "mip_start_policy": str(model._urbanheatopt_mip_start_policy),
+        "mip_start_discrete_value_count": len(indices),
+        "mip_start_unmapped_discrete_value_count": unmapped_count,
+        "mip_start_install_status": "pending",
+    }
+    original_update = solver.update
+
+    def update_with_mip_start(*args: Any, **kwargs: Any) -> Any:
+        result = original_update(*args, **kwargs)
+        status = native.setSolution(len(indices), index_array, value_array)
+        evidence["mip_start_install_status"] = str(status)
+        if not str(status).endswith("kOk"):
+            raise RuntimeError(f"HiGHS 拒绝 MIP start：{status}")
+        return result
+
+    # LegacySolver.solve() performs one update after set_instance(). Installing
+    # the start before that update is ineffective because HiGHS clears it.
+    solver.update = update_with_mip_start
+    return evidence
+
+
 def validate_solver_settings(settings: SolverSettings) -> None:
     """在创建求解器前验证全部设置。"""
 
@@ -371,6 +427,12 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
             f"请求的求解器 {resolved.name!r} 在当前环境中不可用；"
             "不会自动切换到其他求解器"
         )
+    mip_start_evidence: dict[str, Any] = {}
+    mip_start_policy = getattr(model, "_urbanheatopt_mip_start_policy", None)
+    if mip_start_policy is not None:
+        if resolved.name != "highs":
+            raise RuntimeError("当前可审计 MIP start 仅支持 highs")
+        mip_start_evidence = _install_highs_mip_start(solver, model)
 
     try:
         results = solver.solve(
@@ -379,6 +441,10 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
             load_solutions=False,
             options=options,
         )
+        if mip_start_evidence and not str(
+            mip_start_evidence.get("mip_start_install_status")
+        ).endswith("kOk"):
+            raise RuntimeError("请求的 HiGHS MIP start 未实际安装，拒绝继续")
     finally:
         if highs_log_proxy is not None:
             # HiGHS keeps the log handle open after run() on Windows.  Resetting
@@ -439,6 +505,7 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
         "python_version": platform.python_version(),
         "platform": platform.platform(),
         "logical_cpu_count": os.cpu_count(),
+        **mip_start_evidence,
         **metrics,
     }
     if resolved.name == "highs":

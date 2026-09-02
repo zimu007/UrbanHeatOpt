@@ -17,6 +17,7 @@ from competition.road_joint_v2.core import build_road_model, classify_direction_
 from competition.road_joint_v2.budget import (
     apply_budget_network_design,
     build_budget_network_design,
+    initialize_budget_hybrid_mip_start,
 )
 from competition.road_joint_v2.results import export_solution
 
@@ -338,7 +339,10 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
         write_json(attempt/'failure.json',dict(error='gap过宽',solver_success=False))
         raise ValueError(f'任务gap不得宽于冻结门槛 {gap_limit}')
     resolved=replace(resolved,log_file=str(attempt/'solver.log'),model_file=str(attempt/'model.mps'),evidence_file=str(attempt/'solver_evidence.json'))
+    epsilon_constraint_tolerance=1e-6
     write_json(attempt/'task_request.json',dict(task=task,settings=asdict(resolved),epsilon=epsilon,
+        epsilon_constraint_tolerance_kgCO2e_per_year=(epsilon_constraint_tolerance if epsilon is not None else None),
+        enforced_epsilon_upper_bound_kgCO2e_per_year=(epsilon+epsilon_constraint_tolerance if epsilon is not None else None),
         building_count=len(case.common.demand_nodes),hour_count=len(case.common.hours),case_sha256=plan['case_sha256'],
         execution_profile=plan.get('execution_profile','strict_v2'),
         result_qualification=plan.get('result_qualification','strict_model_horizon')))
@@ -354,6 +358,14 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
             model=build_road_model(case,direction_relaxation=direction_relaxation)
             if plan.get('execution_profile')=='budget_50m_v1':
                 apply_budget_network_design(model,case,plan['budget_network_design'])
+                if case.common.mode=='hybrid' and resolved.name=='highs':
+                    central_carbon=_completed(root,'central-carbon',model_verification='deferred')
+                    use_distributed=(task['objective']=='carbon' or (
+                        epsilon is not None and central_carbon is not None
+                        and epsilon<central_carbon.annual_operating_carbon_kgCO2e_per_year))
+                    initialize_budget_hybrid_mip_start(
+                        model,case,plan['budget_network_design'],
+                        policy=('all_distributed' if use_distributed else 'all_central'))
             write_json(attempt/'model_build_completed.json',dict(
                 seconds=perf_counter()-clock, variables=model.nvariables(), constraints=model.nconstraints(),
                 flow_formulation=('aggregate_uniform_pumping' if model.uniform_pumping_flow.value
@@ -366,12 +378,15 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
                 exact_direction_pair_count=len(model.EXACT_DIRECTION_PAIRS),
                 relaxed_direction_pair_count=len(model.RELAXED_DIRECTION_PAIRS),
                 budget_network_design_applied=(plan.get('execution_profile')=='budget_50m_v1'),
+                mip_start_policy=getattr(model,'_urbanheatopt_mip_start_policy',None),
                 completed_at=datetime.now(timezone.utc).isoformat(), solver_instantiated=False))
             return model
-        # Keep the requested epsilon exact. Adding the same tolerance to the
-        # mathematical cap and the dominance filter can retain a spurious
-        # expensive carbon endpoint after round-off at their common boundary.
-        point,solution=solve_pareto_task(case.common,resolved,ParetoSpec(plan['point_count'],carbon_tolerance_kgCO2e_per_year=0.),
+        # Keep the requested epsilon in the result while giving only the
+        # mathematical constraint its QA-scale numerical margin. Keeping this
+        # separate from the frontier tolerance preserves endpoint dominance.
+        point,solution=solve_pareto_task(case.common,resolved,ParetoSpec(
+            plan['point_count'],carbon_tolerance_kgCO2e_per_year=0.,
+            epsilon_constraint_tolerance_kgCO2e_per_year=epsilon_constraint_tolerance),
             point_id=task_id,objective=task['objective'],epsilon_kgCO2e_per_year=epsilon,
             model_builder=measured_builder)
         direction_audit=None
@@ -387,7 +402,7 @@ def _execute(root,plan,task,epsilon,settings,*,namespace,gap_limit):
         gap=evidence.get('relative_mip_gap')
         if gap is None or gap>resolved.mip_gap+1e-12:
             raise ValueError('缺少可认证gap，不能导出成功结果')
-        if epsilon is not None and point.annual_operating_carbon_kgCO2e_per_year>epsilon+1e-6:
+        if epsilon is not None and point.annual_operating_carbon_kgCO2e_per_year>epsilon+epsilon_constraint_tolerance:
             raise ValueError('实际碳排超过epsilon上限及1e-6校核容差')
         qa=export_solution(case,solution.model,attempt/'solution')
         verify_plan(root)

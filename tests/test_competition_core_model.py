@@ -1660,6 +1660,64 @@ def test_competition_highs_uses_reproducible_options_and_delays_loading(
     assert value(model.x) == pytest.approx(1.0)
 
 
+def test_competition_highs_installs_audited_discrete_mip_start() -> None:
+    model = ConcreteModel()
+    model.x = Var(domain=Binary, initialize=1)
+    model.unmapped = Var(domain=Binary, initialize=0)
+    model.objective = Objective(expr=model.x)
+    model.lower = Constraint(expr=model.x >= 1)
+    model._urbanheatopt_mip_start_policy = "unit_test_feasible_binary"
+
+    results = solve_pyomo_model(model, SolverSettings(mip_gap=0.0))
+    evidence = solver_module.get_solver_evidence(results)
+
+    assert value(model.x) == pytest.approx(1.0)
+    assert evidence["mip_start_policy"] == "unit_test_feasible_binary"
+    assert evidence["mip_start_adapter"] == "pyomo_appsi_highs_native_after_update_v1"
+    assert evidence["mip_start_pyomo_version"]
+    assert evidence["mip_start_highs_version"]
+    assert evidence["mip_start_discrete_value_count"] == 1
+    assert evidence["mip_start_unmapped_discrete_value_count"] == 1
+    assert evidence["mip_start_install_status"].endswith("kOk")
+
+
+def test_competition_highs_mip_start_fails_closed_if_update_hook_is_bypassed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NativeWithoutRun:
+        def version(self) -> str:
+            return "test"
+
+        def setSolution(self, *_args: object) -> object:
+            raise AssertionError("绕过 update 时不应安装 MIP start")
+
+    class SolverWithoutUpdateCall:
+        def __init__(self) -> None:
+            self._solver_model = NativeWithoutRun()
+            self._pyomo_var_to_solver_var_map: dict[int, int] = {}
+
+        def available(self, *, exception_flag: bool = True) -> bool:
+            return True
+
+        def set_instance(self, model: object) -> None:
+            self._pyomo_var_to_solver_var_map = {id(model.x): 0}
+
+        def update(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def solve(self, *_args: object, **_kwargs: object) -> object:
+            return object()
+
+    model = ConcreteModel()
+    model.x = Var(domain=Binary, initialize=1)
+    model.objective = Objective(expr=model.x)
+    model._urbanheatopt_mip_start_policy = "must_be_installed"
+    monkeypatch.setattr(solver_module, "SolverFactory", lambda _name: SolverWithoutUpdateCall())
+
+    with pytest.raises(RuntimeError, match="未实际安装"):
+        solve_pyomo_model(model, SolverSettings())
+
+
 def test_competition_presolve_setting_does_not_change_gurobi_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
