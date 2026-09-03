@@ -356,7 +356,7 @@ def create_compact_plan(
             "feasibility_tolerance": 1e-7,
             "scan_model_snapshot_policy": (
                 "omit_redundant_mps; immutable case/source/tree hashes plus model_build "
-                "metadata certify scans; every final replay stores MPS"
+                "metadata certify scans; every final replay stores one numeric-label MPS"
             ),
         },
         "wallclock_budget_seconds": float(wallclock_budget_seconds),
@@ -1684,6 +1684,13 @@ def _verify_replay_success(root: Path, point_id: str) -> dict[str, Any] | None:
     payload = _read_json(path)
     if payload.get("schema") != RESULT_SCHEMA or payload.get("qa", {}).get("passed") is not True:
         raise ValueError(f"final replay is not QA-certified: {point_id}")
+    plan = _read_json(root / "compact_task_plan.json")
+    if (
+        payload.get("task_plan_sha256") != file_hash(root / "compact_task_plan.json")
+        or payload.get("case_sha256") != plan.get("case_sha256")
+        or payload.get("mathematics_sha256") != plan.get("mathematics_sha256")
+    ):
+        raise ValueError(f"final replay evidence hashes do not match the plan: {point_id}")
     for relative, digest in payload.get("output_sha256", {}).items():
         target = (root / relative).resolve()
         try:
@@ -1761,6 +1768,9 @@ def _replay_final_point(
         random_seed=202611,
         tee=False,
         log_file=str(attempt / "solver.log"),
+        # Scan tasks omit redundant snapshots, but each selected final point
+        # keeps its own exact fixed-decision LP.  Different Pareto points have
+        # different fixed bounds/epsilon rows and therefore must not share MPS.
         model_file=str(attempt / "model.mps"),
         evidence_file=str(attempt / "solver_evidence.json"),
         presolve="on",
@@ -1826,6 +1836,9 @@ def _replay_final_point(
             "solution_directory": _relative(root, attempt / "solution"),
             "solver_evidence_file": _relative(root, attempt / "solver_evidence.json"),
             "output_sha256": output_hashes,
+            "task_plan_sha256": file_hash(root / "compact_task_plan.json"),
+            "case_sha256": plan["case_sha256"],
+            "mathematics_sha256": plan["mathematics_sha256"],
             "completed_at": _utcnow(),
         }
         _atomic_json(replay_root / "success.json", payload, exclusive=True)

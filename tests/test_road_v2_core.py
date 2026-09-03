@@ -367,6 +367,45 @@ def test_export_detects_thermal_dispatch_tamper(tmp_path):
     assert not audit_export(case,root)['passed']
 
 
+def test_export_audit_is_invariant_to_network_hourly_row_order(tmp_path):
+    import pandas as pd
+    case=shared_case()
+    root=tmp_path/'solution'
+    baseline=export_solution(case,solve(case,'S1'),root)
+    flow=pd.read_parquet(root/'network_hourly.parquet')
+    shuffled=flow.iloc[::-1].reset_index(drop=True)
+    assert not shuffled[['edge_id','hour']].equals(flow[['edge_id','hour']])
+    shuffled.to_parquet(root/'network_hourly.parquet',index=False)
+
+    verdict=audit_export(case,root)
+
+    assert verdict['passed']
+    assert verdict['max_errors'].keys() == baseline['max_errors'].keys()
+    for key, expected in baseline['max_errors'].items():
+        assert verdict['max_errors'][key] == pytest.approx(expected,abs=1e-9)
+    assert 'total' in verdict['timing_seconds']
+    assert verdict['timing_seconds']['total'] >= 0
+
+
+@pytest.mark.parametrize('mutation',['duplicate','missing'])
+def test_export_audit_detects_network_hourly_coverage_errors(tmp_path,mutation):
+    import pandas as pd
+    case=shared_case()
+    root=tmp_path/'solution'
+    export_solution(case,solve(case,'S1'),root)
+    flow=pd.read_parquet(root/'network_hourly.parquet')
+    if mutation=='duplicate':
+        flow.iloc[0]=flow.iloc[1]
+    else:
+        flow=flow.iloc[:-1]
+    flow.to_parquet(root/'network_hourly.parquet',index=False)
+
+    verdict=audit_export(case,root)
+
+    assert not verdict['passed']
+    assert 'network_coverage' in verdict['violations']
+
+
 @pytest.mark.parametrize('target',['pipe_nan','summary_nan','pipe_cost','cost_nan'])
 def test_export_rejects_nonfinite_or_inconsistent_static_records(tmp_path,target):
     import pandas as pd

@@ -6,6 +6,7 @@ import pytest
 
 from competition.pareto import ParetoPoint
 from competition.core_model import ThermalStorageSpec
+from competition.road_joint_v2.economic_package import file_hash
 from competition.road_joint_v2.compact_tasks import (
     RESULT_SCHEMA,
     _strictly_exceeds_with_roundoff,
@@ -293,4 +294,15 @@ def test_real_small_distributed_task_closes_solver_export_and_qa_loop(tmp_path):
     assert replay["fixed_pipe_grade_binary_count"] == 6
     assert replay["fixed_tes_install_binary_count"] == 0
     assert replay["qa"]["export_independent_qa"]["passed"]
-    assert (root / "final_replay" / "distributed-unique" / "attempt_0001" / "model.mps").is_file()
+    replay_attempt = root / "final_replay" / "distributed-unique" / "attempt_0001"
+    assert (replay_attempt / "model.mps").is_file()
+    replay_evidence = json.loads(
+        (replay_attempt / "solver_evidence.json").read_text(encoding="utf-8")
+    )
+    assert Path(replay_evidence["model_file"]).resolve() == (
+        replay_attempt / "model.mps"
+    ).resolve()
+    assert replay_evidence["model_sha256"] == file_hash(replay_attempt / "model.mps")
+    assert replay["task_plan_sha256"]
+    assert replay["case_sha256"]
+    assert replay["mathematics_sha256"]

@@ -2,6 +2,7 @@
 from dataclasses import replace
 import json
 
+import pandas as pd
 import pytest
 from pyomo.environ import Objective, Var, value
 
@@ -13,6 +14,7 @@ from competition.road_joint_v2.compact import (
     export_compact_solution,
 )
 from competition.road_joint_v2.core import build_road_model
+from competition.road_joint_v2.results import export_solution
 from competition.solvers import solve_pyomo_model
 from tests.test_road_v2_core import shared_case
 
@@ -59,6 +61,35 @@ def _fix_generic_to_compact_design(model, case, design, connected):
                 model.grade[edge, grade].fix(
                     float(grade == design.pipe_type_by_edge[edge])
                 )
+
+
+def test_vectorized_compact_export_matches_scalar_export(tmp_path):
+    case = shared_case("hybrid")
+    model = build_compact_model(case, _design(case))
+    solve_pyomo_model(model)
+
+    fast_root = tmp_path / "fast"
+    fast_qa = export_compact_solution(case, model, fast_root)
+    assert model._compact_export_views_materialized is True
+
+    # Keep the identical cached public facades but force the generic scalar
+    # assembly path.  It is the pre-vectorization reference implementation.
+    model._compact_export_views_materialized = False
+    scalar_root = tmp_path / "scalar"
+    scalar_qa = export_solution(case, model, scalar_root)
+
+    for filename in ("building_hourly.parquet", "network_hourly.parquet"):
+        pd.testing.assert_frame_equal(
+            pd.read_parquet(fast_root / filename),
+            pd.read_parquet(scalar_root / filename),
+            check_exact=False,
+            atol=1e-12,
+            rtol=0,
+        )
+    assert fast_qa["passed"] is scalar_qa["passed"] is True
+    assert fast_qa["violations"] == scalar_qa["violations"]
+    for key, expected in scalar_qa["max_errors"].items():
+        assert fast_qa["max_errors"][key] == pytest.approx(expected, abs=1e-9)
 
 
 def test_designs_are_rooted_trees_with_exact_original_edge_partition():

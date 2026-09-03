@@ -1215,6 +1215,7 @@ def materialize_compact_export_views(case: RoadCase, model) -> None:
     midpoint = np.zeros((len(edge_order), len(hour_order)), dtype=float)
     orientation = np.zeros(len(edge_order), dtype=float)
     direction = np.zeros(len(edge_order), dtype=float)
+    edge_loss = np.zeros(len(edge_order), dtype=float)
     pump_rate = np.zeros(len(edge_order), dtype=float)
     edge_lookup = {edge["edge_id"]: edge for edge in case.network["edges"]}
     levels = {level.pipe_type_id: level for level in case.pipe_designs}
@@ -1222,6 +1223,7 @@ def materialize_compact_export_views(case: RoadCase, model) -> None:
         target = edge_index[edge]
         midpoint[target, :] = selected_midpoint[row, :]
         orientation[target] = design.orientation_by_edge[edge]
+        edge_loss[target] = loss[edge]
         direction[target] = (
             float(p.value(model.built[edge]))
             if design.orientation_by_edge[edge] == 1 else 0.0
@@ -1262,6 +1264,10 @@ def materialize_compact_export_views(case: RoadCase, model) -> None:
     # avoids re-expanding 400k+ affine Pyomo expressions after every scan solve.
     model._compact_midpoint_matrix = midpoint
     model._compact_edge_index = edge_index
+    model._compact_orientation_vector = orientation
+    model._compact_direction_vector = direction
+    model._compact_edge_loss_vector = edge_loss
+    model._compact_pump_rate_vector = pump_rate
     model._compact_demand_matrix = demand
     model._compact_connection_vector = connection
     model._compact_export_views_materialized = True
