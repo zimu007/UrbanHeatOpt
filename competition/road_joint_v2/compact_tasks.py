@@ -31,10 +31,10 @@ from competition.solvers import SolverSettings, get_solver_evidence, solve_pyomo
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
-PLAN_SCHEMA = "road_joint_v2_compact_fullseason_tasks_1"
-STATUS_SCHEMA = "road_joint_v2_compact_fullseason_status_1"
+PLAN_SCHEMA = "road_joint_v2_compact_fullseason_tasks_2"
+STATUS_SCHEMA = "road_joint_v2_compact_fullseason_status_2"
 RESULT_SCHEMA = "road_joint_v2_compact_fullseason_result_1"
-PROFILE = "compact_fullseason_v1"
+PROFILE = "compact_fullseason_unlimited_v1"
 EPSILON_FRACTIONS = (0.25, 0.50, 0.75)
 EPSILON_TOLERANCE = 1e-6
 
@@ -123,8 +123,8 @@ def _validate_plan_settings(
     *,
     max_parallel: int,
     threads: int,
-    wallclock_budget_seconds: float,
-    task_time_limit_seconds: float,
+    wallclock_budget_seconds: float | None,
+    task_time_limit_seconds: float | None,
     scan_gap: float,
     acceptance_gap: float,
 ) -> None:
@@ -136,12 +136,12 @@ def _validate_plan_settings(
         ("wallclock_budget_seconds", wallclock_budget_seconds),
         ("task_time_limit_seconds", task_time_limit_seconds),
     ):
+        if number is None:
+            continue
         if isinstance(number, bool) or not isinstance(number, (int, float)):
-            raise ValueError(f"{name} must be finite and positive")
+            raise ValueError(f"{name} must be null or finite and positive")
         if not isfinite(float(number)) or float(number) <= 0:
-            raise ValueError(f"{name} must be finite and positive")
-    if abs(float(wallclock_budget_seconds) - 3000.0) > 1e-9:
-        raise ValueError("compact_fullseason_v1 has a fixed 3000-second hard budget")
+            raise ValueError(f"{name} must be null or finite and positive")
     for name, gap in (("scan_gap", scan_gap), ("acceptance_gap", acceptance_gap)):
         if isinstance(gap, bool) or not isinstance(gap, (int, float)):
             raise ValueError(f"{name} must be a finite fraction")
@@ -271,8 +271,8 @@ def create_compact_plan(
     expected_site_count: int | None = None,
     max_parallel: int = 4,
     threads: int = 4,
-    wallclock_budget_seconds: float = 3000.0,
-    task_time_limit_seconds: float = 240.0,
+    wallclock_budget_seconds: float | None = None,
+    task_time_limit_seconds: float | None = None,
     scan_gap: float = 0.01,
     acceptance_gap: float = 0.03,
     enable_tes: bool = False,
@@ -352,23 +352,45 @@ def create_compact_plan(
             "scan_mip_gap": float(scan_gap),
             "acceptance_mip_gap": float(acceptance_gap),
             "final_target_mip_gap": 0.005,
-            "task_time_limit_seconds": float(task_time_limit_seconds),
+            "task_time_limit_seconds": (
+                float(task_time_limit_seconds)
+                if task_time_limit_seconds is not None
+                else None
+            ),
             "feasibility_tolerance": 1e-7,
             "scan_model_snapshot_policy": (
                 "omit_redundant_mps; immutable case/source/tree hashes plus model_build "
                 "metadata certify scans; every final replay stores one numeric-label MPS"
             ),
         },
-        "wallclock_budget_seconds": float(wallclock_budget_seconds),
+        "wallclock_budget_seconds": (
+            float(wallclock_budget_seconds)
+            if wallclock_budget_seconds is not None
+            else None
+        ),
+        "resource_limits": {
+            "wallclock_time_limit_seconds": (
+                float(wallclock_budget_seconds)
+                if wallclock_budget_seconds is not None
+                else None
+            ),
+            "solver_time_limit_seconds": (
+                float(task_time_limit_seconds)
+                if task_time_limit_seconds is not None
+                else None
+            ),
+            "memory_limit_bytes": None,
+            "memory_guard_enabled": False,
+        },
         "storage_policy": {
             "baseline": "no_tes",
             "tes_hook": (
-                "two_minute_gate_then_full_family_or_fallback"
+                "single_task_validation_gate_then_full_family_or_fallback"
                 if enable_tes else "disabled_by_plan"
             ),
             "enable_tes": bool(enable_tes),
             "tes_gate_task_id": "tes-hybrid-site-01-cost" if enable_tes else None,
-            "tes_gate_time_limit_seconds": 120.0 if enable_tes else None,
+            "tes_gate_time_limit_seconds": None,
         },
         "result_qualification": (
             "certified_within_five_fixed-root_shortest-path-tree_candidates; "
@@ -385,7 +407,7 @@ def verify_compact_plan(root: str | Path) -> dict[str, Any]:
     plan_path = root / "compact_task_plan.json"
     plan = _read_json(plan_path)
     if plan.get("schema") != PLAN_SCHEMA or plan.get("execution_profile") != PROFILE:
-        raise ValueError("run root is not a compact_fullseason_v1 plan")
+        raise ValueError("run root is not a compact_fullseason_unlimited_v1 plan")
     if plan.get("case_sha256") != file_hash(root / "case.json"):
         raise ValueError("compact case hash changed; create a fresh run root")
     if plan.get("mathematics_sha256") != compact_mathematics_hashes():
@@ -400,6 +422,14 @@ def verify_compact_plan(root: str | Path) -> dict[str, Any]:
         scan_gap=plan["solver"]["scan_mip_gap"],
         acceptance_gap=plan["solver"]["acceptance_mip_gap"],
     )
+    expected_resource_limits = {
+        "wallclock_time_limit_seconds": plan["wallclock_budget_seconds"],
+        "solver_time_limit_seconds": plan["solver"]["task_time_limit_seconds"],
+        "memory_limit_bytes": None,
+        "memory_guard_enabled": False,
+    }
+    if plan.get("resource_limits") != expected_resource_limits:
+        raise ValueError("compact resource-limit declaration is inconsistent")
     if plan.get("storage_policy", {}).get("enable_tes") not in {False, True}:
         raise ValueError("compact storage policy has an invalid enable_tes flag")
     return plan
@@ -968,12 +998,16 @@ def _settings_for_attempt(
     carbon_certificate: bool = False,
 ) -> SolverSettings:
     prefix = "carbon_certificate_" if carbon_certificate else ""
-    time_limit = float(plan["solver"]["task_time_limit_seconds"])
+    configured_limit = plan["solver"].get("task_time_limit_seconds")
+    time_limit = float(configured_limit) if configured_limit is not None else None
     if task is not None and task.get("tes_gate"):
-        time_limit = min(
-            time_limit,
-            float(plan["storage_policy"]["tes_gate_time_limit_seconds"]),
-        )
+        gate_limit = plan["storage_policy"].get("tes_gate_time_limit_seconds")
+        if gate_limit is not None:
+            time_limit = (
+                min(float(time_limit), float(gate_limit))
+                if time_limit is not None
+                else float(gate_limit)
+            )
     return SolverSettings(
         name="highs",
         mip_gap=float(plan["solver"]["scan_mip_gap"]),
@@ -986,7 +1020,7 @@ def _settings_for_attempt(
         tee=False,
         log_file=str(attempt / f"{prefix}solver.log"),
         # Writing and hashing the same ~29 MB full-horizon MPS for every one of
-        # 101 scans consumes several budget minutes.  The immutable case,
+        # 101 scans consumes several wallclock minutes.  The immutable case,
         # source, task plan, complete tree certificate and model metadata lock
         # scan mathematics; final selected replays still preserve their MPS.
         model_file=None,
@@ -1413,7 +1447,13 @@ def collect_run_status(root: str | Path) -> dict[str, Any]:
     control = _read_json(control_path) if control_path.is_file() else {}
     started_epoch = control.get("started_epoch_seconds")
     elapsed = max(0.0, time() - started_epoch) if isinstance(started_epoch, (int, float)) else 0.0
-    remaining = max(0.0, plan["wallclock_budget_seconds"] - elapsed) if started_epoch else plan["wallclock_budget_seconds"]
+    wallclock_limit = plan.get("wallclock_budget_seconds")
+    if wallclock_limit is None:
+        remaining = None
+    elif isinstance(started_epoch, (int, float)):
+        remaining = max(0.0, float(wallclock_limit) - elapsed)
+    else:
+        remaining = float(wallclock_limit)
     active_progress = [
         {
             "task_id": state["task_id"],
@@ -1610,7 +1650,7 @@ def mark_tes_qualified(root: str | Path) -> dict[str, Any]:
 
 
 def mark_driver_abort(root: str | Path, task_id: str, reason: str) -> None:
-    """Close evidence for a worker terminated by the hard-budget driver."""
+    """Close evidence for a worker terminated by an interrupted/bounded driver."""
 
     root = Path(root).expanduser().resolve()
     task_root = root / "compact_tasks" / task_id
@@ -1810,7 +1850,11 @@ def _replay_final_point(
         name="highs",
         mip_gap=float(plan["solver"]["final_target_mip_gap"]),
         threads=int(plan["solver"]["threads_per_task"]),
-        time_limit_seconds=min(120.0, float(plan["solver"]["task_time_limit_seconds"])),
+        time_limit_seconds=(
+            float(plan["solver"]["task_time_limit_seconds"])
+            if plan["solver"].get("task_time_limit_seconds") is not None
+            else None
+        ),
         random_seed=202611,
         tee=False,
         log_file=str(attempt / "solver.log"),

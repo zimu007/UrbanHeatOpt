@@ -1668,6 +1668,44 @@ def test_competition_highs_uses_reproducible_options_and_delays_loading(
     assert value(model.x) == pytest.approx(1.0)
 
 
+def test_competition_highs_omits_time_limit_when_explicitly_unbounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_factory = solver_module.SolverFactory
+    captured: dict[str, object] = {}
+
+    class CapturingSolver:
+        def __init__(self, solver: object) -> None:
+            self.solver = solver
+
+        def available(self, *, exception_flag: bool = True) -> object:
+            return self.solver.available(exception_flag=exception_flag)
+
+        def solve(self, *args: object, **kwargs: object) -> object:
+            captured["solve_kwargs"] = kwargs
+            return self.solver.solve(*args, **kwargs)
+
+    monkeypatch.setattr(
+        solver_module,
+        "SolverFactory",
+        lambda name: CapturingSolver(real_factory(name)),
+    )
+    model = ConcreteModel()
+    model.x = Var()
+    model.objective = Objective(expr=model.x)
+    model.lower = Constraint(expr=model.x >= 1)
+
+    results = solve_pyomo_model(
+        model,
+        SolverSettings(time_limit_seconds=None),
+    )
+
+    options = captured["solve_kwargs"]["options"]
+    assert "time_limit" not in options
+    assert solver_module.get_solver_evidence(results)["time_limit_seconds"] is None
+    assert value(model.x) == pytest.approx(1.0)
+
+
 def test_competition_highs_installs_audited_discrete_mip_start() -> None:
     model = ConcreteModel()
     model.x = Var(domain=Binary, initialize=1)
@@ -1751,13 +1789,13 @@ def test_competition_presolve_setting_does_not_change_gurobi_options(
     monkeypatch.setattr(solver_module, "SolverFactory", lambda _: CapturingSolver())
     with pytest.raises(SolverNotOptimalError):
         solve_pyomo_model(
-            ConcreteModel(), SolverSettings(name="gurobi", presolve="off")
+            ConcreteModel(),
+            SolverSettings(name="gurobi", presolve="off", time_limit_seconds=None),
         )
 
     assert captured["solve_kwargs"]["options"] == {
         "MIPGap": 0.0,
         "Threads": 1,
-        "TimeLimit": 60.0,
         "Seed": 202611,
     }
     assert "presolve" not in fake_results.urbanheatopt_evidence

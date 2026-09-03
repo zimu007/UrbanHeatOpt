@@ -1,4 +1,4 @@
-"""Prepare, run, monitor, and assemble the 50-minute compact full-season run.
+"""Prepare, run, monitor, and assemble the unlimited compact full-season run.
 
 Examples
 --------
@@ -230,27 +230,50 @@ def _progress_line(status: dict[str, Any]) -> str:
             f" replay={status['final_replay_complete_count']}/"
             f"{status['final_replay_point_count']}"
         )
+    remaining = status.get("remaining_budget_seconds")
+    remaining_text = "unlimited" if remaining is None else f"{float(remaining):.0f}s"
     return (
         f"[{status['progress_percent']:6.2f}%] qualified={status['qualified_task_count']}/"
         f"{status['total_tasks']} running={counts['running']} failed={counts['failed']} "
-        f"remaining={status['remaining_budget_seconds']:.0f}s{replay}{solver}"
+        f"remaining={remaining_text}{replay}{solver}"
     )
+
+
+def _optional_deadline(value: Any) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _deadline_reached(deadline: float | None, *, now: float | None = None) -> bool:
+    return deadline is not None and (time() if now is None else now) >= deadline
+
+
+def _has_start_window(deadline: float | None, seconds: float) -> bool:
+    return deadline is None or deadline - time() > seconds
+
+
+def _remaining_text(deadline: float | None) -> str:
+    return "unlimited" if deadline is None else f"{max(0.0, deadline - time()):.0f}s"
 
 
 def _start_control(root: Path, plan: dict[str, Any]) -> dict[str, Any]:
     path = root / "run_control.json"
+    hard_limit = plan.get("wallclock_budget_seconds")
     if path.is_file():
         control = json.loads(path.read_text(encoding="utf-8"))
-        if control.get("hard_budget_seconds") != plan["wallclock_budget_seconds"]:
-            raise ValueError("existing run control does not match the frozen 3000-second budget")
+        if control.get("hard_budget_seconds") != hard_limit:
+            raise ValueError("existing run control does not match the frozen wallclock policy")
         return control
     started = time()
     control = {
-        "schema": "road_joint_v2_compact_fullseason_control_1",
+        "schema": "road_joint_v2_compact_fullseason_control_2",
         "started_at": _utcnow(),
         "started_epoch_seconds": started,
-        "deadline_epoch_seconds": started + plan["wallclock_budget_seconds"],
-        "hard_budget_seconds": plan["wallclock_budget_seconds"],
+        "deadline_epoch_seconds": (
+            started + float(hard_limit) if hard_limit is not None else None
+        ),
+        "hard_budget_seconds": hard_limit,
+        "memory_limit_bytes": None,
+        "memory_guard_enabled": False,
         "max_parallel_tasks": plan["solver"]["max_parallel_tasks"],
         "threads_per_task": plan["solver"]["threads_per_task"],
     }
@@ -308,7 +331,7 @@ def _run_stage(
     root: Path,
     task_ids: tuple[str, ...],
     *,
-    deadline: float,
+    deadline: float | None,
     max_parallel: int,
     retry_limit: int = 2,
     deadline_reason: str = "compact solve-stage deadline reached",
@@ -321,11 +344,11 @@ def _run_stage(
     try:
         while queue or workers:
             now = time()
-            if now >= deadline:
+            if _deadline_reached(deadline, now=now):
                 _terminate_workers(root, workers, deadline_reason)
                 write_run_status(root)
                 return False
-            while queue and len(workers) < max_parallel and deadline - now > 5:
+            while queue and len(workers) < max_parallel and _has_start_window(deadline, 5):
                 task_id = queue.pop(0)
                 attempts[task_id] += 1
                 log_path = _next_driver_log(root, task_id)
@@ -358,7 +381,7 @@ def _run_stage(
                 workers.pop(task_id)
                 current = _task_status_map(root).get(task_id)
                 if current not in {"success", "skipped"}:
-                    if attempts[task_id] < retry_limit and deadline - time() > 10:
+                    if attempts[task_id] < retry_limit and _has_start_window(deadline, 10):
                         queue.append(task_id)
                     else:
                         print(
@@ -383,17 +406,26 @@ def run_schedule(root: str | Path) -> bool:
     root = Path(root).expanduser().resolve()
     plan = verify_compact_plan(root)
     control = _start_control(root, plan)
-    deadline = float(control["deadline_epoch_seconds"])
+    deadline = _optional_deadline(control.get("deadline_epoch_seconds"))
     max_parallel = int(plan["solver"]["max_parallel_tasks"])
     started = float(control["started_epoch_seconds"])
-    # Full 578-edge x 2160-hour export/QA is deliberately separated from the
-    # scan workers.  Four-way replay needs materially more time than merely
-    # serializing the compact checkpoint, so reserve the last 12 minutes.
-    scan_deadline = min(deadline - 720.0, started + 2280.0)
+    # A finite deadline remains available as an explicit opt-in for controlled
+    # experiments.  The production default is ``None``: neither scan nor final
+    # replay is stopped by elapsed wallclock time.
+    scan_deadline = (
+        min(deadline - 720.0, started + 2280.0)
+        if deadline is not None
+        else None
+    )
+    deadline_label = (
+        datetime.fromtimestamp(deadline, timezone.utc).isoformat()
+        if deadline is not None
+        else "unlimited"
+    )
     print(
         f"Compact full-season run: {len(plan['tasks'])} tasks, "
         f"{max_parallel} parallel x {plan['solver']['threads_per_task']} HiGHS threads, "
-        f"deadline={datetime.fromtimestamp(deadline, timezone.utc).isoformat()}",
+        f"deadline={deadline_label}, memory_guard=disabled",
         flush=True,
     )
     no_tes_endpoints = family_task_ids(plan, "no_tes", phase="endpoint")
@@ -404,9 +436,9 @@ def run_schedule(root: str | Path) -> bool:
         state_map.get(task_id) in {"success", "skipped"}
         for task_id in baseline_ids
     )
-    if not baseline_complete and scan_deadline <= time():
+    if not baseline_complete and _deadline_reached(scan_deadline):
         if plan.get("storage_policy", {}).get("enable_tes"):
-            mark_tes_fallback(root, "no-TES baseline did not finish before the scan deadline")
+            mark_tes_fallback(root, "no-TES baseline did not complete")
         write_run_status(root)
         return False
     endpoints_ok = _run_stage(
@@ -414,22 +446,22 @@ def run_schedule(root: str | Path) -> bool:
         no_tes_endpoints,
         deadline=scan_deadline,
         max_parallel=max_parallel,
-        deadline_reason="compact scan window ended before no-TES endpoints completed",
+        deadline_reason="optional wallclock deadline reached during no-TES endpoints",
     )
     if not endpoints_ok:
         if plan.get("storage_policy", {}).get("enable_tes"):
-            mark_tes_fallback(root, "no-TES baseline did not finish before the scan deadline")
+            mark_tes_fallback(root, "no-TES baseline did not complete")
         return False
     epsilons_ok = _run_stage(
         root,
         no_tes_epsilons,
         deadline=scan_deadline,
         max_parallel=max_parallel,
-        deadline_reason="compact scan window ended before no-TES Pareto completed",
+        deadline_reason="optional wallclock deadline reached during no-TES Pareto scan",
     )
     if not epsilons_ok:
         if plan.get("storage_policy", {}).get("enable_tes"):
-            mark_tes_fallback(root, "no-TES baseline did not finish before the scan deadline")
+            mark_tes_fallback(root, "no-TES baseline did not complete")
         return False
 
     if not plan.get("storage_policy", {}).get("enable_tes"):
@@ -444,19 +476,23 @@ def run_schedule(root: str | Path) -> bool:
             return True
 
     gate_id = str(plan["storage_policy"]["tes_gate_task_id"])
-    gate_deadline = min(started + 1320.0, scan_deadline)
+    gate_deadline = (
+        min(started + 1320.0, scan_deadline)
+        if scan_deadline is not None
+        else None
+    )
     gate_ok = _task_status_map(root).get(gate_id) == "success"
-    if not gate_ok and gate_deadline > time():
+    if not gate_ok and not _deadline_reached(gate_deadline):
         gate_ok = _run_stage(
             root,
             (gate_id,),
             deadline=gate_deadline,
             max_parallel=1,
             retry_limit=1,
-            deadline_reason="TES two-minute qualification gate expired",
+            deadline_reason="optional wallclock deadline reached during TES qualification",
         )
     if not gate_ok:
-        mark_tes_fallback(root, "TES two-minute qualification gate did not pass")
+        mark_tes_fallback(root, "TES qualification gate did not pass")
         return True
 
     tes_endpoints = tuple(
@@ -470,19 +506,19 @@ def run_schedule(root: str | Path) -> bool:
         tes_endpoints,
         deadline=scan_deadline,
         max_parallel=max_parallel,
-        deadline_reason="TES enhancement exceeded the scan window",
+        deadline_reason="optional wallclock deadline reached during TES endpoints",
     )
     tes_epsilons_ok = tes_endpoints_ok and _run_stage(
         root,
         tes_epsilons,
         deadline=scan_deadline,
         max_parallel=max_parallel,
-        deadline_reason="TES Pareto enhancement exceeded the scan window",
+        deadline_reason="optional wallclock deadline reached during TES Pareto scan",
     )
     if tes_endpoints_ok and tes_epsilons_ok:
         mark_tes_qualified(root)
     else:
-        mark_tes_fallback(root, "TES Pareto family did not finish before the scan deadline")
+        mark_tes_fallback(root, "TES Pareto family did not complete")
     # A failed optional TES enhancement never invalidates the complete no-TES
     # full-season result.
     return True
@@ -502,7 +538,7 @@ def _run_replay_stage(
     root: Path,
     point_ids: tuple[str, ...],
     *,
-    deadline: float,
+    deadline: float | None,
     max_parallel: int,
     retry_limit: int = 2,
 ) -> bool:
@@ -518,11 +554,11 @@ def _run_replay_stage(
     try:
         while queue or workers:
             now = time()
-            if now >= deadline:
+            if _deadline_reached(deadline, now=now):
                 failed.extend(queue)
                 queue.clear()
                 break
-            while queue and len(workers) < max_parallel and deadline - now > 5:
+            while queue and len(workers) < max_parallel and _has_start_window(deadline, 5):
                 point_id = queue.pop(0)
                 attempts[point_id] += 1
                 log_path = _next_replay_log(root, point_id)
@@ -555,7 +591,7 @@ def _run_replay_stage(
                 workers.pop(point_id)
                 success = root / "final_replay" / point_id / "success.json"
                 if code != 0 or not success.is_file():
-                    if attempts[point_id] < retry_limit and deadline - time() > 10:
+                    if attempts[point_id] < retry_limit and _has_start_window(deadline, 10):
                         queue.append(point_id)
                     else:
                         failed.append(point_id)
@@ -567,7 +603,7 @@ def _run_replay_stage(
                 )
                 print(
                     f"[final replay] {complete}/{len(point_ids)} complete; "
-                    f"remaining={max(0.0, deadline - time()):.0f}s",
+                    f"remaining={_remaining_text(deadline)}",
                     flush=True,
                 )
                 last_report = time()
@@ -599,7 +635,8 @@ def _print_status(root: Path, *, watch: bool, interval: float) -> int:
             return 0
         if status["result_ready"]:
             return 0
-        if status["remaining_budget_seconds"] <= 0 and not status["counts"]["running"]:
+        remaining = status.get("remaining_budget_seconds")
+        if remaining is not None and remaining <= 0 and not status["counts"]["running"]:
             return 2
         sleep(interval)
 
@@ -625,7 +662,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--allow-partial", action="store_true")
-    parser.add_argument("--task-time-limit-seconds", type=float, default=240.0)
+    parser.add_argument(
+        "--task-time-limit-seconds",
+        type=float,
+        default=None,
+        help="optional per-solve limit; omitted means unlimited",
+    )
+    parser.add_argument(
+        "--wallclock-budget-seconds",
+        type=float,
+        default=None,
+        help="optional whole-run limit; omitted means unlimited",
+    )
     parser.add_argument("--enable-tes-upgrade", action="store_true")
     return parser
 
@@ -642,6 +690,7 @@ def main(argv: list[str] | None = None) -> int:
             plan = create_compact_plan(
                 case_path,
                 root,
+                wallclock_budget_seconds=args.wallclock_budget_seconds,
                 task_time_limit_seconds=args.task_time_limit_seconds,
                 enable_tes=args.enable_tes_upgrade,
             )
@@ -707,7 +756,7 @@ def main(argv: list[str] | None = None) -> int:
                     pass
                 write_run_status(root)
                 print(
-                    "no-TES full-season baseline did not finish inside the scan window",
+                    "no-TES full-season baseline did not complete; inspect failed task evidence",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -732,7 +781,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline_replay_ok = _run_replay_stage(
                 root,
                 baseline_replay_ids,
-                deadline=float(control["deadline_epoch_seconds"]),
+                deadline=_optional_deadline(control.get("deadline_epoch_seconds")),
                 max_parallel=int(control["max_parallel_tasks"]),
             )
             if not baseline_replay_ok:
@@ -746,7 +795,7 @@ def main(argv: list[str] | None = None) -> int:
             replay_ok = _run_replay_stage(
                 root,
                 preferred_replay_ids,
-                deadline=float(control["deadline_epoch_seconds"]),
+                deadline=_optional_deadline(control.get("deadline_epoch_seconds")),
                 max_parallel=int(control["max_parallel_tasks"]),
             )
             tes_by_id = {
@@ -772,14 +821,13 @@ def main(argv: list[str] | None = None) -> int:
                 replay_ok = _run_replay_stage(
                     root,
                     replay_ids,
-                    deadline=float(control["deadline_epoch_seconds"]),
+                    deadline=_optional_deadline(control.get("deadline_epoch_seconds")),
                     max_parallel=int(control["max_parallel_tasks"]),
                 )
             if not replay_ok:
                 write_run_status(root)
                 print(
-                    "compact scan completed, but final fixed-decision replay did not "
-                    "finish inside the hard budget",
+                    "compact scan completed, but final fixed-decision replay or QA did not complete",
                     file=sys.stderr,
                     flush=True,
                 )

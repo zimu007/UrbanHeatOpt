@@ -29,7 +29,9 @@ class SolverSettings:
     mip_gap: float = 0.0
     time_limit_acceptance_mip_gap: float | None = None
     threads: int = 1
-    time_limit_seconds: float = 60.0
+    # ``None`` deliberately omits the solver's time-limit option. Callers that
+    # need a bounded run can still provide a finite positive number.
+    time_limit_seconds: float | None = 60.0
     random_seed: int = 202611
     tee: bool = False
     log_file: str | None = None
@@ -60,7 +62,11 @@ class SolverNotOptimalError(RuntimeError):
         self.model_sha256 = evidence.get("model_sha256")
         self.solver_log_file = evidence.get("solver_log_file")
         self.solver_evidence_file = evidence.get("solver_evidence_file")
-        self.time_limit_seconds = float(settings.time_limit_seconds)
+        self.time_limit_seconds = (
+            float(settings.time_limit_seconds)
+            if settings.time_limit_seconds is not None
+            else None
+        )
         self.mip_gap_target = float(settings.mip_gap)
         self.time_limit_acceptance_mip_gap = (
             float(settings.time_limit_acceptance_mip_gap)
@@ -359,9 +365,10 @@ def validate_solver_settings(settings: SolverSettings) -> None:
     ):
         raise ValueError("threads 只能是 1、4 或 8")
 
-    time_limit = _finite_real(settings.time_limit_seconds, "time_limit_seconds")
-    if time_limit <= 0:
-        raise ValueError("time_limit_seconds 必须大于 0")
+    if settings.time_limit_seconds is not None:
+        time_limit = _finite_real(settings.time_limit_seconds, "time_limit_seconds")
+        if time_limit <= 0:
+            raise ValueError("time_limit_seconds 必须大于 0")
 
     feasibility_tolerance = _finite_real(
         settings.feasibility_tolerance,
@@ -415,12 +422,13 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
             "presolve": resolved.presolve,
             "mip_rel_gap": float(resolved.mip_gap),
             "threads": int(resolved.threads),
-            "time_limit": float(resolved.time_limit_seconds),
             "random_seed": int(resolved.random_seed),
             "primal_feasibility_tolerance": float(resolved.feasibility_tolerance),
             "dual_feasibility_tolerance": float(resolved.feasibility_tolerance),
             "mip_feasibility_tolerance": float(resolved.feasibility_tolerance),
         }
+        if resolved.time_limit_seconds is not None:
+            options["time_limit"] = float(resolved.time_limit_seconds)
         if resolved.threads > 1:
             options["parallel"] = "on"
         if log_path is not None:
@@ -431,9 +439,10 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
         options = {
             "MIPGap": float(resolved.mip_gap),
             "Threads": int(resolved.threads),
-            "TimeLimit": float(resolved.time_limit_seconds),
             "Seed": int(resolved.random_seed),
         }
+        if resolved.time_limit_seconds is not None:
+            options["TimeLimit"] = float(resolved.time_limit_seconds)
         if log_path is not None:
             options["LogFile"] = log_path
 
@@ -507,7 +516,11 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
         "time_limit_acceptance_mip_gap": time_limit_acceptance_gap,
         "configured_feasibility_tolerance": float(resolved.feasibility_tolerance),
         "threads": int(resolved.threads),
-        "time_limit_seconds": float(resolved.time_limit_seconds),
+        "time_limit_seconds": (
+            float(resolved.time_limit_seconds)
+            if resolved.time_limit_seconds is not None
+            else None
+        ),
         "random_seed": int(resolved.random_seed),
         "parallel_enabled": resolved.threads > 1,
         "started_at_utc": started_at.isoformat(),

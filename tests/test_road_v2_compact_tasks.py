@@ -28,7 +28,9 @@ from competition.road_joint_v2.compact_tasks import (
 from test_road_v2_core import shared_case
 from scripts.run_compact_fullseason import (
     _acquire_driver_reservation,
+    _progress_line,
     _release_driver_reservation,
+    _start_control,
 )
 
 
@@ -166,7 +168,6 @@ def _small_plan(tmp_path: Path):
         expected_site_count=2,
         max_parallel=1,
         threads=1,
-        task_time_limit_seconds=60,
     )
     return root, plan
 
@@ -211,15 +212,30 @@ def _fake_success(root: Path, task: dict, *, cost: float, carbon: float) -> None
 def test_compact_plan_is_fresh_hash_locked_and_has_dependency_shape(tmp_path):
     root, plan = _small_plan(tmp_path)
 
-    assert plan["schema"] == "road_joint_v2_compact_fullseason_tasks_1"
+    assert plan["schema"] == "road_joint_v2_compact_fullseason_tasks_2"
     assert len(plan["tree_designs"]) == 2
     assert len(plan["tasks"]) == 21  # 1 distributed + 2 modes * 2 sites * (2 + 3)
     assert sum(task["phase"] == "endpoint" for task in plan["tasks"]) == 9
     assert sum(task["phase"] == "epsilon" for task in plan["tasks"]) == 12
     assert plan["solver"]["threads_per_task"] == 1
-    assert plan["wallclock_budget_seconds"] == 3000
+    assert plan["wallclock_budget_seconds"] is None
+    assert plan["solver"]["task_time_limit_seconds"] is None
+    assert plan["resource_limits"] == {
+        "wallclock_time_limit_seconds": None,
+        "solver_time_limit_seconds": None,
+        "memory_limit_bytes": None,
+        "memory_guard_enabled": False,
+    }
     assert plan["storage_policy"]["enable_tes"] is False
     assert verify_compact_plan(root) == plan
+    control = _start_control(root, plan)
+    assert control["deadline_epoch_seconds"] is None
+    assert control["hard_budget_seconds"] is None
+    assert control["memory_limit_bytes"] is None
+    assert control["memory_guard_enabled"] is False
+    status = collect_run_status(root)
+    assert status["remaining_budget_seconds"] is None
+    assert "remaining=unlimited" in _progress_line(status)
     with pytest.raises(FileExistsError, match="fresh root"):
         create_compact_plan(
             shared_case(), root, full_scale=False, expected_site_count=2
@@ -315,7 +331,7 @@ def test_tes_plan_adds_an_independent_family_and_a_single_gate(tmp_path):
     assert sum(task["result_family"] == "tes" for task in plan["tasks"]) == 20
     gates = [task for task in plan["tasks"] if task["tes_gate"]]
     assert [task["task_id"] for task in gates] == ["tes-hybrid-site-01-cost"]
-    assert plan["storage_policy"]["tes_gate_time_limit_seconds"] == 120.0
+    assert plan["storage_policy"]["tes_gate_time_limit_seconds"] is None
     assert verify_compact_plan(root) == plan
 
     mark_tes_fallback(root, "synthetic gate failure")
@@ -414,6 +430,7 @@ def test_real_small_distributed_task_closes_solver_export_and_qa_loop(tmp_path):
     solver_evidence = json.loads(
         (checkpoint.parent / "solver_evidence.json").read_text(encoding="utf-8")
     )
+    assert solver_evidence["time_limit_seconds"] is None
     assert solver_evidence["model_file"] is None
     assert not (checkpoint.parent / "model.mps").exists()
 
