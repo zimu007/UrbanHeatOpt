@@ -17,7 +17,7 @@ Watch evidence-based progress from another terminal::
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
 import os
@@ -26,6 +26,7 @@ import subprocess
 import sys
 from time import sleep, time
 from typing import Any
+from uuid import uuid4
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -66,6 +67,121 @@ def _write_json(path: Path, payload: Any, *, exclusive: bool = False) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+@dataclass
+class _DriverReservation:
+    """An OS-held single-driver lock plus its diagnostic ownership token."""
+
+    stream: Any
+    token: str
+
+
+def _lock_driver_stream(stream: Any) -> None:
+    stream.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_driver_stream(stream: Any) -> None:
+    stream.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _acquire_driver_reservation(root: Path) -> _DriverReservation:
+    """Allow one mutating schedule driver per run root using an OS lock."""
+
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / "driver.lock"
+    metadata_path = root / "driver_reservation.json"
+    stream = lock_path.open("a+b")
+    locked = False
+    try:
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        try:
+            _lock_driver_stream(stream)
+            locked = True
+        except (OSError, BlockingIOError) as exc:
+            try:
+                prior = json.loads(metadata_path.read_text(encoding="utf-8"))
+                owner = (
+                    f"pid={prior.get('pid')}, "
+                    f"created_at={prior.get('created_at')}"
+                )
+            except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+                owner = "owner metadata is not yet available"
+            raise RuntimeError(
+                "another compact driver is already running for this run root: "
+                f"{owner}"
+            ) from exc
+
+        token = uuid4().hex
+        _write_json(
+            metadata_path,
+            {
+                "schema": "road_joint_v2_compact_driver_reservation_2",
+                "pid": os.getpid(),
+                "token": token,
+                "created_at": _utcnow(),
+                "lock_file": lock_path.name,
+            },
+        )
+        return _DriverReservation(stream=stream, token=token)
+    except Exception:
+        if locked:
+            try:
+                _unlock_driver_stream(stream)
+            except OSError:
+                pass
+        stream.close()
+        raise
+
+
+def _release_driver_reservation(root: Path, reservation: _DriverReservation) -> None:
+    metadata_path = root / "driver_reservation.json"
+    try:
+        try:
+            current = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+            current = {}
+        if not isinstance(current, dict):
+            current = {}
+        if (
+            current.get("pid") == os.getpid()
+            and current.get("token") == reservation.token
+        ):
+            try:
+                metadata_path.unlink()
+            except OSError:
+                pass
+    finally:
+        try:
+            _unlock_driver_stream(reservation.stream)
+        except OSError:
+            # Closing the descriptor below also releases the kernel lock.  A
+            # best-effort cleanup must not mask the driver's real exit status.
+            pass
+        finally:
+            try:
+                reservation.stream.close()
+            except OSError:
+                pass
 
 
 def _find_existing_full_case() -> Path:
@@ -517,7 +633,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = args.run_root.expanduser().resolve()
+    driver_reservation: _DriverReservation | None = None
     try:
+        if args.action in {"prepare", "run", "assemble", "all"}:
+            driver_reservation = _acquire_driver_reservation(root)
         if args.action in {"prepare", "all"} and not (root / "compact_task_plan.json").is_file():
             case_path = args.case_json.expanduser().resolve() if args.case_json else _find_existing_full_case()
             plan = create_compact_plan(
@@ -683,6 +802,9 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"[compact failed] {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         return 1
+    finally:
+        if driver_reservation is not None:
+            _release_driver_reservation(root, driver_reservation)
 
 
 if __name__ == "__main__":

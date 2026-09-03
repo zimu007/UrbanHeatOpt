@@ -541,12 +541,58 @@ def epsilon_for_task(
     return epsilon, None
 
 
-def _pid_alive(pid: int) -> bool:
+def process_is_alive(pid: int) -> bool:
+    """Check a PID without sending a signal that can terminate it on Windows."""
+
     if not isinstance(pid, int) or pid <= 0:
         return False
+    if os.name == "nt":
+        # On Windows ``os.kill(pid, 0)`` is not a POSIX existence probe: Python
+        # delegates non-console signals to TerminateProcess, so signal 0 can
+        # actually terminate the worker being checked.  Wait on a process
+        # synchronization handle with a zero timeout instead.  Unlike checking
+        # for STILL_ACTIVE, this remains correct if a process really exits with
+        # status code 259.
+        import ctypes
+        from ctypes import wintypes
+
+        synchronize = 0x00100000
+        wait_object_0 = 0x00000000
+        wait_timeout = 0x00000102
+        error_access_denied = 5
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        )
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(synchronize, False, int(pid))
+        if not handle:
+            # A protected process that denies synchronization access still
+            # exists.  All normal same-user workers are queryable; other errors
+            # mean that the PID is absent or invalid.
+            return ctypes.get_last_error() == error_access_denied
+        try:
+            wait_result = int(kernel32.WaitForSingleObject(handle, 0))
+            if wait_result == wait_timeout:
+                return True
+            if wait_result == wait_object_0:
+                return False
+            return False
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
-    except (OSError, ProcessLookupError, PermissionError):
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
         return False
     return True
 
@@ -558,7 +604,7 @@ def _reserve_attempt(task_root: Path) -> Path:
         prior = _read_json(reservation)
         prior_attempt = task_root / str(prior.get("attempt", ""))
         failure = prior_attempt / "failure.json"
-        if _pid_alive(int(prior.get("pid", -1))) and not failure.exists():
+        if process_is_alive(int(prior.get("pid", -1))) and not failure.exists():
             raise RuntimeError(
                 f"compact task already has a live worker: pid={prior.get('pid')}"
             )
@@ -2087,6 +2133,7 @@ __all__ = [
     "mark_tes_fallback",
     "mark_tes_qualified",
     "parse_highs_progress",
+    "process_is_alive",
     "replay_compact_point",
     "run_compact_task",
     "verify_compact_plan",

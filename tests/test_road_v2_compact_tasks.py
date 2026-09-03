@@ -1,6 +1,9 @@
 from dataclasses import asdict, replace
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -9,6 +12,7 @@ from competition.core_model import ThermalStorageSpec
 from competition.road_joint_v2.economic_package import file_hash
 from competition.road_joint_v2.compact_tasks import (
     RESULT_SCHEMA,
+    _reserve_attempt,
     _strictly_exceeds_with_roundoff,
     assemble_compact_run,
     collect_run_status,
@@ -17,10 +21,140 @@ from competition.road_joint_v2.compact_tasks import (
     mark_tes_fallback,
     mark_tes_qualified,
     parse_highs_progress,
+    process_is_alive,
     run_compact_task,
     verify_compact_plan,
 )
 from test_road_v2_core import shared_case
+from scripts.run_compact_fullseason import (
+    _acquire_driver_reservation,
+    _release_driver_reservation,
+)
+
+
+def test_process_liveness_probe_never_terminates_the_worker():
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    worker = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from competition.road_joint_v2.compact_tasks import "
+                    "process_is_alive; "
+                    f"raise SystemExit(0 if process_is_alive({worker.pid}) else 2)"
+                ),
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            creationflags=creationflags,
+            timeout=10,
+        )
+        assert probe.returncode == 0, probe.stderr
+        assert worker.poll() is None
+    finally:
+        worker.terminate()
+        worker.wait(timeout=10)
+    assert not process_is_alive(worker.pid)
+
+
+def test_live_task_reservation_is_rejected_without_killing_owner(tmp_path):
+    task_root = tmp_path / "task"
+    _reserve_attempt(task_root)
+    with pytest.raises(RuntimeError, match="live worker"):
+        _reserve_attempt(task_root)
+    assert process_is_alive(os.getpid())
+
+
+def test_driver_lock_rejects_a_second_process_and_recovers_after_crash(tmp_path):
+    run_root = tmp_path / "run"
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    child_code = "\n".join(
+        (
+            "import time",
+            "from pathlib import Path",
+            "from scripts.run_compact_fullseason import _acquire_driver_reservation",
+            f"lock = _acquire_driver_reservation(Path({json.dumps(str(run_root))}))",
+            "print('READY', flush=True)",
+            "time.sleep(30)",
+        )
+    )
+    owner = subprocess.Popen(
+        [sys.executable, "-c", child_code],
+        cwd=Path(__file__).resolve().parents[1],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        creationflags=creationflags,
+    )
+    try:
+        assert owner.stdout is not None
+        ready = owner.stdout.readline().strip()
+        assert ready == "READY"
+        with pytest.raises(RuntimeError, match="already running"):
+            _acquire_driver_reservation(run_root)
+        assert owner.poll() is None
+    finally:
+        if owner.poll() is None:
+            owner.terminate()
+        owner.wait(timeout=10)
+
+    recovered = _acquire_driver_reservation(run_root)
+    _release_driver_reservation(run_root, recovered)
+    assert not (run_root / "driver_reservation.json").exists()
+
+
+def test_two_processes_racing_for_new_driver_lock_have_one_winner(tmp_path):
+    run_root = tmp_path / "run"
+    gate = tmp_path / "start"
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    child_code = "\n".join(
+        (
+            "import time",
+            "from pathlib import Path",
+            "from scripts.run_compact_fullseason import _acquire_driver_reservation",
+            f"root = Path({json.dumps(str(run_root))})",
+            f"gate = Path({json.dumps(str(gate))})",
+            "while not gate.exists(): time.sleep(0.001)",
+            "try:",
+            "    lock = _acquire_driver_reservation(root)",
+            "    print('ACQUIRED', flush=True)",
+            "    time.sleep(30)",
+            "except RuntimeError:",
+            "    print('REJECTED', flush=True)",
+        )
+    )
+    contenders = [
+        subprocess.Popen(
+            [sys.executable, "-c", child_code],
+            cwd=Path(__file__).resolve().parents[1],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=creationflags,
+        )
+        for _ in range(2)
+    ]
+    try:
+        gate.touch()
+        outcomes = []
+        for contender in contenders:
+            assert contender.stdout is not None
+            outcomes.append(contender.stdout.readline().strip())
+        assert sorted(outcomes) == ["ACQUIRED", "REJECTED"]
+    finally:
+        for contender in contenders:
+            if contender.poll() is None:
+                contender.terminate()
+        for contender in contenders:
+            contender.wait(timeout=10)
 
 
 def _small_plan(tmp_path: Path):
