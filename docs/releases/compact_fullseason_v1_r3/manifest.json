@@ -72,7 +72,10 @@
       "filename": "UrbanHeatOpt_COMPACT_FULLSEASON_V1_R3.tar.gz",
       "bytes": 112916332,
       "sha256": "0be589301c69a8c5b7c9ee372128e3c7470cb848462a6380989dccc39ef9cbcd",
-      "contains": "one top-level COMPACT_FULLSEASON_V1_20260903_R3 directory; 771 files plus directory entries"
+      "contains": "one top-level COMPACT_FULLSEASON_V1_20260903_R3 directory; 771 files plus directory entries",
+      "release_url": "https://github.com/zimu007/UrbanHeatOpt/releases/tag/compact-fullseason-v1-r3",
+      "download_url": "https://github.com/zimu007/UrbanHeatOpt/releases/download/compact-fullseason-v1-r3/UrbanHeatOpt_COMPACT_FULLSEASON_V1_R3.tar.gz",
+      "remote_asset_state": "uploaded"
     },
     "recovery_scripts_sha256": {
       "recover_compact_r3.py": "ec376d163b01a10449d5cc644a5a69511468c75cf5772f17be2f7550ab9c14fd",

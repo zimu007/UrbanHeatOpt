@@ -154,7 +154,7 @@ R3 的 ε25 点归一坐标约为 `(成本=0.167, 碳=0.250)`，到端点弦线�
 
 1. **源码层**：注释标签 `compact-fullseason-v1-r3` 精确指向执行提交 `58d8322`；该提交运行前工作树干净。`compact-fullseason-v1-unlimited` 指向后续无限制运行器 `aebdead`，两者不得混用。
 2. **机器清单层**：`manifest.json` 固定输入、模型文件、计划、结果、完成状态、恢复控制、环境、结果树和归档 SHA-256；`frontier.csv` 固定八个前沿点。
-3. **结果字节层**：完整 R3 原目录保持只读，不再续跑或原地修订；完整归档 `UrbanHeatOpt_COMPACT_FULLSEASON_V1_R3.tar.gz` 的 SHA-256 为 `0be589301c69a8c5b7c9ee372128e3c7470cb848462a6380989dccc39ef9cbcd`。
+3. **结果字节层**：完整 R3 原目录保持只读，不再续跑或原地修订；完整归档 [`UrbanHeatOpt_COMPACT_FULLSEASON_V1_R3.tar.gz`](https://github.com/zimu007/UrbanHeatOpt/releases/download/compact-fullseason-v1-r3/UrbanHeatOpt_COMPACT_FULLSEASON_V1_R3.tar.gz) 已作为 GitHub Release 附件上传，其 SHA-256 为 `0be589301c69a8c5b7c9ee372128e3c7470cb848462a6380989dccc39ef9cbcd`。
 
 结果目录共有 771 个文件、278,159,779 bytes。按相对 POSIX 路径排序，对每个文件生成 `相对路径<TAB>字节数<TAB>文件SHA256<LF>` 后再求 SHA-256，结果树摘要为 `c75b89f06b7997797fc4fc5c9bee1cd21fa3409fdead1b1609758ecd7fb507bf`。这个算法和所有关键哈希都写在 `manifest.json` 中。
 
