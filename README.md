@@ -62,6 +62,13 @@ Using the software does not require expert programming knowledge.
 > v0.3 delivery can now be audited and normalized into a read-only 2160-hour
 > heating-season snapshot; this is an input result, not a solver result.
 
+The completed 62-building, 2160-hour compact no-TES run is frozen as the
+`compact-fullseason-v1-r3` algorithmic baseline. Its exact source commit,
+artifact hashes, eight-point frontier, station-generation rationale, and
+engineering limitations are recorded in the
+[Compact full-season V1/R3 freeze report](docs/releases/compact_fullseason_v1_r3/README.md).
+This baseline is auditable but is not labeled as a formal engineering result.
+
 V0 smoke command (synthetic test data only):
 
 ```powershell
@@ -126,6 +133,7 @@ Full documentation is available and includes:
 
 Competition-branch specifications and status records:
 
+- [Compact full-season V1/R3 frozen baseline](docs/releases/compact_fullseason_v1_r3/README.md)
 - [Competition input data contract](docs/DATA_CONTRACT.md)
 - [Data-interface input and correction policy](docs/INPUT_INTERFACE_GUIDE.md)
 - [Data-interface development status (Chinese)](docs/DATA_INTERFACE_STATUS_CN.md)
