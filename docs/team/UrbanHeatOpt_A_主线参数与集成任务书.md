@@ -72,3 +72,11 @@ solve／diagnose／tes-check／report在相应B/C适配器通过测试前必须�
 - 四个本地中文提交逐节点记录内容、目的、证据与剩余；不提交真实数据／结果／桌面，不自动推送。
 
 本轮A完成后仍等待B模型接线与C独立QA，不能提前标记V2全季完成。
+
+## 7. 本轮交接补记
+
+20260905新增用户决定：新经济包未标注暂定的值作为本研究冻结值，原代理／来源范围保持不变。程序分开登记numerical_freeze与code_use_allowed。
+
+当前真实443文件、62×2160标准化与源哈希检查通过；8项参数允许／来源禁用冲突尚待裁决，参数完整快照不予验收。不是“缺全部经济数据”。桌面缺失清单及机器报告由prepare更新。同名桌面文档保留带时间备份。
+
+新CaseBundle/SolveRequest/ResultBundle与validate／prepare已实现，B/C消费者仍未接通。当前环境highspy1.11.0与仓库冻结要求1.15.1不一致，需在实际V2求解前确认环境，不擅自升级。最新证据与操作见docs/runbooks/A_INTEGRATION_CN.md。

@@ -13,6 +13,8 @@
 
 逐文件旧路径、新路径、旧哈希、分类、用途和验收方式见baselines/layout_migration.json。外部调用者需要用新路径；旧文件名不保留自动回退入口。
 
+补充逐文件当前引用者与迁移后哈希见baselines/layout_references_20260905.json，由tools/layout_reference_inventory.py生成；仅覆盖静态import与显式路径，动态/外部引用仍需调用方确认，无引用不能直接判断可删。
+
 ## 核心保全
 
 文件字节哈希因import路径调整发生变化，不宣称“旧哈希未变”。原参考核心哈希保存在profile_resources/core_model_freeze.yaml的original_v1_sha256，迁移后哈希单列。更新哈希前先由tools/verify_layout.py验证五份数学模块67个函数/类主体等价，再执行全量测试。

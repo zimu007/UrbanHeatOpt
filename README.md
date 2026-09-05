@@ -14,7 +14,14 @@ conda run --no-capture-output -n urbanheatopt_env python run.py --help
 conda run --no-capture-output -n urbanheatopt_env python -m pytest -q
 ```
 
-`run.py`在目录节点只是明确门禁，输入/参数接口交付后启用validate和prepare。solve、report、diagnose、tes-check在B/C接入前退出2，不回退旧模型。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
+`run.py validate/prepare`已接入自动源校验、新经济包与全供暖季标准化；solve、report、diagnose、tes-check在B/C接入前退出2，不回退旧模型。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
+
+```powershell
+python run.py validate --config configs/cases/guanggu_v2.yaml
+python run.py prepare --config configs/cases/guanggu_v2.yaml
+```
+
+输出在`work/guanggu_v2/<新RUN_ID>/`，桌面缺失清单自动更新。当前新包有8项“参数允许、来源禁用”冲突，真实源与2160h标准化通过、参数验收退出2；未完成新模型求解。详细操作与状态见[集成手册](docs/runbooks/A_INTEGRATION_CN.md)，总体方向及三人分工见`docs/team/`。
 
 ## 目录
 
