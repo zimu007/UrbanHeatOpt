@@ -16,6 +16,26 @@ from urbanheatopt.parameters.legacy_economics import PackageError, file_hash, st
 SPEC = json.loads((PACKAGE_ROOT / "data/profile_resources/revised_20260831.json").read_text(encoding="utf-8"))
 PACKAGE_DIRECTORY = SPEC["package_directory"]
 PACKAGE_FILES = tuple(SPEC["files"])
+STRICT_SOURCE_POLICY = "require_consistent"
+FINAL_QUOTE_POLICY = "final_quote_override_20260905"
+# Exact conflicts approved by the user; never a blanket override for disabled sources.
+FINAL_QUOTE_OVERRIDES = {
+    "hot_water_tes_tank_body_cost_per_m3": "SRC_HOT_TES_HOSPITAL_PRICE",
+    "hot_water_tes_effective_energy_cost": "SRC_HOT_TES_HOSPITAL_PRICE",
+    "hot_water_tes_fixed_bop_cost": "SRC_HOT_TES_HOSPITAL_PRICE",
+    "hot_water_tes_service_life_actual": "SRC_HOT_TES_HOSPITAL_SCOPE",
+    "hot_water_tes_pressure_type": "SRC_HOT_TES_HOSPITAL_PRICE",
+    "hot_water_tes_quote_boundary": "SRC_HOT_TES_HOSPITAL_PRICE",
+    "heating_pipe_mixed_dn_installed_reference_2017": "SRC_WB_HEBEI_CLEAN_HEATING_2017",
+    "building_heat_exchange_station_package_reference_2019": "SRC_WB_HEBEI_CLEAN_HEATING_2017",
+}
+
+
+def validate_source_policy(policy):
+    if not isinstance(policy, str) or policy not in {STRICT_SOURCE_POLICY, FINAL_QUOTE_POLICY}:
+        raise PackageError(f"未知来源许可策略: {policy}")
+
+
 # Source ID -> stable handoff key. This is selection, not a cost expression.
 SELECT = {
     "ashp_central_installed_cost": "central_hp_capex_CNY_per_kW_th",
@@ -78,7 +98,9 @@ def freeze_classification(row: dict) -> str:
     return "user_frozen_for_current_study"
 
 
-def _validate_row(row: dict, expected_unit: str, sources: dict) -> dict:
+def _validate_row(row: dict, expected_unit: str, sources: dict,
+                  source_permission_policy: str = STRICT_SOURCE_POLICY) -> dict:
+    validate_source_policy(source_permission_policy)
     row = dict(row)
     pid = row["parameter_id"]
     if row["unit"] != expected_unit:
@@ -90,8 +112,18 @@ def _validate_row(row: dict, expected_unit: str, sources: dict) -> dict:
         raise PackageError(f"{pid}: 来源ID不存在 {row['source_id']}")
     allowed = strict_bool(row["code_use_allowed"])
     row["code_use_allowed"] = allowed
+    row["source_code_use_allowed"] = source["code_use_allowed"]
+    row["permission_resolution"] = "consistent"
     if allowed and not source["code_use_allowed"]:
-        raise PackageError(f"{pid}: 参数允许执行但来源禁止执行")
+        permitted = (
+            source_permission_policy == FINAL_QUOTE_POLICY
+            and FINAL_QUOTE_OVERRIDES.get(pid) == row["source_id"]
+            and source.get("reference_usage") in {"audit_reference", "audit_price_reference_not_code", "sensitivity_only"}
+        )
+        if not permitted:
+            raise PackageError(f"{pid}: 参数允许执行但来源禁止执行")
+        row["permission_resolution"] = "user_approved_final_quote"
+        row["permission_authority"] = "用户20260905：仅做审计参考的直接按照最终报价；数值仍取新版主表，来源边界保留"
     if not row["value"]:
         raise PackageError(f"{pid}: 空白不等于0")
     if pid in COMPOSITE or row["unit"].startswith("categorical"):
@@ -119,7 +151,9 @@ def _validate_row(row: dict, expected_unit: str, sources: dict) -> dict:
     return row
 
 
-def read_revised_package(root: Path | str, scenario: str = "revised_base") -> dict:
+def read_revised_package(root: Path | str, scenario: str = "revised_base", *,
+                         source_permission_policy: str = STRICT_SOURCE_POLICY) -> dict:
+    validate_source_policy(source_permission_policy)
     root = Path(root).resolve()
     if scenario not in {"revised_base", "station_mixed_scope_high"}:
         raise PackageError(f"未知经济情景: {scenario}")
@@ -146,7 +180,7 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base") -> di
         try:
             if pid in registry or pid not in SPEC["parameter_units"]:
                 raise PackageError(f"重复或未知parameter_id: {pid}")
-            registry[pid] = _validate_row(row, SPEC["parameter_units"][pid], sources)
+            registry[pid] = _validate_row(row, SPEC["parameter_units"][pid], sources, source_permission_policy)
         except ValueError as exc:
             errors.append(str(exc))
     missing = set(SPEC["parameter_units"]) - set(registry)
@@ -167,7 +201,7 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base") -> di
                     raise PackageError(f"{table}: 重复ID {pid}")
                 seen.add(pid)
                 unit = "CNY/supply_return_route_m" if table == "pipe_types" else SPEC["parameter_units"].get(pid, "UNKNOWN")
-                checked = _validate_row(row, unit, sources)
+                checked = _validate_row(row, unit, sources, source_permission_policy)
                 if table != "pipe_types":
                     ref = registry.get(pid, {})
                     for key in ("value", "unit", "source_id", "parameter_status", "code_use_allowed"):
@@ -236,6 +270,13 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base") -> di
             "明确选择安装价/新版同口径字段供B消费" if selected else
             "旧值、替代计费、来源代理或重复边界；不同时应用"
         )
+        row["quotation_display_status"] = (
+            "final_value_for_current_study"
+            if (row["numerical_freeze"] == "user_frozen_for_current_study"
+                or (source_permission_policy == FINAL_QUOTE_POLICY
+                    and row["permission_resolution"] == "user_approved_final_quote"))
+            else "explicitly_provisional_scenario_value"
+        )
         if pid == "separate_variable_om":
             row["selection_reason"] = "model_coefficient语义不足，不解释为可变运维单价"
         if pid == "station_fixed_capex_actual":
@@ -256,7 +297,15 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base") -> di
                      station_cost_boundary="excluded_unseparated" if scenario == "revised_base" else "mixed_scope_sensitivity",
                      station_capex_CNY=None if scenario == "revised_base" else registry["station_fixed_capex_actual"]["value"],
                      demand_meter_scope="virtual_park_heating_total", peak_capacity_margin_fraction=0.20)
-    payload = dict(package_version=SPEC["package_version"], selection_version="a_selection_1.0.0",
+    resolutions = [{"parameter_id": pid, "source_id": row["source_id"],
+                    "original_source_code_use_allowed": row["source_code_use_allowed"],
+                    "parameter_code_use_allowed": row["code_use_allowed"],
+                    "resolution": row["permission_resolution"], "selection": row["selection"],
+                    "authority": row["permission_authority"]}
+                   for pid, row in registry.items() if row["permission_resolution"] == "user_approved_final_quote"]
+    payload = dict(package_version=SPEC["package_version"], selection_version="a_selection_1.1.1",
+                   source_permission_policy=source_permission_policy, permission_resolutions=resolutions,
+                   quotation_display_policy="用户20260905：新包审计报价按本研究最终参数展示；保留原来源，不将历史替代报价叠加计费，不等于已求解结果",
                    scenario=scenario, package_root=str(root), source_hashes=hashes, registry=registry,
                    sources=sources, pipes=pipes, pending=pending, effective=effective,
                    period_map=PERIODS, period_map_source="20260829同ID政策时段，20260831时段字段为空，显式版本化继承；倍率只来自新包",

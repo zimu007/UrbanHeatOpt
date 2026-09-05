@@ -17,7 +17,9 @@ from urbanheatopt.data.intake.guanggu_v03 import resolve_guanggu_v03_source_root
 from urbanheatopt.data.adapters.guanggu_v03 import adapt_guanggu_v03_sources
 from urbanheatopt.data.bundles import CaseBundle, INTERFACE_VERSION, ready_report, sha256_file
 from urbanheatopt.data.gap_catalog import data_gaps, render_gap_report, publish_gap_report
-from urbanheatopt.parameters.revised_economics import read_revised_package, revised_timeseries, PACKAGE_DIRECTORY
+from urbanheatopt.parameters.revised_economics import (
+    read_revised_package, revised_timeseries, PACKAGE_DIRECTORY, validate_source_policy,
+)
 
 
 def write_json(path: Path, value):
@@ -39,8 +41,7 @@ def load_config(path: Path):
         raise ValueError("A主线要求guanggu_v03完整供暖季及full_audit=true")
     if config["economic_package"] != "revised_20260831":
         raise ValueError("新主线只接受显式revised_20260831；旧包仅历史回归")
-    if config["source_permission_policy"] != "require_consistent":
-        raise ValueError("来源许可冲突尚待用户确认，不得自行放行")
+    validate_source_policy(config["source_permission_policy"])
     if config["mode_scope"] != ["central", "distributed", "hybrid"]:
         raise ValueError("三模式必须共用一个输入边界")
     if not isinstance(config["spatial_inputs"], dict):
@@ -132,6 +133,7 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
     git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, text=True).strip()
     profile = yaml.safe_load((PACKAGE_ROOT / "data/profile_resources/guanggu_v03.yaml").read_text(encoding="utf-8"))
     profile["economic_parameters_separate_gate"] = True
+    profile["source_permission_policy"] = config["source_permission_policy"]
     profile_path = output / "source_profile.yaml"
     profile_path.write_text(yaml.safe_dump(profile, allow_unicode=True), encoding="utf-8")
     code_files = [REPOSITORY_ROOT / "run.py", *sorted((REPOSITORY_ROOT / "src/urbanheatopt").rglob("*.py"))]
@@ -149,7 +151,8 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
         errors.extend(i.message for i in source.issues if i.severity == "error")
         print("[2/4] 新经济包逐参数校验与选择", flush=True)
         try:
-            snapshot = read_revised_package(roots.delivery_root / PACKAGE_DIRECTORY, config["economic_scenario"])
+            snapshot = read_revised_package(roots.delivery_root / PACKAGE_DIRECTORY, config["economic_scenario"],
+                                           source_permission_policy=config["source_permission_policy"])
             write_json(output / "effective_parameters.json", snapshot)
             pd.DataFrame(snapshot["registry"].values()).to_csv(output / "parameter_selection.csv", index=False, encoding="utf-8-sig")
             status["parameter_valid"] = True

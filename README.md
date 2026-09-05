@@ -21,7 +21,7 @@ python run.py validate --config configs/cases/guanggu_v2.yaml
 python run.py prepare --config configs/cases/guanggu_v2.yaml
 ```
 
-输出在`work/guanggu_v2/<新RUN_ID>/`，桌面缺失清单自动更新。当前新包有8项“参数允许、来源禁用”冲突，真实源与2160h标准化通过、参数验收退出2；未完成新模型求解。详细操作与状态见[集成手册](docs/runbooks/A_INTEGRATION_CN.md)，总体方向及三人分工见`docs/team/`。
+输出在`work/guanggu_v2/<新RUN_ID>/`，桌面缺失清单自动更新。用户20260905确认后，8项审计来源许可冲突按最终报价处理并保留追溯；真实443源文件、87项参数登记与62栋×2160h准备通过，已生成CaseBundle。新模型B/C消费者仍未接通，未执行求解。详细操作与状态见[集成手册](docs/runbooks/A_INTEGRATION_CN.md)，总体方向及三人分工见`docs/team/`。
 
 ## 目录
 

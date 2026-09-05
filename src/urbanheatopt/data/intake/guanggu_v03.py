@@ -277,7 +277,10 @@ def _validate_inventory(
     report.inventory["economic_extension_file_count"] = len(extension_files)
     if (root / REVISED_DIRECTORY).is_dir():
         try:
-            report.datasets["economic_extension_20260831"] = read_revised_package(root / REVISED_DIRECTORY)
+            report.datasets["economic_extension_20260831"] = read_revised_package(
+                root / REVISED_DIRECTORY,
+                source_permission_policy=profile.get("source_permission_policy", "require_consistent"),
+            )
         except (ValueError, OSError, UnicodeError) as exc:
             _issue(report, "ECONOMIC_EXTENSION_INVALID", str(exc), root / REVISED_DIRECTORY,
                    "warning" if profile.get("economic_parameters_separate_gate") is True else "error")

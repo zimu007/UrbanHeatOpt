@@ -18,13 +18,15 @@ conda run --no-capture-output -n urbanheatopt_env python run.py prepare --config
 
 ## 2. 当前真实结果及正确理解
 
-本次最新输入复验在`work/guanggu_v2/A_HANDOFF_FINAL_20260905`，使用conda run：443源文件（原交付412＋旧经济4＋新经济17＋设备补丁10），input_valid=true，canonical_valid=true；62栋、2160h、133920行标准负荷。前后源哈希一致。此前`A_REAL_VERIFIED_20260905`、`A_HANDOFF_20260905`也保留，不能覆盖。
+20260905按用户最终报价决定重新准备，输出在`work/guanggu_v2/A_FINAL_QUOTES_VERIFIED_20260905`：443源文件（原交付412＋旧经济4＋新经济17＋设备补丁10），input_valid=true，canonical_valid=true；62栋、2160h、133920行标准负荷，前后源哈希一致。此前许可冲突时的`A_HANDOFF_FINAL_20260905`及本次首次成功的`A_FINAL_QUOTES_20260905`保留，不覆盖。
 
-parameter_valid=false、snapshot_complete=false、model_ready=false、solver_executed=false；退出码2是**包内许可冲突被正确拦截**，不是HiGHS算不动。
+parameter_valid=true、snapshot_complete=true；prepare退出0，已生成有效参数和CaseBundle。model_ready=false、solver_executed=false仍是正确状态：B/C消费适配器尚未验收，不能把输入准备成功当作优化完成。
 
-新版参数主表8项code_use_allowed=1，其来源表3个source_id仍为0：SRC_HOT_TES_HOSPITAL_PRICE、SRC_HOT_TES_HOSPITAL_SCOPE、SRC_WB_HEBEI_CLEAN_HEATING_2017。明细见桌面缺失清单及run_summary.errors。等待确认逐参数许可是否覆盖旧来源禁用；目前选择策略为require_consistent，不能自行删除校验使状态变绿。
+此前8项主表允许、来源禁用的绑定已由用户确认按最终报价处理。配置策略为final_quote_override_20260905；原来源表仍为0，源文件未修改，effective_parameters.permission_resolutions逐项保留处理依据。只有已确认绑定被放行，未知来源、禁用执行参数、空值和单位错误仍失败。详见[决定记录](../decisions/FINAL_QUOTE_PERMISSION_20260905.md)。
 
 用户确认“未标暂定视为冻结”已落实为numerical_freeze：研究使用冻结与原source范围分开。proxy/public/literature属性不被改成实际合同。显式provisional/pending/debug/assumption仍标暂定；code_use_allowed许可独立检查。
+
+用户进一步确认审计报价按本研究最终值展示，quotation_display_status与quotation_display_policy记录这一口径。不重复收集已有报价；不把设备本体价和安装价、历史管价和最新管价同时计入。最终参数不等于已经产生最终优化结果。
 
 ## 3. 完整自动链
 
@@ -48,6 +50,7 @@ parameter_valid=false、snapshot_complete=false、model_ready=false、solver_exe
 | code_provenance.json | Git SHA、未提交状态、实际Python源码hash |
 | source_accepted/ | 保留源口径的标准化负荷、建筑、曲线及时间映射 |
 | effective_parameters.json | 参数合法时生成：值、来源、状态、冻结/暂定、选择理由、快照ID |
+| permission_resolutions（上项JSON内） | 8项原许可冲突、最终报价依据及是否选用；不改源许可字段 |
 | parameter_selection.csv | 逐参数应用/未采用原因，model_consumed=false |
 | inputs/external_timeseries.parquet | 全部准备通过后供B消费的新经济时序 |
 | case_bundle.json | 全部准备与hash通过后生成，不允许半合格冒充 |
@@ -55,7 +58,9 @@ parameter_valid=false、snapshot_complete=false、model_ready=false、solver_exe
 | spatial_interface_report.json | 可选候选站/容量接口的读取状态；缺失≠无限 |
 | input_gaps.json、缺失数据清单.md | 同一机器清单渲染；桌面同步带备份 |
 
-当前参数冲突时不会生成effective_parameters和CaseBundle，这符合设计；不要使用旧运行生成的同名文件充数。
+当前成功运行已生成effective_parameters和CaseBundle。若将来出现新错误，仍不得用旧运行同名文件充数。
+
+桌面清单只保留4类：候选站位置/容量、管型热力容量、站房费用拆分、0.026单位语义；后两项是基础研究情景的可选完善。已有报价、旧DN敏感性记录不再列缺失，B/C代码工作只留在就绪报告及任务书。清单整理不新增变量、时段、约束或工程审批要求。
 
 ## 5. 验证及排错
 
@@ -72,15 +77,16 @@ conda run --no-capture-output -n urbanheatopt_env python run.py solve --config c
 - 退出2：输入、参数、路径、版本或尚未接通能力；读errors及缺失清单。
 - 退出1：程序异常；保留日志、运行目录和code_provenance交A，不手动补0。
 - 工作目录错误：先`cd D:\co_WH_heatOPT\UrbanHeatOpt`。
+- 若终端不识别conda，把命令开头的`conda`替换成`& 'C:\Users\leonl\anaconda3\Scripts\conda.exe'`，其余参数不变；无需改系统PATH或脚本执行策略。
 - 环境缺包：报告缺项，不未经同意安装或升级；GDAL_DATA警告与几何读写失败区别记录。本次直接调用环境内python未激活GIS变量的失败已复核：改用conda run后GIS/Parquet/APPSI小模型通过，只剩highspy版本要求1.15.1而本机1.11.0；记录在runs/A_INTEGRATION_20260905/conda_environment。未安装或放宽版本校验。
 - 原始参数需要更正：由参数组维护源文件、ID不改；新数据必须重新validate/prepare，不沿用旧snapshot_id。
 
 ## 6. 交接状态
 
-A：目录与任务书已提交；参数和接口代码与成功/失败合成测试已交付，真实源标准化通过；新包许可冲突阻止参数最终验收。
+A：目录、任务书、参数和接口已交付，真实源标准化及最终报价参数通过；已生成可供B消费的完整快照。输入准备不要求B/C工作完成。
 
-B：新版字段→目标函数（尤其月需量）、地块/容量约束、有无TES单例和V2端点未在本轮实施。C：ResultBundle独立复算及展示未在本轮实施。老师/用户：来源许可冲突裁决及地块/容量研究边界。
+B：新版字段→目标函数（尤其月需量）、地块/容量约束、有无TES单例和V2端点未在本轮实施。C：ResultBundle独立复算及展示未在本轮实施。老师/用户：仅后续地块/容量研究边界等仍需提供，来源许可冲突已解决，不再重复询问。
 
 本轮未提交任何原始数据、桌面副本或运行结果，不推送。V1结果目录、标签和数学实现保留。
 
-最终稳定代码全量回归552 passed/3 skipped/42 warnings，证据`runs/A_INTEGRATION_20260905/acceptance_stable`。67个数学函数/类主体与原基线等价，原参考核心迁移后冻结哈希通过。此前失败日志保留：包括合成测试根目录不存在run.py的修复、测试期间代码hash变化拒绝旧任务；最终回归在源码不再变更时重跑，不放宽门禁。
+上一节点全量回归552 passed/3 skipped，证据`runs/A_INTEGRATION_20260905/acceptance_stable`。本节点603 passed/3 skipped/42 warnings，最新全量证据为`runs/A_INTEGRATION_20260905/final_quotes_tests`，真实准备证据为`final_quotes_verified_prepare`，独立文件与参数复验为`final_quotes_artifacts`。67个数学函数/类主体与原基线等价，参考核心冻结复验通过。此前失败日志保留，不以旧通过结果代替新回归。

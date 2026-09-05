@@ -75,7 +75,7 @@ def synthetic_pipeline(tmp_path, monkeypatch):
                     registry={"synthetic": {"parameter_id": "synthetic", "value": 3}},
                     effective={"station_cost_boundary": "excluded_unseparated"}, pending=[])
 
-    def package_reader(root, scenario):
+    def package_reader(root, scenario, **kwargs):
         calls.append(("parameters", root, scenario))
         return copy.deepcopy(snapshot)
 
