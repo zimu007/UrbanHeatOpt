@@ -12,7 +12,7 @@ requires-python = ">=3.12"
 where = ["src"]
 
 [tool.setuptools.package-data]
-urbanheatopt = ["data/schemas/*.json", "data/schemas/*.yaml", "data/profile_resources/*.yaml"]
+urbanheatopt = ["data/schemas/*.json", "data/schemas/*.yaml", "data/profile_resources/*.yaml", "data/profile_resources/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]

@@ -25,6 +25,10 @@ import yaml
 from urbanheatopt.parameters.legacy_economics import (
     PACKAGE_DIRECTORY, PACKAGE_FILES, PackageError, read_package,
 )
+from urbanheatopt.parameters.revised_economics import (
+    PACKAGE_DIRECTORY as REVISED_DIRECTORY, PACKAGE_FILES as REVISED_FILES,
+    read_revised_package,
+)
 
 
 EQUIPMENT_PATCH_FILES = (
@@ -245,6 +249,8 @@ def _classify_inventory(
             category_counts["root_delivery"] += 1
         elif len(parts) == 2 and parts[0] == PACKAGE_DIRECTORY and parts[1] in PACKAGE_FILES:
             category_counts["economic_extension_20260829"] += 1
+        elif parts[0] == REVISED_DIRECTORY and "/".join(parts[1:]) in REVISED_FILES:
+            category_counts["economic_extension_20260831"] += 1
         elif parts[0] in directories:
             category_counts[str(directories[parts[0]])] += 1
         else:
@@ -264,12 +270,18 @@ def _validate_inventory(
     report.inventory.update(
         {"total_files": len(files), "extensions": dict(sorted(extensions.items()))}
     )
-    extension_files = [path for path in files if path.relative_to(root).parts[0] == PACKAGE_DIRECTORY]
+    extension_files = [path for path in files if path.relative_to(root).parts[0] in {PACKAGE_DIRECTORY, REVISED_DIRECTORY}]
     baseline_files = [path for path in files if path not in extension_files]
     baseline_extensions = Counter(path.suffix.lower() for path in baseline_files)
     report.inventory["baseline_file_count"] = len(baseline_files)
     report.inventory["economic_extension_file_count"] = len(extension_files)
-    if extension_files:
+    if (root / REVISED_DIRECTORY).is_dir():
+        try:
+            report.datasets["economic_extension_20260831"] = read_revised_package(root / REVISED_DIRECTORY)
+        except (ValueError, OSError, UnicodeError) as exc:
+            _issue(report, "ECONOMIC_EXTENSION_INVALID", str(exc), root / REVISED_DIRECTORY,
+                   "warning" if profile.get("economic_parameters_separate_gate") is True else "error")
+    if (root / PACKAGE_DIRECTORY).is_dir():
         package_root = root / PACKAGE_DIRECTORY
         for name in PACKAGE_FILES:
             if not (package_root / name).is_file():
@@ -989,6 +1001,7 @@ def _audit_supporting_files(
     raw_prefix = str(profile["raw_dest"]["root"]).replace("\\", "/") + "/"
     readable = 0
     workbook_sheets: dict[str, list[str]] = {}
+    binary_provenance = []
     for path in files:
         relative = path.relative_to(root).as_posix()
         if relative in standard or relative.startswith(raw_prefix):
@@ -1012,6 +1025,13 @@ def _audit_supporting_files(
                 workbook_sheets[relative] = list(excel.sheet_names)
                 for sheet in excel.sheet_names:
                     excel.parse(sheet_name=sheet)
+            elif suffix in {".pdf", ".png"} and relative.startswith(REVISED_DIRECTORY + "/sources/"):
+                with path.open("rb") as stream:
+                    header = stream.read(8)
+                expected = b"%PDF-" if suffix == ".pdf" else b"\x89PNG\r\n\x1a\n"
+                if not header.startswith(expected):
+                    raise ValueError("来源附件扩展名与文件签名不符")
+                binary_provenance.append({"path": relative, "audit": "signature_and_sha256_only", "content_verified": False})
             else:
                 raise ValueError(f"不支持的文件格式 {suffix}")
         except Exception as exc:
@@ -1021,6 +1041,7 @@ def _audit_supporting_files(
     report.datasets["supporting_files"] = {
         "readable_file_count": readable,
         "workbook_sheets": workbook_sheets,
+        "binary_provenance": binary_provenance,
         "role": "provenance_only",
     }
 
