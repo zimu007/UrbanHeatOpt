@@ -1,0 +1,111 @@
+{
+  "schema": "urbanheatopt_compact_fullseason_freeze_1",
+  "baseline_id": "compact-fullseason-v1-r3",
+  "frozen_at": "2026-09-04T20:59:14+08:00",
+  "status": "frozen_algorithmic_baseline_not_formal_engineering_result",
+  "repository": {
+    "url": "https://github.com/zimu007/UrbanHeatOpt.git",
+    "branch": "WH_heatOPT_li",
+    "executed_commit": "58d83226d69e7c6a2ccb5ef02b7a212f588cc182",
+    "executed_tree": "b7c70864cc05388232e1bc66695660c48c74bb2c",
+    "source_tag": "compact-fullseason-v1-r3",
+    "executed_worktree_dirty": false,
+    "executed_git_status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "unlimited_runtime_successor_commit": "aebdeada611a1c4048aa28ce3bcabeb8015a4913",
+    "unlimited_runtime_successor_tag": "compact-fullseason-v1-unlimited",
+    "successor_note": "The successor removes runtime and memory guards but did not produce the frozen R3 bytes."
+  },
+  "environment": {
+    "platform": "Windows",
+    "python": "3.12.2",
+    "highspy": "1.15.1",
+    "solver": "HiGHS",
+    "threads_per_task": 4,
+    "max_parallel_tasks": 4,
+    "environment_yml_sha256": "1a24a0e37e57db6eba07a3d36b0d75097ec3654694aaf34acf169458871bd97f"
+  },
+  "scope": {
+    "buildings": 62,
+    "hours": 2160,
+    "candidate_sites": 5,
+    "source_network_edges": 578,
+    "certified_scan_points": 51,
+    "combined_frontier_points": 8,
+    "final_fixed_decision_replays": 8,
+    "tes": "skipped_by_time_gate_no_tes_baseline_delivered",
+    "qualification": "certified_within_five_fixed-root_shortest-path-tree_candidates; not a global optimum over the cyclic 578-edge graph"
+  },
+  "input_provenance": {
+    "case_sha256": "28b5e9492b60e39b12f9eab7b970d2c774083190c84894a5ae1a2bd41edcae0a",
+    "network_sha256": "e19307a8a1bd8691e4046596318cd738db30ddaa37e89d74e76061ed63a94879",
+    "osm_snapshot_sha256": "edff6c62d5d4096fbb05484b437c1ba4b8411d43dace2fc4ea2a50c4c45024c6",
+    "parameter_version": "9fc2d87f71a2e72aab60e3dde23192cf60b67b2532de623c1c1acc13ea8c2596",
+    "economic_scenario": "road_v2_economic_20260829_test",
+    "formal_use_allowed": false
+  },
+  "mathematics_sha256": {
+    "competition/core_model.py": "da9a29273e79a7c361fd8cd38b109023177500594168530942049a9812f8194d",
+    "competition/pareto.py": "484b7f2630f8c2d373e76d671dec1d097fcafcf0109324ef7b857ff0be7cb2ec",
+    "competition/road_joint_v2/builder.py": "c49f35b951b3e948aee9abee95785128e68b95ca097199172ef8142b4ccd6009",
+    "competition/road_joint_v2/compact.py": "b9c177ac0b10a8ca7065f43b299173a93aad49b7db22fc27b022d1836783a292",
+    "competition/road_joint_v2/compact_tasks.py": "34f5a877e353d00b5b2bb7ff437bf02f8de31d9c8a2bef87f3b5c0593e59584c",
+    "competition/road_joint_v2/results.py": "021f26568bfbc0d16a229c91df32f07f55024008b54dbd83b66df6ea57c70013",
+    "competition/solvers.py": "75f5b3fd14c548e07247296f5b648cb3f940b2a7341256edece482650e11e4d8",
+    "scripts/run_compact_fullseason.py": "d061037ee70413c4c2138c4e46e06021c69a630db9b9d6fb83e0902e1db1392f"
+  },
+  "result_artifacts": {
+    "result_root_name": "COMPACT_FULLSEASON_V1_20260903_R3",
+    "file_count": 771,
+    "total_bytes": 278159779,
+    "tree_digest": {
+      "algorithm": "sha256(UTF-8 lines: relative_posix<TAB>size<TAB>file_sha256<LF>, sorted ordinal by relative_posix)",
+      "sha256": "c75b89f06b7997797fc4fc5c9bee1cd21fa3409fdead1b1609758ecd7fb507bf"
+    },
+    "core_files_sha256": {
+      "case.json": "28b5e9492b60e39b12f9eab7b970d2c774083190c84894a5ae1a2bd41edcae0a",
+      "compact_task_plan.json": "cc450eaaa89c0fb5eea7192750ebe1d23749637e4f7d6c983a070adf8e991ab6",
+      "compact_pareto_frontiers.json": "79a92900809a208ab7d00c81dceec04670bf0e2dd16990543f1f32a6f65f2e61",
+      "completion_manifest.json": "68330016e34319c8dabe77022fee68e1b292a5e5f2637b241d37a777f0db6a4b",
+      "recovery_control.json": "25eb060b62ed5f700dc8fd1caed7c02ea11db395517ce09a5c8a7ffad8aa39ea"
+    },
+    "archive": {
+      "filename": "UrbanHeatOpt_COMPACT_FULLSEASON_V1_R3.tar.gz",
+      "bytes": 112916332,
+      "sha256": "0be589301c69a8c5b7c9ee372128e3c7470cb848462a6380989dccc39ef9cbcd",
+      "contains": "one top-level COMPACT_FULLSEASON_V1_20260903_R3 directory; 771 files plus directory entries",
+      "release_url": "https://github.com/zimu007/UrbanHeatOpt/releases/tag/compact-fullseason-v1-r3",
+      "download_url": "https://github.com/zimu007/UrbanHeatOpt/releases/download/compact-fullseason-v1-r3/UrbanHeatOpt_COMPACT_FULLSEASON_V1_R3.tar.gz",
+      "remote_asset_state": "uploaded"
+    },
+    "recovery_scripts_sha256": {
+      "recover_compact_r3.py": "ec376d163b01a10449d5cc644a5a69511468c75cf5772f17be2f7550ab9c14fd",
+      "recover_compact_r3.ps1": "a6d166136d969ac2038ab5bd5e4f1c5b148b83d5665480a964a6a189d73bd7b6"
+    }
+  },
+  "frontier": [
+    {"point_id": "hybrid-site-03-carbon", "mode": "hybrid", "site_id": "candidate_station_03", "station_built": false, "connected": 0, "local": 62, "annual_cost_CNY": 44851180.521911, "annual_carbon_kgCO2e": 4483137.642316, "is_knee": false},
+    {"point_id": "central-site-03-carbon", "mode": "central", "site_id": "candidate_station_03", "station_built": true, "connected": 62, "local": 0, "annual_cost_CNY": 39816356.190577, "annual_carbon_kgCO2e": 4574633.547392, "is_knee": false},
+    {"point_id": "central-site-02-carbon", "mode": "central", "site_id": "candidate_station_02", "station_built": true, "connected": 62, "local": 0, "annual_cost_CNY": 39802218.383540, "annual_carbon_kgCO2e": 4577101.865127, "is_knee": false},
+    {"point_id": "hybrid-site-02-epsilon-025", "mode": "hybrid", "site_id": "candidate_station_02", "station_built": true, "connected": 61, "local": 1, "annual_cost_CNY": 22211189.402734, "annual_carbon_kgCO2e": 5147395.921362, "is_knee": true},
+    {"point_id": "hybrid-site-02-epsilon-050", "mode": "hybrid", "site_id": "candidate_station_02", "station_built": true, "connected": 62, "local": 0, "annual_cost_CNY": 19927147.640350, "annual_carbon_kgCO2e": 5811654.200406, "is_knee": false},
+    {"point_id": "hybrid-site-02-epsilon-075", "mode": "hybrid", "site_id": "candidate_station_02", "station_built": true, "connected": 62, "local": 0, "annual_cost_CNY": 18616960.473943, "annual_carbon_kgCO2e": 6475912.479451, "is_knee": false},
+    {"point_id": "central-site-03-cost", "mode": "central", "site_id": "candidate_station_03", "station_built": true, "connected": 62, "local": 0, "annual_cost_CNY": 17684770.356890, "annual_carbon_kgCO2e": 7138113.102523, "is_knee": false},
+    {"point_id": "central-site-02-cost", "mode": "central", "site_id": "candidate_station_02", "station_built": true, "connected": 62, "local": 0, "annual_cost_CNY": 17670964.707436, "annual_carbon_kgCO2e": 7140170.758494, "is_knee": false}
+  ],
+  "acceptance": {
+    "completion_status": "complete",
+    "all_51_scan_tasks_optimal_and_qa_passed": true,
+    "all_8_final_replays_qa_passed": true,
+    "zero_unserved_heat": true,
+    "within_recorded_active_3000_second_budget": true,
+    "combined_active_elapsed_seconds": 2880.4834740161896
+  },
+  "interpretation_limits": [
+    "The five sites are deterministic planning candidates, not verified buildable station parcels.",
+    "The frontier is limited to five fixed rooted shortest-path trees, not all topologies of the 578-edge cyclic road graph.",
+    "The economic package is explicitly synthetic/test-only; pipe DN is null and station/access costs are provisional.",
+    "TES was not solved in the delivered baseline.",
+    "The 61/1 sampled knee is a geometric knee of sparse samples, not an engineering recommendation.",
+    "Historical absolute paths inside R3 are provenance bytes and must not be edited."
+  ]
+}

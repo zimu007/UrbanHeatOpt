@@ -1,0 +1,9 @@
+point_id,mode,site_id,station_built,connected_buildings,local_buildings,annual_cost_CNY_per_year,annual_carbon_kgCO2e_per_year,is_knee,qa_passed
+hybrid-site-03-carbon,hybrid,candidate_station_03,false,0,62,44851180.521911,4483137.642316,false,true
+central-site-03-carbon,central,candidate_station_03,true,62,0,39816356.190577,4574633.547392,false,true
+central-site-02-carbon,central,candidate_station_02,true,62,0,39802218.383540,4577101.865127,false,true
+hybrid-site-02-epsilon-025,hybrid,candidate_station_02,true,61,1,22211189.402734,5147395.921362,true,true
+hybrid-site-02-epsilon-050,hybrid,candidate_station_02,true,62,0,19927147.640350,5811654.200406,false,true
+hybrid-site-02-epsilon-075,hybrid,candidate_station_02,true,62,0,18616960.473943,6475912.479451,false,true
+central-site-03-cost,central,candidate_station_03,true,62,0,17684770.356890,7138113.102523,false,true
+central-site-02-cost,central,candidate_station_02,true,62,0,17670964.707436,7140170.758494,false,true

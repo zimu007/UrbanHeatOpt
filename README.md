@@ -6,6 +6,8 @@
 
 新主线源码为 `src/urbanheatopt/`，根入口为 `run.py`。本轮只负责目录、输入参数和模块集成，不实现B的模型升级或C的可视化。
 
+V0 smoke command (synthetic test data only):
+
 ```powershell
 conda run --no-capture-output -n urbanheatopt_env python tools/check_environment.py
 conda run --no-capture-output -n urbanheatopt_env python run.py --help
@@ -26,7 +28,7 @@ conda run --no-capture-output -n urbanheatopt_env python -m pytest -q
 
 ## 冻结成果与历史边界
 
-V1 R3结果对应`compact-fullseason-v1-r3`（58d83226）；当前整理前代码为`compact-fullseason-v1-unlimited`（aebdeada）。两者不得混用。V1是62栋×2160h、无TES、五个固定站址对应树网络内的规划算法基线，不是完整环网全局最优。
+V1 R3结果对应`compact-fullseason-v1-r3`（58d83226）；当前整理前代码为`compact-fullseason-v1-unlimited`（aebdeada）。两者不得混用。V1是62栋×2160h、无TES、五个固定站址对应树网络内的规划算法基线，不是完整环网全局最优。冻结报告与产物清单见 [docs/releases/compact_fullseason_v1_r3/README.md](docs/releases/compact_fullseason_v1_r3/README.md)，该基线可审计，但未标注为正式工程结果。
 
 服务器结果：`../OUT_RESULT/COMPACT_FULLSEASON_V1_20260903_R3/`。原始输入：`../IN_DATA/原始输入数据/v0.2/`。均不进入Git、不被目录整理改写。
 
