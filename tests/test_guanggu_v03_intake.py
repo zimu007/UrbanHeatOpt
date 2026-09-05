@@ -11,13 +11,13 @@ import pytest
 import yaml
 from shapely.geometry import Polygon
 
-from competition.adapters import adapt_guanggu_v03_sources, validate_canonical_season_data
-from competition.canonical import CanonicalSeasonData
-from competition.intake import (
+from urbanheatopt.data.adapters import adapt_guanggu_v03_sources, validate_canonical_season_data
+from urbanheatopt.data.canonical import CanonicalSeasonData
+from urbanheatopt.data.intake import (
     resolve_guanggu_v03_source_roots,
     validate_guanggu_v03_delivery,
 )
-from competition.readiness import run_guanggu_v03_input_validation
+from urbanheatopt.data.readiness import run_guanggu_v03_input_validation
 
 
 DATA_VERSION = "guanggu-v0.3-test"
@@ -664,7 +664,7 @@ def test_guanggu_v03_run_case_stops_before_any_pipeline_when_not_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import scripts.run_case as command
+    import tools.legacy_cli.run_case as command
 
     blocker = SimpleNamespace(
         item_id="v03_case_builder",
@@ -711,7 +711,7 @@ def test_guanggu_v03_validate_command_reports_input_success_independently_of_mod
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import scripts.validate_inputs as command
+    import tools.legacy_cli.validate_inputs as command
 
     fake_run = SimpleNamespace(
         to_dict=lambda: {

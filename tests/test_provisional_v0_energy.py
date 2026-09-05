@@ -5,7 +5,7 @@ import math
 import pandas as pd
 import pytest
 
-from competition.adapters.provisional_v0 import (
+from urbanheatopt.data.adapters.provisional_v0 import (
     build_provisional_external_timeseries,
     electricity_price_by_hour,
     gas_carbon_kgCO2_per_kWh_LHV,

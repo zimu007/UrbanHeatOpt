@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from competition.validation.inputs import InputValidationError, validate_case_inputs
+from urbanheatopt.data.validation.inputs import InputValidationError, validate_case_inputs
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

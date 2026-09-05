@@ -10,8 +10,8 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = ROOT / "competition" / "schemas" / "case_config_v3.schema.json"
-MACHINE_CONTRACT_PATH = ROOT / "competition" / "schemas" / "input_contract_v3.yaml"
+SCHEMA_PATH = ROOT / "src" / "urbanheatopt" / "data" / "schemas" / "case_config_v3.schema.json"
+MACHINE_CONTRACT_PATH = ROOT / "src" / "urbanheatopt" / "data" / "schemas" / "input_contract_v3.yaml"
 
 
 def _config(profile: str = "v0-smoke") -> dict[str, object]:

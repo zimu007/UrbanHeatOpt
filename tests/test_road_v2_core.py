@@ -4,16 +4,16 @@ import json
 import pytest
 from pyomo.environ import value
 
-from competition.core_model import CoreModelInput, EconomicInput, TechnologySpec, ThermalStorageSpec, build_core_model
-from competition.solvers import SolverSettings, solve_pyomo_model, SolverNotOptimalError
-from competition.road_joint_v2.core import (
+from urbanheatopt.model.reference_core import CoreModelInput, EconomicInput, TechnologySpec, ThermalStorageSpec, build_core_model
+from urbanheatopt.optimization.solvers import SolverSettings, solve_pyomo_model, SolverNotOptimalError
+from urbanheatopt.model.road_core import (
     RoadCase,
     PipeDesign,
     build_road_model,
     classify_direction_pair,
     classify_direction_solution,
 )
-from competition.road_joint_v2.results import export_solution, audit_export
+from urbanheatopt.qa.road_results import export_solution, audit_export
 
 
 def shared_case(mode='central', loss=.02):

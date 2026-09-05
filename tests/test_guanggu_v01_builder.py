@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from scripts.build_guanggu_v01_6b_168h import gas_volume_to_lhv_energy_factors
+from tools.legacy_cli.build_guanggu_v01_6b_168h import gas_volume_to_lhv_energy_factors
 
 
 def test_gas_volume_to_lhv_energy_conversion() -> None:

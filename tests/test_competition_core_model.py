@@ -1,4 +1,4 @@
-﻿"""竞赛层三模式源—网—荷核心模型测试。"""
+"""竞赛层三模式源—网—荷核心模型测试。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from pyomo.core.base.objective import Objective as ObjectiveComponent
 from pyomo.opt import TerminationCondition
 from shapely.geometry import LineString, Point
 
-import competition.solvers as solver_module
-from competition.core_model import (
+import urbanheatopt.optimization.solvers as solver_module
+from urbanheatopt.model.reference_core import (
     CoreModelInput,
     CoreModelInputError,
     EconomicInput,
@@ -29,19 +29,19 @@ from competition.core_model import (
     solve_core_model,
     validate_core_input,
 )
-from competition.economics import (
+from urbanheatopt.parameters.energy_units import (
     EconomicStandardizationError,
     standardize_gas_price_CNY_per_kWh_LHV,
 )
-from competition.costing.annualized import capital_recovery_factor
-from competition.solvers import (
+from urbanheatopt.model.costing.annualized import capital_recovery_factor
+from urbanheatopt.optimization.solvers import (
     SolverNotOptimalError,
     SolverSettings,
     solve_pyomo_model,
     validate_solver_settings,
 )
-from competition.pareto import ParetoPoint, ParetoRun
-from competition.results.v3_standard import export_v3_results
+from urbanheatopt.optimization.pareto import ParetoPoint, ParetoRun
+from urbanheatopt.reporting.results.v3_standard import export_v3_results
 
 
 COST_ABS_TOL_CNY_PER_YEAR = 1e-6

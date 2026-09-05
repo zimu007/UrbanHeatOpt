@@ -8,8 +8,8 @@ import pandas as pd
 import yaml
 from shapely.geometry import Polygon
 
-from competition.adapters.wuhan_v02 import _normalize_archetype_map, adapt_wuhan_v02_sources
-from competition.intake import validate_wuhan_v02_delivery
+from urbanheatopt.data.adapters.wuhan_v02 import _normalize_archetype_map, adapt_wuhan_v02_sources
+from urbanheatopt.data.intake import validate_wuhan_v02_delivery
 
 
 def _write_profile(tmp_path: Path) -> Path:

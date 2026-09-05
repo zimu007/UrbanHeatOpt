@@ -3,16 +3,16 @@ import json
 import pytest
 from pyomo.environ import Var
 
-from competition.road_joint_v2.budget import (
+from urbanheatopt.optimization.reference_budget import (
     apply_budget_network_design,
     build_budget_case,
     build_budget_network_design,
     build_shortest_path_backbone_case,
     initialize_budget_hybrid_mip_start,
 )
-from competition.road_joint_v2.core import build_road_model, validate_case
-from competition.road_joint_v2.tasks import create_plan, run_task
-from competition.solvers import SolverSettings, solve_pyomo_model
+from urbanheatopt.model.road_core import build_road_model, validate_case
+from urbanheatopt.optimization.reference_tasks import create_plan, run_task
+from urbanheatopt.optimization.solvers import SolverSettings, solve_pyomo_model
 from tests.test_road_v2_core import shared_case
 
 

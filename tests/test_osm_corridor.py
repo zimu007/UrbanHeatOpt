@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 from shapely.geometry import box
 
-from competition.osm_corridor import (
+from urbanheatopt.spatial.osm_corridor import (
     CANDIDATE_SOURCE,
     SPATIAL_STATUS,
     OsmCorridorError,

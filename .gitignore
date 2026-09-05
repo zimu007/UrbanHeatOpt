@@ -33,3 +33,9 @@ htmlcov/
 # 以便将合成输入、数据字典和校验基准纳入版本管理。
 !tests/fixtures/**
 !cases/**/README.md
+
+# New package/build artifacts; no source or synthetic fixture exclusion.
+/build/
+/dist/
+*.egg-info/
+/work/

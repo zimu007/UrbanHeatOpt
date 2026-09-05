@@ -1,7 +1,7 @@
 import os
 import pytest
-from scripts.run_road_v2_guarded import memory_budget, process_memory, run_guarded
-from competition.road_joint_v2.tasks import create_plan
+from tools.legacy_cli.run_road_v2_guarded import memory_budget, process_memory, run_guarded
+from urbanheatopt.optimization.reference_tasks import create_plan
 from test_road_v2_core import shared_case
 
 

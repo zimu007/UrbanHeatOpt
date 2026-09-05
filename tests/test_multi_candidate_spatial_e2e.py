@@ -11,16 +11,16 @@ from pyomo.environ import Constraint, value
 from shapely.geometry import Polygon
 import yaml
 
-from competition.core_model import CoreSolveResult, build_core_model, solve_core_model
-from competition.pareto import ParetoPoint, ParetoRun
-from competition.provisional_spatial import (
+from urbanheatopt.model.reference_core import CoreSolveResult, build_core_model, solve_core_model
+from urbanheatopt.optimization.pareto import ParetoPoint, ParetoRun
+from urbanheatopt.spatial.provisional import (
     MULTI_CANDIDATE_SOURCE,
     build_multi_candidate_provisional_network,
     write_provisional_spatial_outputs,
 )
-from competition.results.v3_standard import export_v3_results
-from competition.solvers import solve_pyomo_model
-from competition.validation.v3_inputs import load_v3_case
+from urbanheatopt.reporting.results.v3_standard import export_v3_results
+from urbanheatopt.optimization.solvers import solve_pyomo_model
+from urbanheatopt.data.validation.v3_inputs import load_v3_case
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "v3_smoke_case"

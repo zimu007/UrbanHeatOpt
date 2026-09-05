@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from competition.adapters.wuhan_delivery import _adapt_loads
+from urbanheatopt.data.adapters.wuhan_delivery import _adapt_loads
 
 
 def test_load_adapter_scales_unit_area_load_and_sorts_standard_rows(tmp_path: Path) -> None:

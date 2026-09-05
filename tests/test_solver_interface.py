@@ -8,8 +8,8 @@ import yaml
 from pyomo.environ import Constraint, Objective, Var, value
 from pyomo.opt import TerminationCondition
 
-import model as model_module
-from model import HeatNetworkModel
+from legacy.upstream import model as model_module
+from legacy.upstream.model import HeatNetworkModel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +24,7 @@ def test_highspy_environment_pin_matches_runtime_gate() -> None:
         for row in environment["dependencies"]
         if isinstance(row, dict) and "pip" in row
     )
-    checker = run_path(str(PROJECT_ROOT / "scripts" / "check_environment.py"))
+    checker = run_path(str(PROJECT_ROOT / "tools" / "check_environment.py"))
     expected = checker["EXPECTED_VERSIONS"]["highspy"]
 
     assert expected == "1.15.1"
@@ -55,7 +55,7 @@ def _linear_model(*, infeasible: bool = False) -> HeatNetworkModel:
 
 
 def test_project_config_defaults_to_deterministic_highs() -> None:
-    config = yaml.safe_load((PROJECT_ROOT / "_config.yaml").read_text(encoding="utf-8"))
+    config = yaml.safe_load((PROJECT_ROOT / "configs/legacy/_config.yaml").read_text(encoding="utf-8"))
     assert config["solver"] == "highs"
     assert config["solver_threads"] == 1
     assert config["solver_time_limit_seconds"] == 60

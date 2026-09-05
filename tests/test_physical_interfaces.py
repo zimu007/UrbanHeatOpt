@@ -5,8 +5,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from competition.core_model import TechnologySpec
-from competition.physical_interfaces import (
+from urbanheatopt.model.reference_core import TechnologySpec
+from urbanheatopt.model.physical_interfaces import (
     FixedV0PerformanceProvider,
     HeatPumpPerformanceCoefficients,
     PhysicalInterfaceError,

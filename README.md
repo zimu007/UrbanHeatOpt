@@ -1,145 +1,37 @@
-# UrbanHeatOpt
+# UrbanHeatOpt 竞赛代码
 
-**A Software Framework for Supporting Municipal Heat Transition Planning**
+本仓库用于光谷片区供热源荷匹配与成本—运行碳排规划优化，不是施工图设计工具。
 
----
+## 当前入口与状态
 
-## Purpose
-
-UrbanHeatOpt is a software framework to support municipalities and energy planners in evaluating and designing sustainable heating concepts for urban districts. It is tailored for early-stage planning and comparative analysis of scenarios with limited available data.
-
-Key functionalities include:
-
-- Automatic retrieval and preprocessing of building data from OpenStreetMap
-- Generation of stochastic hourly heat demand time series
-- Clustering of buildings and district heating network proposal
-- Mixed-integer optimization of system configuration and operation
-- Visualization of investment decisions, energy balances, and time profiles
-- Scenario-based structure for input, output, and result comparison
-
----
-
-## Quick Start: Installation and Use
-
-Using the software does not require expert programming knowledge.
-
-1. **Clone this repository** to your working directory.
-2. **Create and verify the environment** (Anaconda or Miniconda is required):
-   ```bash
-   conda env create -f environment.yml
-   conda activate urbanheatopt_env
-   python scripts/check_environment.py
-   ```
-   For an already-created environment, the check can also be run without shell
-   activation:
-   ```bash
-   conda run --no-capture-output -n urbanheatopt_env python scripts/check_environment.py
-   ```
-
-   `--no-capture-output` avoids a Conda 25.11 encoding error when this check
-   prints Chinese diagnostics in a Windows GBK console.
-
-   The checked-in `activate_environment_windows.bat` and
-   `activate_environment_unix.sh` wrappers depend on the
-   `Conda-Activation-Scripts` submodule. If that submodule has not been
-   initialized, use the direct Conda commands above.
-3. **Open the `main.ipynb` notebook** in a Jupyter-compatible environment.
-4. Follow the notebook instructions to:
-   - Prepare or modify a case study
-   - Generate input data
-   - Run clustering and optimization
-   - Visualize and evaluate results
-
-> All major functionalities can also be called directly from the Python modules.
-
-> **Competition-branch status:** the V3 draft synthetic case now runs the
-> central, distributed, and hybrid modes through one new Pyomo core, including
-> CRF cost, operating carbon, storage, three pipe levels, Pareto export, and
-> independent QA. Guanggu v0.2 can now be audited and converted automatically;
-> its V0 smoke path uses a deterministic load-centre site and Euclidean MST.
-> That provisional geometry is not road-constrained. Formal performance,
-> road-network, full-season model wiring and solver QA remain release gates. The Guanggu
-> v0.3 delivery can now be audited and normalized into a read-only 2160-hour
-> heating-season snapshot; this is an input result, not a solver result.
-
-V0 smoke command (synthetic test data only):
+新主线源码为 `src/urbanheatopt/`，根入口为 `run.py`。本轮只负责目录、输入参数和模块集成，不实现B的模型升级或C的可视化。
 
 ```powershell
-python scripts/run_case.py --case tests/fixtures/v3_smoke_case --profile v0-smoke
+conda run --no-capture-output -n urbanheatopt_env python tools/check_environment.py
+conda run --no-capture-output -n urbanheatopt_env python run.py --help
+conda run --no-capture-output -n urbanheatopt_env python -m pytest -q
 ```
 
-Guanggu v0.2 read-only audit, automatic adaptation and new-core V0 command:
+`run.py`在目录节点只是明确门禁，输入/参数接口交付后启用validate和prepare。solve、report、diagnose、tes-check在B/C接入前退出2，不回退旧模型。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
 
-```powershell
-python scripts/run_case.py `
-  --delivery-root "<0821代码组交付_光谷软件园目录>" `
-  --source-profile wuhan_v02 `
-  --assumption-profile provisional_v0 `
-  --profile v0-smoke
-```
+## 目录
 
-This command first validates all 394 delivered files, then deterministically
-selects the eight highest-annual-load buildings and the full-park peak natural
-day. Its result is a `weighted_period_test`, not a formal annual conclusion.
+- `src/urbanheatopt/data/`：校验、适配与标准输入；`parameters/`：参数与情景。
+- `spatial/`：候选网络；`model/`：紧凑模型及参考模型。
+- `optimization/`：求解与任务；`qa/`：独立复算；`reporting/`：结果读取与历史绘图接口。
+- `configs/`：运行配置；`tests/`：回归及合成fixture。
+- `docs/architecture/`：结构与接口；`docs/team/`：任务书；`docs/runbooks/`：操作说明。
+- `legacy/`：旧入口依赖及历史文档；`tools/legacy_cli/`：显式历史命令，不是新主线默认命令。
+- `baselines/`：V1固定版本、迁移清单、哈希与复现边界。
 
-The public command never falls back to `model.run_model()`. Historical input
-contracts must use the explicit `scripts/run_legacy_case.py` regression entry.
+## 冻结成果与历史边界
 
-Guanggu v0.3 full input audit and heating-season normalization:
+V1 R3结果对应`compact-fullseason-v1-r3`（58d83226）；当前整理前代码为`compact-fullseason-v1-unlimited`（aebdeada）。两者不得混用。V1是62栋×2160h、无TES、五个固定站址对应树网络内的规划算法基线，不是完整环网全局最优。
 
-```powershell
-python scripts/validate_inputs.py `
-  --delivery-root "<0823代码组交付_光谷软件园_v0.3目录>" `
-  --source-profile guanggu_v03 `
-  --scope heating-season `
-  --full-audit
-```
+服务器结果：`../OUT_RESULT/COMPACT_FULLSEASON_V1_20260903_R3/`。原始输入：`../IN_DATA/原始输入数据/v0.2/`。均不进入Git、不被目录整理改写。
 
-This command independently reads and hashes all 412 files, validates the
-62-building full-year delivery, builds the 2160-hour canonical snapshot, and
-writes `C:\Users\leonl\Desktop\光谷v0.3输入校验与模型就绪状态.md`. The current
-expected result is `source_validation_passed=true`,
-`canonical_validation_passed=true`, `model_ready=false`, and
-`solver_executed=false`. See `docs/GUANGGU_V03_INPUT_GUIDE.md` for the exact
-VS Code workflow, validation scope, outputs, and release blockers.
+目录重构的源文件哈希会因导入路径改变；公式保全通过 `python tools/verify_layout.py` 与回归测试验证，不虚称新旧文件字节相同。旧源码和原哈希可从冻结标签恢复。
 
-V1.0 eligibility is checked without running or modifying a case:
+`default/`、`Fehring/`、Conda子模块及现有`runs/`保留原位：其中可能混有数据/历史证据，不进行整目录搬移。比赛代码包排除这些非主线资产和缓存，详见目录迁移说明。
 
-```powershell
-python scripts/check_v1_release_gate.py --case <formal-case> --run-dir <formal-run>
-```
-
-The current draft fixture is expected to fail this gate; that failure prevents
-synthetic V0 output from being mislabeled as a formal V1.0 result.
-
----
-
-## Documentation
-
-Full documentation is available and includes:
-
-- Step-by-step usage guide
-- Folder structure and configuration
-- Input template formats
-- Model formulation and equations
-- Description of modules and functions
-
-Competition-branch specifications and status records:
-
-- [Competition input data contract](docs/DATA_CONTRACT.md)
-- [Data-interface input and correction policy](docs/INPUT_INTERFACE_GUIDE.md)
-- [Data-interface development status (Chinese)](docs/DATA_INTERFACE_STATUS_CN.md)
-- [Model assumptions and legacy boundaries](docs/MODEL_ASSUMPTIONS.md)
-- [Verified development environment](docs/ENVIRONMENT_REPORT.md)
-- [Deferred real-data work](docs/P0_DEFERRED_REAL_DATA.md)
-- [Questions for the load team](docs/questions_for_load_team.md)
-- [Parameters awaiting project-team confirmation](docs/questions_for_project_team.md)
-
-Visit the documentation for details:  
-**[iee-tugraz.github.io/UrbanHeatOpt/](https://iee-tugraz.github.io/UrbanHeatOpt/)**
-
----
-
-## License
-
-This project is distributed under the MIT License.
+原作者Notebook说明保存在`legacy/upstream/README_original.md`；LICENSE和CITATION保留。

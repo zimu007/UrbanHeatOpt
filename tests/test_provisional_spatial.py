@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from shapely.geometry import Point
 
-from competition.provisional_spatial import (
+from urbanheatopt.spatial.provisional import (
     CANDIDATE_SOURCE,
     MULTI_CANDIDATE_SOURCE,
     MULTI_CANDIDATE_STATUS,

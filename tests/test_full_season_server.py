@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import competition.full_season_server as server
-from competition.full_season_server import FullSeasonTask
+import urbanheatopt.optimization.full_season_server as server
+from urbanheatopt.optimization.full_season_server import FullSeasonTask
 
 
 def _fake_plan(root: Path) -> Path:

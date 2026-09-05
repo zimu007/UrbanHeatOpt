@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from competition.road_joint_v2.economic_package import (
+from urbanheatopt.parameters.legacy_economics import (
     PackageError, read_package, effective_parameters, write_gap_report,
 )
 
@@ -104,8 +104,8 @@ def test_policy_period_gap_and_overlap_are_rejected(package):
 
 
 def test_extension_inventory_does_not_relax_original_baseline(package):
-    from competition.intake.guanggu_v03 import GuangguV03Report, _validate_inventory
-    from competition.road_joint_v2.economic_package import PACKAGE_DIRECTORY
+    from urbanheatopt.data.intake.guanggu_v03 import GuangguV03Report, _validate_inventory
+    from urbanheatopt.parameters.legacy_economics import PACKAGE_DIRECTORY
     from shutil import copytree
     root = package / 'delivery'
     copytree(package, root / PACKAGE_DIRECTORY, ignore=lambda p, names: ['delivery'])

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from competition.pipelines import run_case_pipeline
+from urbanheatopt.optimization.pipelines import run_case_pipeline
 
 
 CASE_DIR = Path(__file__).parent / "fixtures" / "v3_smoke_case"

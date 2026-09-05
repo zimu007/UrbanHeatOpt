@@ -8,13 +8,13 @@ import pandas as pd
 import pytest
 from shapely.geometry import Polygon
 
-from competition.adapters.wuhan_v02 import WuhanV02Adaptation
-from competition.adapters.wuhan_v02_case import (
+from urbanheatopt.data.adapters.wuhan_v02 import WuhanV02Adaptation
+from urbanheatopt.data.adapters.wuhan_v02_case import (
     WuhanV02CaseError,
     prepare_wuhan_v02_v0_case,
     select_v0_smoke_scope,
 )
-from competition.pipelines import run_wuhan_v02_pipeline
+from urbanheatopt.optimization.pipelines import run_wuhan_v02_pipeline
 
 
 def _loads() -> pd.DataFrame:
@@ -132,7 +132,7 @@ def _fake_adaptation(root: Path) -> WuhanV02Adaptation:
 def test_prepare_case_builds_valid_canonical_snapshot(monkeypatch, tmp_path: Path) -> None:
     adaptation = _fake_adaptation(tmp_path / "adapted")
     monkeypatch.setattr(
-        "competition.adapters.wuhan_v02_case.adapt_wuhan_v02_sources",
+        "urbanheatopt.data.adapters.wuhan_v02_case.adapt_wuhan_v02_sources",
         lambda *args, **kwargs: adaptation,
     )
     delivery = tmp_path / "delivery"
@@ -165,7 +165,7 @@ def test_wuhan_v02_pipeline_exports_snapshot_pareto_and_qa(
 ) -> None:
     adaptation = _fake_adaptation(tmp_path / "adapted-for-run")
     monkeypatch.setattr(
-        "competition.adapters.wuhan_v02_case.adapt_wuhan_v02_sources",
+        "urbanheatopt.data.adapters.wuhan_v02_case.adapt_wuhan_v02_sources",
         lambda *args, **kwargs: adaptation,
     )
     delivery = tmp_path / "delivery-for-run"

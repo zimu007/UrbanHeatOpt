@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from competition.intake import IntakeValidationError, validate_delivery
+from urbanheatopt.data.intake import IntakeValidationError, validate_delivery
 
 
 def _write_manifest(tmp_path: Path, datasets: list[dict], relations: list[dict] | None = None) -> Path:

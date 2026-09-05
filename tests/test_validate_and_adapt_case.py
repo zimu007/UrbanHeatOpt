@@ -9,11 +9,11 @@ import pytest
 import yaml
 from shapely.geometry import LineString, Polygon
 
-from competition.adapters.legacy_case import adapt_case_to_legacy, adapt_case_to_legacy_case_directory
-from competition.results.standard import export_standard_results
-from scripts.create_minimal_case import create_minimal_case
-from scripts.run_legacy_case import main as run_case_main
-from competition.validation.inputs import InputValidationError, validate_case_inputs
+from urbanheatopt.data.adapters.legacy_case import adapt_case_to_legacy, adapt_case_to_legacy_case_directory
+from urbanheatopt.reporting.results.standard import export_standard_results
+from tools.legacy_cli.create_minimal_case import create_minimal_case
+from tools.legacy_cli.run_legacy_case import main as run_case_main
+from urbanheatopt.data.validation.inputs import InputValidationError, validate_case_inputs
 
 pytest.importorskip("pyarrow")
 

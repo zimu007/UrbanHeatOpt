@@ -7,10 +7,10 @@ import sys
 
 import pytest
 
-from competition.pareto import ParetoPoint
-from competition.core_model import ThermalStorageSpec
-from competition.road_joint_v2.economic_package import file_hash
-from competition.road_joint_v2.compact_tasks import (
+from urbanheatopt.optimization.pareto import ParetoPoint
+from urbanheatopt.model.reference_core import ThermalStorageSpec
+from urbanheatopt.parameters.legacy_economics import file_hash
+from urbanheatopt.optimization.compact_tasks import (
     RESULT_SCHEMA,
     _reserve_attempt,
     _strictly_exceeds_with_roundoff,
@@ -26,7 +26,7 @@ from competition.road_joint_v2.compact_tasks import (
     verify_compact_plan,
 )
 from test_road_v2_core import shared_case
-from scripts.run_compact_fullseason import (
+from tools.legacy_cli.run_compact_fullseason import (
     _acquire_driver_reservation,
     _progress_line,
     _release_driver_reservation,
@@ -48,7 +48,7 @@ def test_process_liveness_probe_never_terminates_the_worker():
                 sys.executable,
                 "-c",
                 (
-                    "from competition.road_joint_v2.compact_tasks import "
+                    "from urbanheatopt.optimization.compact_tasks import "
                     "process_is_alive; "
                     f"raise SystemExit(0 if process_is_alive({worker.pid}) else 2)"
                 ),
@@ -82,7 +82,7 @@ def test_driver_lock_rejects_a_second_process_and_recovers_after_crash(tmp_path)
         (
             "import time",
             "from pathlib import Path",
-            "from scripts.run_compact_fullseason import _acquire_driver_reservation",
+            "from tools.legacy_cli.run_compact_fullseason import _acquire_driver_reservation",
             f"lock = _acquire_driver_reservation(Path({json.dumps(str(run_root))}))",
             "print('READY', flush=True)",
             "time.sleep(30)",
@@ -121,7 +121,7 @@ def test_two_processes_racing_for_new_driver_lock_have_one_winner(tmp_path):
         (
             "import time",
             "from pathlib import Path",
-            "from scripts.run_compact_fullseason import _acquire_driver_reservation",
+            "from tools.legacy_cli.run_compact_fullseason import _acquire_driver_reservation",
             f"root = Path({json.dumps(str(run_root))})",
             f"gate = Path({json.dumps(str(gate))})",
             "while not gate.exists(): time.sleep(0.001)",

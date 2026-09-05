@@ -6,16 +6,16 @@ import pandas as pd
 import pytest
 from pyomo.environ import Objective, Var, value
 
-from competition.road_joint_v2.compact import (
+from urbanheatopt.model.compact import (
     audit_compact_solution,
     build_compact_model,
     build_compact_tree_designs,
     compact_model_metadata,
     export_compact_solution,
 )
-from competition.road_joint_v2.core import build_road_model
-from competition.road_joint_v2.results import export_solution
-from competition.solvers import solve_pyomo_model
+from urbanheatopt.model.road_core import build_road_model
+from urbanheatopt.qa.road_results import export_solution
+from urbanheatopt.optimization.solvers import solve_pyomo_model
 from tests.test_road_v2_core import shared_case
 
 
@@ -41,7 +41,7 @@ def _fix_generic_to_compact_design(model, case, design, connected):
     options = {
         option["option_id"]: option
         for option in __import__(
-            "competition.road_joint_v2.network", fromlist=["access_options"]
+            "urbanheatopt.spatial.atomic_network", fromlist=["access_options"]
         ).access_options(case.network)
     }
     for option in model.ACCESS:

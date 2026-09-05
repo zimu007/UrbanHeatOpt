@@ -6,13 +6,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from clustering import cluster_heat_demand
-from competition.adapters.load_timeseries import (
+from legacy.upstream.clustering import cluster_heat_demand
+from urbanheatopt.data.adapters.load_timeseries import (
     LoadTimeContractError,
     adapt_standard_hourly_loads,
     validate_legacy_hour_index,
 )
-from hd_time_series_generator import (
+from legacy.upstream.hd_time_series_generator import (
     check_yearly_demand_deviation,
     convert_dwelling_TS_to_building_TS,
 )

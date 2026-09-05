@@ -5,9 +5,9 @@ from __future__ import annotations
 from pyomo.environ import Objective, value
 import pytest
 
-from competition.core_model import CoreModelInput, EconomicInput, SegmentSpec, TechnologySpec
-from competition.pareto import ParetoSpec, solve_case_pareto, solve_mode_pareto, solve_pareto_task
-from competition.solvers import SolverSettings
+from urbanheatopt.model.reference_core import CoreModelInput, EconomicInput, SegmentSpec, TechnologySpec
+from urbanheatopt.optimization.pareto import ParetoSpec, solve_case_pareto, solve_mode_pareto, solve_pareto_task
+from urbanheatopt.optimization.solvers import SolverSettings
 
 
 def _technology(technology_id: str, kind: str, scope: str, carrier: str, cop: float | None, efficiency: float | None) -> TechnologySpec:

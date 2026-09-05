@@ -7,9 +7,9 @@ from unittest.mock import patch
 import pytest
 
 from test_road_v2_core import shared_case
-from competition.road_joint_v2.builder import save_case, load_case
-from competition.road_joint_v2.tasks import create_plan, run_task, assemble, refine_representatives
-from competition.solvers import SolverSettings
+from urbanheatopt.data.road_builder import save_case, load_case
+from urbanheatopt.optimization.reference_tasks import create_plan, run_task, assemble, refine_representatives
+from urbanheatopt.optimization.solvers import SolverSettings
 
 
 def test_immutable_serialization_and_old_hash_rejected(tmp_path):
@@ -36,7 +36,7 @@ def test_task_guard_and_small_three_mode_epsilon_run(tmp_path):
     with pytest.raises(ValueError,match='六端点'):
         run_task(root,'central-epsilon-000')
     settings=SolverSettings(mip_gap=0.,threads=1)
-    with patch('competition.pareto.build_core_model',side_effect=AssertionError('旧核心不能运行')):
+    with patch('urbanheatopt.optimization.pareto.build_core_model',side_effect=AssertionError('旧核心不能运行')):
         for task in plan['tasks']:
             run_task(root,task['task_id'],settings=settings)
     frontier=assemble(root)
@@ -65,7 +65,7 @@ def test_task_guard_and_small_three_mode_epsilon_run(tmp_path):
     images=json.loads((root/'figures'/'render_validation.json').read_text(encoding='utf-8'))
     assert len(images)==6 and all(item['nonblank'] for item in images.values())
     policy_cap=max(p.annual_operating_carbon_kgCO2e_per_year for p in frontier.combined_frontier)
-    from competition.road_joint_v2 import tasks as task_module
+    from urbanheatopt.optimization import reference_tasks as task_module
     real_hash=task_module.file_hash
     scan_mps_rehashes=[]
     def track_scan_mps(path):
@@ -89,7 +89,7 @@ def test_task_guard_and_small_three_mode_epsilon_run(tmp_path):
         marker=root/'tasks'/task['task_id']/'success.json'
         assert json.loads(marker.read_text(encoding='utf-8'))['qa']['passed']
     # Resuming a finished task does not re-solve; changing the model makes it invalid.
-    with patch('competition.road_joint_v2.tasks.build_road_model',side_effect=AssertionError('不能重复求解')):
+    with patch('urbanheatopt.optimization.reference_tasks.build_road_model',side_effect=AssertionError('不能重复求解')):
         run_task(root,'central-cost',settings=settings)
     # Keep the successful evidence replayable; tamper only with a separate copy.
     tampered=tmp_path/'tampered_case'
@@ -104,7 +104,7 @@ def test_task_guard_and_small_three_mode_epsilon_run(tmp_path):
 
 
 def test_mps_hash_is_reused_then_deferred_with_metadata_guard(tmp_path,monkeypatch):
-    from competition.road_joint_v2 import tasks
+    from urbanheatopt.optimization import reference_tasks as tasks
     root=tmp_path/'deferred_mps'
     create_plan(shared_case(),root,full_scale=False,point_count=5)
     real_hash=tasks.file_hash
@@ -159,7 +159,7 @@ def test_task_records_aggregate_flow_formulation(tmp_path):
 
 
 def test_first_full_season_task_and_worker_reservation_guards(tmp_path,monkeypatch):
-    from competition.road_joint_v2 import tasks
+    from urbanheatopt.optimization import reference_tasks as tasks
     plan=create_plan(shared_case(),tmp_path/'case',point_count=5,full_scale=False)
     monkeypatch.setattr(tasks,'verify_plan',lambda root:{**plan,'full_scale':True})
     with pytest.raises(ValueError,match='首次全季'):
@@ -181,7 +181,7 @@ def test_failed_worker_reservation_is_archived_before_retry(tmp_path,monkeypatch
     reservation={'pid':1,'attempt':'attempt_0001','created_at':'synthetic'}
     (task_root/'worker_reservation.json').write_text(json.dumps(reservation),encoding='utf-8')
     monkeypatch.setattr(
-        'competition.road_joint_v2.tasks.build_road_model',
+        'urbanheatopt.optimization.reference_tasks.build_road_model',
         lambda *_args,**_kwargs: (_ for _ in ()).throw(RuntimeError('stop after reservation rollover')),
     )
     with pytest.raises(RuntimeError,match='reservation rollover'):
@@ -196,8 +196,8 @@ def test_failed_worker_reservation_is_archived_before_retry(tmp_path,monkeypatch
 def test_real_pipeline_stops_before_solver_when_geometry_fails(tmp_path,monkeypatch):
     from types import SimpleNamespace
     import pandas as pd
-    from competition.road_joint_v2 import pipeline
-    from competition.road_joint_v2.network import RoadNetworkError
+    from urbanheatopt.data import reference_road_pipeline as pipeline
+    from urbanheatopt.spatial.atomic_network import RoadNetworkError
     data=SimpleNamespace(building_count=62,hour_count=2160,load_row_count=133920,
         loads=pd.DataFrame({'building_id':['B'],'hour':[1],'heating_kW':[100.]}),buildings='fake')
     gate=SimpleNamespace(adaptation=SimpleNamespace(canonical_data=data,source_report=SimpleNamespace(valid=True),canonical_report=SimpleNamespace(valid=True)))
@@ -229,8 +229,8 @@ def test_full_shape_builder_uses_all_synthetic_62_by_2160_rows(tmp_path):
     """Schema-scale test only: all load values and coordinates here are synthetic."""
     from types import SimpleNamespace
     import pandas as pd
-    from competition.road_joint_v2.builder import build_season_case
-    from competition.road_joint_v2.economic_package import TEST_VALUES
+    from urbanheatopt.data.road_builder import build_season_case
+    from urbanheatopt.parameters.legacy_economics import TEST_VALUES
     ids=[f'synthetic_{i:02d}' for i in range(62)]
     timestamps=pd.date_range('2026-12-01',periods=2160,freq='h',tz='Asia/Shanghai')
     loads=pd.DataFrame([(b,h,1.) for b in ids for h in range(1,2161)],columns=['building_id','hour','heating_kW'])

@@ -13,7 +13,7 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_DIRECTORY = REPOSITORY_ROOT / "competition" / "schemas"
+SCHEMA_DIRECTORY = REPOSITORY_ROOT / "src" / "urbanheatopt" / "data" / "schemas"
 
 
 def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

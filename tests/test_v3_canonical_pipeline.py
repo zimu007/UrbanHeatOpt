@@ -13,13 +13,13 @@ import pytest
 import yaml
 from shapely.geometry import LineString, Point
 
-from competition.canonical import CanonicalCaseData, PipeTypeSpec, StorageSpec
-from competition.core_model import EconomicInput, SegmentSpec, TechnologySpec
-from competition.physical_interfaces import FixedV0PerformanceProvider
-from competition.pipelines.case_pipeline import PipelineRun, run_case_pipeline
-from competition.solvers import SolverSettings
-from competition.validation.v3_inputs import V3InputError, load_v3_case
-from scripts.run_case import main as run_main
+from urbanheatopt.data.canonical import CanonicalCaseData, PipeTypeSpec, StorageSpec
+from urbanheatopt.model.reference_core import EconomicInput, SegmentSpec, TechnologySpec
+from urbanheatopt.model.physical_interfaces import FixedV0PerformanceProvider
+from urbanheatopt.optimization.pipelines.case_pipeline import PipelineRun, run_case_pipeline
+from urbanheatopt.optimization.solvers import SolverSettings
+from urbanheatopt.data.validation.v3_inputs import V3InputError, load_v3_case
+from tools.legacy_cli.run_case import main as run_main
 
 
 def _technology(role: str) -> TechnologySpec:
@@ -94,9 +94,9 @@ def test_canonical_case_is_deeply_read_only_and_projects_same_inputs() -> None:
 
 
 def test_pipeline_solves_all_modes_without_legacy_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("competition.pipelines.case_pipeline.load_v3_case", lambda *_args, **_kwargs: _canonical())
+    monkeypatch.setattr("urbanheatopt.optimization.pipelines.case_pipeline.load_v3_case", lambda *_args, **_kwargs: _canonical())
     monkeypatch.setattr(
-        "competition.pipelines.case_pipeline.gpd.read_file",
+        "urbanheatopt.optimization.pipelines.case_pipeline.gpd.read_file",
         lambda *_args, **_kwargs: gpd.GeoDataFrame(),
     )
 
@@ -114,10 +114,10 @@ def test_pipeline_solves_all_modes_without_legacy_model(monkeypatch: pytest.Monk
         ).to_csv(target / "building_connection.csv", index=False)
 
     monkeypatch.setattr(
-        "competition.pipelines.case_pipeline.export_v3_solution", fake_solution
+        "urbanheatopt.optimization.pipelines.case_pipeline.export_v3_solution", fake_solution
     )
     monkeypatch.setattr(
-        "competition.pipelines.case_pipeline.export_v3_results",
+        "urbanheatopt.optimization.pipelines.case_pipeline.export_v3_results",
         lambda *_args, **_kwargs: SimpleNamespace(
             pareto_csv=Path("pareto_points.csv"),
             candidate_sites_geojson=Path("generated_candidate_sites.geojson"),
@@ -144,7 +144,7 @@ def test_public_command_only_delegates_to_new_pipeline(monkeypatch: pytest.Monke
         observed.update(case=case, profile=profile, output_root=output_root, run_id=run_id)
         return PipelineRun(tmp_path, manifest, tmp_path / "summary.json", {})
 
-    monkeypatch.setattr("scripts.run_case.run_case_pipeline", fake)
+    monkeypatch.setattr("tools.legacy_cli.run_case.run_case_pipeline", fake)
     monkeypatch.setattr("sys.argv", ["run_case.py", "--case", "case", "--profile", "v0-smoke", "--output-root", "out"])
     assert run_main() == 0
     assert observed == {
@@ -164,7 +164,7 @@ def test_delivery_command_delegates_to_wuhan_new_core_pipeline(
         observed.update({"delivery_root": delivery_root, **kwargs})
         return PipelineRun(tmp_path, manifest, tmp_path / "summary.json", {})
 
-    monkeypatch.setattr("scripts.run_case.run_wuhan_v02_pipeline", fake)
+    monkeypatch.setattr("tools.legacy_cli.run_case.run_wuhan_v02_pipeline", fake)
     monkeypatch.setattr(
         "sys.argv",
         [

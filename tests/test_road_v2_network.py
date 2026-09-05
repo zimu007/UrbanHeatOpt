@@ -2,7 +2,7 @@ import pytest
 from shapely.geometry import Polygon, LineString
 import geopandas as gpd
 
-from competition.road_joint_v2.network import (
+from urbanheatopt.spatial.atomic_network import (
     RoadNetworkError, atomize_snapshot_legacy as atomize_snapshot, access_angle, validate_network,
 )
 

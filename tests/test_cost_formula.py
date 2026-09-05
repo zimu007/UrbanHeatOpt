@@ -5,8 +5,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from competition.adapters.legacy_case import adapt_case_to_legacy
-from competition.costing.annualized import (
+from urbanheatopt.data.adapters.legacy_case import adapt_case_to_legacy
+from urbanheatopt.model.costing.annualized import (
     annualize_capex,
     capital_recovery_factor,
     connection_annualized_capex,
@@ -15,7 +15,7 @@ from competition.costing.annualized import (
     pipe_annualized_capex,
     variable_om_cost,
 )
-from scripts.create_minimal_case import create_minimal_case
+from tools.legacy_cli.create_minimal_case import create_minimal_case
 
 
 def test_capital_recovery_factor_matches_manual_formula() -> None:

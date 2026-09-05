@@ -4,15 +4,15 @@ from dataclasses import replace
 import pytest
 from pyomo.environ import Var, value
 
-from competition.core_model import ThermalStorageSpec
-from competition.road_joint_v2.compact import (
+from urbanheatopt.model.reference_core import ThermalStorageSpec
+from urbanheatopt.model.compact import (
     audit_compact_solution,
     build_compact_model,
     build_compact_tree_design,
     compact_model_metadata,
 )
-from competition.road_joint_v2.core import build_road_model
-from competition.solvers import solve_pyomo_model
+from urbanheatopt.model.road_core import build_road_model
+from urbanheatopt.optimization.solvers import solve_pyomo_model
 from tests.test_road_v2_core import shared_case
 
 

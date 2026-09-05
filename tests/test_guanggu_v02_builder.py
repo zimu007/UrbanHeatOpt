@@ -7,7 +7,7 @@ import networkx as nx
 import pandas as pd
 import pytest
 
-from competition.validation.v3_inputs import load_v3_case
+from urbanheatopt.data.validation.v3_inputs import load_v3_case
 
 
 ROOT = Path(__file__).resolve().parents[1]

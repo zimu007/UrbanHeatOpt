@@ -6,7 +6,7 @@ import pytest
 from shapely.geometry import LineString, Polygon
 from pyproj import Transformer
 
-from competition.road_joint_v2.network import atomize_snapshot, validate_network, RoadNetworkError
+from urbanheatopt.spatial.atomic_network import atomize_snapshot, validate_network, RoadNetworkError
 
 
 def inputs():

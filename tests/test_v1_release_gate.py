@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from competition.release_gate import assess_v1_release
+from urbanheatopt.qa.release_gate import assess_v1_release
 
 
 def test_v0_smoke_artifacts_cannot_be_mislabeled_as_v1(tmp_path: Path) -> None:

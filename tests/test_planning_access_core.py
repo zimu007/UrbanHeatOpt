@@ -7,10 +7,10 @@ import pytest
 from pyomo.environ import value
 
 from test_road_v2_core import shared_case, solve
-from competition.road_joint_v2.core import build_road_model
-from competition.road_joint_v2.network import validate_network, access_options
-from competition.road_joint_v2.results import export_solution, audit_export
-from competition.solvers import solve_pyomo_model, SolverNotOptimalError
+from urbanheatopt.model.road_core import build_road_model
+from urbanheatopt.spatial.atomic_network import validate_network, access_options
+from urbanheatopt.qa.road_results import export_solution, audit_export
+from urbanheatopt.optimization.solvers import solve_pyomo_model, SolverNotOptimalError
 
 
 def alternative_case(mode='central'):
@@ -83,7 +83,7 @@ def test_candidate_connectivity_must_not_use_a_building_as_a_road_bridge():
     case=alternative_case()
     net=case.network
     net['edges']=[e for e in net['edges'] if e['edge_id']!='trunk']
-    from competition.road_joint_v2.network import RoadNetworkError
+    from urbanheatopt.spatial.atomic_network import RoadNetworkError
     with pytest.raises(RoadNetworkError,match='不能到达'):
         validate_network(net)
 
@@ -112,9 +112,9 @@ def test_shared_access_tail_costs_once_and_selected_path_is_complete(tmp_path):
 
 def test_generated_multichoice_network_runs_three_mode_pareto(tmp_path):
     from test_planning_network import inputs
-    from competition.road_joint_v2.network import atomize_snapshot
-    from competition.road_joint_v2.tasks import create_plan, run_task, assemble
-    from competition.solvers import SolverSettings
+    from urbanheatopt.spatial.atomic_network import atomize_snapshot
+    from urbanheatopt.optimization.reference_tasks import create_plan, run_task, assemble
+    from urbanheatopt.optimization.solvers import SolverSettings
     from unittest.mock import patch
     source, buildings=inputs()
     net=atomize_snapshot(source,buildings,{'A':1.},candidate_count=1)
@@ -126,7 +126,7 @@ def test_generated_multichoice_network_runs_three_mode_pareto(tmp_path):
     case=replace(base,common=common,network_json=json.dumps(net))
     root=tmp_path/'multichoice'
     plan=create_plan(case,root,full_scale=False,point_count=5)
-    with patch('competition.pareto.build_core_model',side_effect=AssertionError('禁止旧模型')):
+    with patch('urbanheatopt.optimization.pareto.build_core_model',side_effect=AssertionError('禁止旧模型')):
         for task in plan['tasks']:
             run_task(root,task['task_id'],settings=SolverSettings(threads=1,mip_gap=0.))
     result=assemble(root)
