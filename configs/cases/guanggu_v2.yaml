@@ -1,0 +1,13 @@
+config_version: guanggu_v2_a_1.0.0
+delivery_root: ../IN_DATA/原始输入数据/v0.2
+source_profile: guanggu_v03
+economic_package: revised_20260831
+economic_scenario: revised_base
+source_permission_policy: require_consistent
+output_root: work/guanggu_v2
+scope: heating-season
+full_audit: true
+mode_scope: [central, distributed, hybrid]
+tes_enabled: false
+spatial_inputs: {}
+desktop_gap_report: true
