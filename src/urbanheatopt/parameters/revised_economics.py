@@ -12,6 +12,10 @@ import pandas as pd
 
 from urbanheatopt.paths import PACKAGE_ROOT
 from urbanheatopt.parameters.legacy_economics import PackageError, file_hash, strict_bool
+from urbanheatopt.parameters.capacity_supplement_0906 import (
+    SUPPLEMENT_DIRECTORY,
+    read_capacity_supplement_0906,
+)
 
 SPEC = json.loads((PACKAGE_ROOT / "data/profile_resources/revised_20260831.json").read_text(encoding="utf-8"))
 PACKAGE_DIRECTORY = SPEC["package_directory"]
@@ -157,10 +161,18 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base", *,
     root = Path(root).resolve()
     if scenario not in {"revised_base", "station_mixed_scope_high"}:
         raise PackageError(f"未知经济情景: {scenario}")
-    actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+    actual_all = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+    supplement_prefix = SUPPLEMENT_DIRECTORY + "/"
+    actual = {name for name in actual_all if not name.startswith(supplement_prefix)}
     if actual != set(PACKAGE_FILES):
         raise PackageError(f"经济扩展包文件：缺少{sorted(set(PACKAGE_FILES)-actual)}；未分类{sorted(actual-set(PACKAGE_FILES))}")
     hashes = {name: file_hash(root / name) for name in sorted(actual)}
+    supplement = None
+    supplement_root = root / SUPPLEMENT_DIRECTORY
+    if supplement_root.exists():
+        supplement = read_capacity_supplement_0906(
+            supplement_root, authoritative_pipe_types=root / "pipe_types.csv"
+        )
     errors = []
     sources = {}
     for row in rows(root / "economic_parameter_sources_merged.csv", {"source_id", "code_use_allowed", "source_title"}):
@@ -308,6 +320,7 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base", *,
                    quotation_display_policy="用户20260905：新包审计报价按本研究最终参数展示；保留原来源，不将历史替代报价叠加计费，不等于已求解结果",
                    scenario=scenario, package_root=str(root), source_hashes=hashes, registry=registry,
                    sources=sources, pipes=pipes, pending=pending, effective=effective,
+                   capacity_supplement=supplement,
                    period_map=PERIODS, period_map_source="20260829同ID政策时段，20260831时段字段为空，显式版本化继承；倍率只来自新包",
                    volume_normalization="CNY/m3与MJ/Nm3按包说明1:1研究归一化；非气质实测保证",
                    warnings=["跨月份公开平价与政策倍率组合为研究电价，不等于项目结算单",
@@ -316,6 +329,10 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base", *,
     for name, digest in hashes.items():
         if file_hash(root / name) != digest:
             raise PackageError(f"读取过程中输入发生变化: {name}")
+    if supplement is not None:
+        for name, digest in supplement["source_hashes"].items():
+            if file_hash(supplement_root / name) != digest:
+                raise PackageError(f"读取过程中0906补充输入发生变化: {name}")
     payload["snapshot_id"] = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
     return payload
 

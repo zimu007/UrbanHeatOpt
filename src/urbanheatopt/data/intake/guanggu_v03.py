@@ -29,6 +29,9 @@ from urbanheatopt.parameters.revised_economics import (
     PACKAGE_DIRECTORY as REVISED_DIRECTORY, PACKAGE_FILES as REVISED_FILES,
     read_revised_package,
 )
+from urbanheatopt.parameters.capacity_supplement_0906 import (
+    SUPPLEMENT_DIRECTORY, SUPPLEMENT_FILES,
+)
 
 
 EQUIPMENT_PATCH_FILES = (
@@ -251,6 +254,13 @@ def _classify_inventory(
             category_counts["economic_extension_20260829"] += 1
         elif parts[0] == REVISED_DIRECTORY and "/".join(parts[1:]) in REVISED_FILES:
             category_counts["economic_extension_20260831"] += 1
+        elif (
+            len(parts) == 3
+            and parts[0] == REVISED_DIRECTORY
+            and parts[1] == SUPPLEMENT_DIRECTORY
+            and parts[2] in SUPPLEMENT_FILES
+        ):
+            category_counts["capacity_supplement_20260906"] += 1
         elif parts[0] in directories:
             category_counts[str(directories[parts[0]])] += 1
         else:
