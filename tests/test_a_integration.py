@@ -83,12 +83,43 @@ def synthetic_pipeline(tmp_path, monkeypatch):
         assert active_snapshot["snapshot_id"] == snapshot["snapshot_id"]
         return frame.copy(deep=True)
 
+    def capacity_handoff(adapted, active_snapshot, data_version, output):
+        candidate = output / "candidate_sites.geojson"
+        capacity = output / "capacity_boundaries.json"
+        candidate.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+        capacity.write_text('{"synthetic_interface_test_only":true}', encoding="utf-8")
+        return {
+            "candidate_sites_path": candidate,
+            "capacity_boundaries_path": capacity,
+            "capacity_boundaries": {"synthetic_interface_test_only": True},
+            "spatial_status": {"status": "synthetic_interface_test_only"},
+        }
+
+    def ab_smoke(bundle, requests, capacity_payload, output):
+        evidence = {
+            "b1_real_bundle_smoke_pass": True,
+            "b2_capacity_adapter_smoke_pass": True,
+            "monthly_demand_charge_ready": True,
+            "effective_parameter_mapping_ready": True,
+            "site_capacity_ready": True,
+            "pipe_capacity_ready": True,
+            "tes_capacity_and_power_ready": True,
+            "result_bundle_contract_ready": True,
+            "research_boundary_use_allowed": True,
+            "publication_parameters_verified": False,
+            "solver_instantiated": False,
+        }
+        integration.write_json(output / "ab_adapter_smoke.json", evidence)
+        return evidence
+
     monkeypatch.setattr(integration, "REPOSITORY_ROOT", repository)
     monkeypatch.setattr(integration, "resolve_guanggu_v03_source_roots", lambda _: roots)
     monkeypatch.setattr(integration, "validate_guanggu_v03_delivery", validator)
     monkeypatch.setattr(integration, "adapt_guanggu_v03_sources", adapter)
     monkeypatch.setattr(integration, "read_revised_package", package_reader)
     monkeypatch.setattr(integration, "revised_timeseries", external_adapter)
+    monkeypatch.setattr(integration, "prepare_research_boundaries", capacity_handoff)
+    monkeypatch.setattr(integration, "run_ab_adapter_smoke", ab_smoke)
     monkeypatch.setattr(integration.subprocess, "check_output", lambda *args, **kwargs: "synthetic_git_identity\n")
     return SimpleNamespace(repository=repository, roots=roots, source=source_path, config=config,
                            config_path=config_path, calls=calls, snapshot=snapshot, adapter=adapter)
@@ -148,7 +179,9 @@ def test_a_synthetic_prepare_bundle_and_independent_states(synthetic_pipeline):
     assert summary["exit_code"] == 0
     for key in ("input_valid", "parameter_valid", "canonical_valid", "snapshot_complete", "input_hashes_unchanged"):
         assert summary[key] is True
-    assert summary["model_ready"] is False
+    assert summary["model_ready"] is True
+    assert summary["research_solve_ready"] is True
+    assert summary["publication_ready"] is False
     assert summary["solver_executed"] is False
     assert summary["result_qualified"] is False
     assert initial_hash == sha256_file(f.source)
@@ -158,8 +191,9 @@ def test_a_synthetic_prepare_bundle_and_independent_states(synthetic_pipeline):
     assert bundle.verify_artifacts(check_sources=True)["passed"]
     assert bundle.payload["physical_scope"] == {"buildings": 62, "hours": 2160, "supply_C": 45, "return_C": 40, "peak_capacity_margin_fraction": 0.20}
     gate = json.loads((output / "model_readiness_report.json").read_text(encoding="utf-8"))
-    assert gate["snapshot_complete"] and not gate["model_ready"]
-    assert any(item["id"] == "new_case_consumer" for item in gate["blockers"])
+    assert gate["snapshot_complete"] and gate["model_ready"]
+    assert gate["research_solve_ready"] and not gate["publication_ready"]
+    assert any(item["id"] == "publication_station_cost_boundary" for item in gate["blockers"])
     assert [call[0] for call in f.calls] == ["source", "parameters", "adapter"]
     assert f.calls[0][2]["full_audit"] is True
     assert f.calls[2][2]["full_audit"] is True

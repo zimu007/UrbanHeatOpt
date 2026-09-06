@@ -52,6 +52,7 @@ def build_capacity_boundaries(
     capacity_ratio_by_hour: Mapping[int, float],
     supplement: Mapping[str, Any],
     peak_capacity_margin_fraction: float = 0.20,
+    site_electricity_connection_max_kW_e: float | None = None,
     expected_building_count: int = 62,
     expected_hour_count: int = 2160,
 ) -> dict[str, Any]:
@@ -103,6 +104,14 @@ def build_capacity_boundaries(
         raise ValueError("全园区小时负荷覆盖不完整")
     peak = float(hourly.max())
     design_peak = (1 + margin) * peak
+    electricity_limit = (
+        design_peak / min(cop.values())
+        if site_electricity_connection_max_kW_e is None
+        else _positive(
+            site_electricity_connection_max_kW_e,
+            "site_electricity_connection_max_kW_e",
+        )
+    )
     supplement_policy = supplement.get("execution_capacity_policy", {})
     if supplement_policy.get("reference_capacity_consumed") is not False:
         raise ValueError("0906 DN物理参考容量不得作为执行容量")
@@ -134,7 +143,7 @@ def build_capacity_boundaries(
                 "central_hp": design_peak,
                 "central_boiler": design_peak,
             },
-            "electricity_connection_max_kW_e": design_peak / min(cop.values()),
+            "electricity_connection_max_kW_e": electricity_limit,
             "electricity_connection_scope": "central_hp_only",
             "gas_connection_max_kW_LHV": design_peak / 0.94,
             "source": "validated_62_building_load_and_20260906_research_rule",
@@ -171,6 +180,11 @@ def build_capacity_boundaries(
         "full_park_peak_kW_th": peak,
         "design_peak_kW_th": design_peak,
         "minimum_cop": min(cop.values()),
+        "site_electricity_connection_limit_basis": (
+            "hourly_minimum_COP"
+            if site_electricity_connection_max_kW_e is None
+            else "frozen_research_boundary_20260906"
+        ),
         "minimum_capacity_ratio": min(ratio.values()),
         "sites": site_records,
         "pipes": pipe_records,

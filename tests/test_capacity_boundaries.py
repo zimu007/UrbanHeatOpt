@@ -4,6 +4,9 @@ import pandas as pd
 import pytest
 
 from urbanheatopt.data.capacity_boundaries import build_capacity_boundaries
+from urbanheatopt.optimization.adapters.site_capacity_v1 import (
+    consume_capacity_boundary_snapshot,
+)
 
 
 def _supplement():
@@ -58,3 +61,64 @@ def test_rejects_incomplete_hourly_performance():
             cop_by_hour={1: 2.0}, capacity_ratio_by_hour={1: 1.0, 2: 1.0},
             supplement=_supplement(), expected_building_count=2, expected_hour_count=2,
         )
+
+
+def test_b2_consumer_uses_planning_capacity_and_retains_dn_as_audit_only():
+    buildings = {f"B{i:02d}": 10.0 for i in range(62)}
+    payload = {
+        "schema_version": "capacity_boundaries_1.0.0",
+        "building_count": 62,
+        "hour_count": 2160,
+        "sites": [{
+            "site_id": f"S{i}",
+            "allowed_technology_ids": ["central_hp", "central_boiler"],
+            "total_heat_capacity_max_kW_th": 120.0,
+            "technology_capacity_max_kW_th": {
+                "central_hp": 120.0, "central_boiler": 120.0,
+            },
+            "electricity_connection_max_kW_e": 50.0,
+            "electricity_connection_scope": "central_hp_only",
+            "gas_connection_max_kW_LHV": 130.0,
+            "source": "test", "status": "research_assumption",
+            "evidence_id": "test-site",
+        } for i in range(5)],
+        "pipes": [{
+            "pipe_type_id": pipe_id,
+            "capacity_kW_th": capacity,
+            "pipe_design_status": "planning_capacity_tier_not_hydraulic_dn",
+            "reference_capacity_kW_th": reference,
+            "reference_capacity_consumed": False,
+            "source": "test", "status": "research_assumption",
+            "evidence_id": "test-pipe",
+        } for pipe_id, capacity, reference in zip(
+            ("P1", "P2", "P3"), (60.0, 100.0, 150.0), (1.0, 2.0, 3.0), strict=True
+        )],
+        "local_hp": {
+            "capacity_max_kW_th_by_building": buildings,
+            "source": "test", "status": "research_assumption",
+            "evidence_id": "test-local",
+        },
+        "tes": {
+            "energy_capacity_max_kWh_th": 600.0,
+            "charge_capacity_max_kW_th": 100.0,
+            "discharge_capacity_max_kW_th": 100.0,
+        },
+    }
+    result = consume_capacity_boundary_snapshot(payload)
+    assert [item.capacity_kW_th for item in result.pipes] == [60.0, 100.0, 150.0]
+    assert result.sites[0].total_heat_capacity_max_kW_th == 120.0
+    assert len(result.local_hp_capacity_max_kW_th_by_building) == 62
+
+
+def test_b2_consumer_rejects_dn_reference_as_executable_capacity():
+    # A compact invalid snapshot reaches the DN-specific guard before projection.
+    payload = {
+        "schema_version": "capacity_boundaries_1.0.0", "building_count": 62,
+        "hour_count": 2160, "sites": [{}] * 5,
+        "pipes": [{"reference_capacity_consumed": True}] * 3,
+        "local_hp": {"capacity_max_kW_th_by_building": {str(i): 1 for i in range(62)}},
+        "tes": {"energy_capacity_max_kWh_th": 1, "charge_capacity_max_kW_th": 1,
+                "discharge_capacity_max_kW_th": 1},
+    }
+    with pytest.raises(ValueError, match="DN物理参考容量"):
+        consume_capacity_boundary_snapshot(payload)

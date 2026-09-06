@@ -801,3 +801,10 @@ git status --short --branch
 - 目的：消除“热泵上限＋锅炉上限可叠加成两倍站点容量”的接口缺口，并把来源技术ID与`central_hp`/`central_boiler`/`local_hp`执行角色明确分开；DN物理参考容量继续不进入执行模型。
 - 验证：容量边界、B2、Road/Compact及B1联合专项66项通过；覆盖规划容量计算、逐栋低温容量修正、站点总容量、供电、LHV燃气、TES上限、缺失逐时性能、两个模型的一致约束及案例序列化往返。真实62栋数值将在下一节点由prepare自动生成和核对。
 - 边界：全部新增容量状态为`research_assumption`，只支持规划研究求解；未改变站房费用边界，未执行2160小时求解。
+
+# 2026-09-06 A/B闭合节点3：生成CaseBundle与动态就绪门禁
+
+- 修改：`prepare`现从62栋×2160小时标准数据自动生成5个确定性虚拟候选站、`capacity_boundaries.json`、带10类哈希产物的CaseBundle及三模式成本SolveRequest；新增真实形状B1经济投影和B2容量投影联调证据。门禁拆分为输入、参数、模型能力、研究求解、正式发布、求解执行和结果资格七个状态；B5允许明确标记的`research_assumption` TES边界准备研究配对，但正式配对仍要求`verified`。
+- 目的：CaseBundle和SolveRequest由代码自动生成，不再列为用户需补数据；研究容量可以交给B继续构模，站房成本未确认时仍禁止把研究结果发布为正式经济结论。修复经济包内两个README同名导致B1哈希匹配歧义，改为按`package_root`精确路径核对。
+- 验证：A/B接口、交接契约、B1/B2/B5专项110项通过。真实v0.3完整prepare退出0：447个输入文件、62栋、133920行、2160小时，前后SHA-256一致；峰值132267.813949509 kW_th、设计峰值158721.376739411 kW_th、供电上限124366.206988495 kW_e、LHV燃气上限168852.528446182 kW_LHV、TES能量上限793606.883697057 kWh_th及三档规划容量均自动写入。`input_ready/model_capability_ready/research_solve_ready=true`，`publication_ready/solver_executed=false`。
+- 边界：候选站仍是算法生成的虚拟研究点，不是已核实地块；本节点未构建完整RoadCase、未实例化求解器、未产生2160小时结果。真实证据位于忽略目录`work/guanggu_v2/AB_0906_REAL_20260906_R3`，不提交Git。

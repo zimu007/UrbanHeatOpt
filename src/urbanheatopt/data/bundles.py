@@ -234,11 +234,17 @@ class ResultBundle(_JsonBundle):
             _require({"solver_log", "independent_qa"}.issubset(roles), "qualified 结果必须附求解日志和独立 QA 的文件哈希")
 
 
-def ready_report(bundle: CaseBundle, *, verify_files: bool = True) -> dict[str, Any]:
-    """Fail closed: new economic and result consumers have not been integrated.
+def ready_report(
+    bundle: CaseBundle,
+    *,
+    verify_files: bool = True,
+    integration_evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compute research/publication readiness from generated evidence.
 
-    No configuration value can register a backend. B must add an actual consuming
-    adapter and integration tests before a future code revision enables solving.
+    The evidence is produced by executable A/B adapter checks, not by a manual
+    configuration flag.  ``solver_executed`` remains false until a ResultBundle
+    with independent QA exists.
     """
     payload = bundle.to_dict()
     integrity = bundle.verify_artifacts(check_sources=True) if verify_files else {
@@ -249,7 +255,7 @@ def ready_report(bundle: CaseBundle, *, verify_files: bool = True) -> dict[str, 
             blockers.append({"id": f"case_{key}", "owner": "A", "reason": f"{key} 未通过"})
     if not integrity["passed"]:
         blockers.append({"id": "artifact_integrity", "owner": "A", "reason": "产物/源文件完整性未通过或未验证"})
-    blockers.append({"id": "new_case_consumer", "owner": "B", "reason": "新 CaseBundle 到求解核心的消费适配器尚未注册；不回退历史模型"})
+    evidence = dict(integration_evidence or {})
     known = {
         "monthly_demand_charge": "虚拟总表月度最大需量费表达式及手算测试待接通",
         "effective_parameter_mapping": "新经济参数到目标表达式的逐项映射、边界及重算待验收",
@@ -257,19 +263,67 @@ def ready_report(bundle: CaseBundle, *, verify_files: bool = True) -> dict[str, 
         "site_capacity": "候选地块/容量接口到约束的消费实现待 B 接通",
         "result_bundle": "B 标准结果导出与 C 独立重算/展示消费尚未联调",
     }
+    evidence_keys = {
+        "monthly_demand_charge": "monthly_demand_charge_ready",
+        "effective_parameter_mapping": "effective_parameter_mapping_ready",
+        "site_capacity": "site_capacity_ready",
+        "pipe_capacity": "pipe_capacity_ready",
+        "tes": "tes_capacity_and_power_ready",
+        "result_bundle": "result_bundle_contract_ready",
+    }
+    b1_ready = evidence.get("b1_real_bundle_smoke_pass") is True
+    b2_ready = evidence.get("b2_capacity_adapter_smoke_pass") is True
+    if not b1_ready or not b2_ready:
+        blockers.append({
+            "id": "new_case_consumer",
+            "owner": "A/B",
+            "reason": "CaseBundle经济投影或容量边界消费适配器未通过真实快照联调；不回退历史模型",
+        })
     for capability in payload["capabilities_required"]:
-        blockers.append({"id": f"capability_{capability}", "owner": "B/C" if capability == "result_bundle" else "B",
-                         "reason": known.get(capability, f"尚无经接入测试认证的能力消费者：{capability}")})
+        key = evidence_keys.get(capability)
+        if key is None or evidence.get(key) is not True:
+            blockers.append({"id": f"capability_{capability}", "owner": "B/C" if capability == "result_bundle" else "A/B",
+                             "reason": known.get(capability, f"尚无经接入测试认证的能力消费者：{capability}")})
+    input_ready = all(payload["status"][key] for key in ("input_valid", "canonical_valid", "snapshot_complete")) and integrity["passed"]
+    parameter_ready = payload["status"]["parameter_valid"]
+    required_model_capabilities = tuple(
+        capability for capability in payload["capabilities_required"]
+        if capability != "result_bundle"
+    )
+    model_capability_ready = b1_ready and b2_ready and all(
+        evidence.get(evidence_keys[capability]) is True
+        for capability in required_model_capabilities
+    )
+    research_solve_ready = (
+        input_ready and parameter_ready and model_capability_ready
+        and evidence.get("research_boundary_use_allowed") is True
+    )
+    publication_ready = (
+        research_solve_ready
+        and evidence.get("publication_parameters_verified") is True
+    )
+    if research_solve_ready and not publication_ready:
+        blockers.append({
+            "id": "publication_station_cost_boundary",
+            "owner": "用户/老师/参数组",
+            "reason": "研究求解允许，但站房固定投资边界尚未确认，禁止发布正式经济结论",
+        })
     return {
         "interface_version": INTERFACE_VERSION,
         "case_bundle_id": bundle.bundle_id,
         **payload["status"],
         "artifact_integrity_passed": integrity["passed"],
-        "model_ready": False,
+        "input_ready": input_ready,
+        "parameter_ready": parameter_ready,
+        "model_capability_ready": model_capability_ready,
+        "research_solve_ready": research_solve_ready,
+        "publication_ready": publication_ready,
+        "model_ready": research_solve_ready,
         "solver_executed": False,
         "result_qualified": False,
-        "registered_model_adapter": None,
+        "registered_model_adapter": "handoff_v1+site_capacity_v1" if b1_ready and b2_ready else None,
         "blockers": blockers,
         "artifact_integrity": integrity,
-        "note": "prepare 可完成输入交接；不表示新经济口径已求解或工程结果已验证。",
+        "integration_evidence": evidence,
+        "note": "research_solve_ready仅表示A/B研究输入接口具备交接条件；本报告未执行求解，也不等于正式经济结论。",
     }

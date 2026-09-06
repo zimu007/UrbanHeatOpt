@@ -158,7 +158,19 @@ def _validate_snapshot_sources(snapshot: dict, case_payload: dict) -> None:
     declared = snapshot.get("source_hashes")
     if not isinstance(declared, dict) or not declared:
         raise HandoffConsumerError("effective snapshot has no source hashes")
+    package_root = snapshot.get("package_root")
+    normalized_sources = {
+        str(Path(path).resolve()).casefold(): digest
+        for path, digest in case_payload["source_hashes"].items()
+    }
     for name, digest in declared.items():
+        if package_root:
+            expected_path = str((Path(package_root) / name).resolve()).casefold()
+            if normalized_sources.get(expected_path) != digest:
+                raise HandoffConsumerError(
+                    f"economic source hash absent/mismatched: {name}"
+                )
+            continue
         suffix = str(Path(name)).replace("\\", "/").casefold()
         matches = [actual for path, actual in case_payload["source_hashes"].items()
                    if str(Path(path)).replace("\\", "/").casefold().endswith(suffix)]

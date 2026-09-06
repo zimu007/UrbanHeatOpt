@@ -76,9 +76,15 @@ class B5ReadinessEvidence:
     tes_engineering_maxima_approved: bool
     unresolved_required_fields: tuple[str, ...]
     model_ready: bool
+    result_class: str = "publication"
+    tes_boundary_status: str = "verified"
 
     def blockers(self) -> tuple[str, ...]:
         blockers: list[str] = []
+        if self.result_class not in ("research", "publication"):
+            blockers.append("invalid_result_class")
+        if self.tes_boundary_status not in ("research_assumption", "verified"):
+            blockers.append("invalid_tes_boundary_status")
         if self.hour_count != 2160:
             blockers.append("full_2160h_coverage")
         if self.parameter_version != REVISED_PARAMETER_VERSION:
@@ -88,11 +94,18 @@ class B5ReadinessEvidence:
             (self.b2_capacity_boundary_complete, "b2_capacity_boundary"),
             (self.pipe_thermal_capacity_complete, "pipe_thermal_capacity"),
             (self.electricity_scope_approved, "approved_electricity_scope"),
-            (self.tes_engineering_maxima_approved, "approved_tes_engineering_maxima"),
             (self.model_ready, "model_ready"),
         ):
             if not ready:
                 blockers.append(name)
+        tes_ready = self.tes_engineering_maxima_approved or (
+            self.result_class == "research"
+            and self.tes_boundary_status == "research_assumption"
+        )
+        if not tes_ready:
+            blockers.append("approved_tes_engineering_maxima")
+        if self.result_class == "publication" and self.tes_boundary_status != "verified":
+            blockers.append("publication_requires_verified_tes_boundary")
         if self.unresolved_required_fields:
             blockers.append("unresolved_required_fields:" + ",".join(
                 sorted(self.unresolved_required_fields)))

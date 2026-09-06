@@ -157,6 +157,27 @@ def test_implemented_flag_cannot_enable_model_and_gate_does_not_import_model(cas
     assert any(item["id"] == "new_case_consumer" for item in report["blockers"])
 
 
+def test_executable_adapter_evidence_unlocks_research_but_not_publication(case_payload):
+    evidence = {
+        "b1_real_bundle_smoke_pass": True,
+        "b2_capacity_adapter_smoke_pass": True,
+        "monthly_demand_charge_ready": True,
+        "effective_parameter_mapping_ready": True,
+        "site_capacity_ready": True,
+        "result_bundle_contract_ready": True,
+        "research_boundary_use_allowed": True,
+        "publication_parameters_verified": False,
+    }
+    report = ready_report(
+        CaseBundle.from_dict(case_payload), integration_evidence=evidence
+    )
+    assert report["input_ready"] and report["parameter_ready"]
+    assert report["model_capability_ready"] and report["research_solve_ready"]
+    assert report["model_ready"] and not report["publication_ready"]
+    assert not report["solver_executed"] and not report["result_qualified"]
+    assert report["registered_model_adapter"] == "handoff_v1+site_capacity_v1"
+
+
 def result_payload(case_payload):
     return {
         "interface_version": INTERFACE_VERSION,

@@ -69,11 +69,13 @@
 
 这些是防止显然错误状态的结构门槛，不替代B的可行性/gap证书，也不替代C从导出明细的独立重算。C不能以目标函数值重新命名为“重算成本”，不能为展示新增虚构求解点。通过结构检查的合成接口测试不是项目真实求解结果。
 
-## 5. 新主线就绪门禁
+## 5. 新主线就绪门禁（2026-09-06更新）
 
-`ready_report(case_bundle)`独立输出输入、参数、标准化、快照、磁盘哈希、模型就绪、求解执行、结果资格状态，且列出阻塞项与负责人。
+`ready_report(case_bundle, integration_evidence=...)`独立输出`input_ready`、`parameter_ready`、`model_capability_ready`、`research_solve_ready`、`publication_ready`、`solver_executed`和`result_qualified`，且列出阻塞项与负责人。
 
-本轮A仅接输入：**新CaseBundle到B求解核心的消费适配器尚未注册**。因此代码门禁拒绝新情景solve，不静默调用legacy或V1现成结果。这个结论来自当前代码没有消费者，不是由YAML中的`implemented`、`model_ready`字段决定。后续B必须提供实际消费适配器、标准结果输出和集成测试，经A接入后才能修改代码层门禁。
+A侧现在自动生成5个虚拟研究候选站、62栋/2160小时容量边界、三种模式的成本SolveRequest，并以真实形状CaseBundle调用B1经济投影和B2容量投影。联调证据写入`ab_adapter_smoke.json`；它不是YAML手填状态，也不实例化求解器。DN250/400/500物理参考容量不进入执行边界，执行侧使用已确认的规划容量代理档。
+
+`research_solve_ready=true`仅表示研究输入和B1/B2接口具备交接条件；它不等于已经构模、已经求解或结果合格。站房固定投资边界未确认期间，`publication_ready`必须为false。即使研究门禁通过，`solver_executed`仍为false，直至B产生带求解日志和独立QA的ResultBundle。正式入口仍禁止静默调用legacy或V1现成结果。
 
 常见能力ID：
 
@@ -82,10 +84,11 @@
 | `monthly_demand_charge` | B：虚拟总表月度最大需量费表达式及三个月手算 |
 | `effective_parameter_mapping` | B：有效参数逐项进入模型，费用边界及重算通过 |
 | `tes` | B：有/无储热单例、效率及SOC首末闭合通过 |
-| `site_capacity` | B：候选地块及接入容量字段消费，未提供依据不得猜测 |
+| `site_capacity` | A/B：5个研究候选站、站点总容量、设备/电/气上限经B2消费 |
+| `pipe_capacity` | A/B：三档规划容量经B2消费，DN参考容量只作审计 |
 | `result_bundle` | B输出、C复算：新结果字段/单位/哈希与展示接口联调 |
 
-源数据和参数通过而模型未就绪时，`prepare`允许交付成功；`solve`应返回明确契约错误并停止。准备完成不等于新增经济包已在优化目标中全部生效。
+输入和参数通过而B1/B2联调失败时，`prepare`输出退出码2及具体错误；联调通过时可交付研究任务，但准备完成仍不等于新增经济包已在优化目标中求解或正式发布。
 
 ## 6. 调用与验证
 
@@ -102,8 +105,9 @@ case = CaseBundle.from_dict(payload)
 case.write(new_run_directory / "case_bundle.json")
 case = CaseBundle.read(new_run_directory / "case_bundle.json")
 integrity = case.verify_artifacts(check_sources=True)
-readiness = ready_report(case)
-# 只有未来实际B消费者及全部验证通过后才可继续；当前model_ready为False。
+evidence = json.loads((new_run_directory / "ab_adapter_smoke.json").read_text())
+readiness = ready_report(case, integration_evidence=evidence)
+# research_solve_ready与publication_ready、solver_executed必须分别判断。
 ```
 
 专项测试覆盖：深层不可变、规范身份、版本变化、独占写入、产物/源文件篡改、严格布尔与数值、非法请求、失败资格、日志/QA证据要求，以及门禁不导入或调用模型/求解器。接口不修改输入文件，不执行全季优化。

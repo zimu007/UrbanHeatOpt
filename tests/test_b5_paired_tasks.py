@@ -113,6 +113,28 @@ def test_unapproved_tes_maxima_are_not_ready():
     assert "approved_tes_engineering_maxima" in group.readiness_blockers
 
 
+def test_research_assumption_tes_maxima_allow_research_pair_only():
+    group = make_b5_comparison_group(
+        fixed=_fixed(), readiness=_readiness(
+            tes_engineering_maxima_approved=False,
+            result_class="research",
+            tes_boundary_status="research_assumption",
+        ))
+    assert group.readiness_status == "PREPARED_NOT_RUN"
+    assert not group.readiness_blockers
+
+
+def test_research_tes_boundary_cannot_unlock_publication_pair():
+    group = make_b5_comparison_group(
+        fixed=_fixed(), readiness=_readiness(
+            tes_engineering_maxima_approved=False,
+            result_class="publication",
+            tes_boundary_status="research_assumption",
+        ))
+    assert group.readiness_status == "NOT_READY"
+    assert "publication_requires_verified_tes_boundary" in group.readiness_blockers
+
+
 def test_legacy_20260829_point_cannot_be_formal_revised_b5_input():
     fixed = _fixed(parameter_version="provisional_20260829")
     group = make_b5_comparison_group(

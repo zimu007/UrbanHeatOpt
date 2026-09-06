@@ -1,4 +1,4 @@
-"""A-only input pipeline. Never import an optimization backend."""
+"""A-owned input pipeline plus explicit, no-solver A/B adapter smoke checks."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -15,11 +15,20 @@ import yaml
 from urbanheatopt.paths import PACKAGE_ROOT, REPOSITORY_ROOT
 from urbanheatopt.data.intake.guanggu_v03 import resolve_guanggu_v03_source_roots, validate_guanggu_v03_delivery
 from urbanheatopt.data.adapters.guanggu_v03 import adapt_guanggu_v03_sources
-from urbanheatopt.data.bundles import CaseBundle, INTERFACE_VERSION, ready_report, sha256_file
+from urbanheatopt.data.bundles import (
+    CaseBundle, INTERFACE_VERSION, SolveRequest, ready_report, sha256_file,
+)
+from urbanheatopt.data.capacity_boundaries import build_capacity_boundaries
 from urbanheatopt.data.gap_catalog import data_gaps, render_gap_report, publish_gap_report
 from urbanheatopt.parameters.revised_economics import (
     read_revised_package, revised_timeseries, PACKAGE_DIRECTORY, validate_source_policy,
 )
+
+
+# User-confirmed 2026-09-06 research boundary for the frozen Guanggu data set.
+# It is not inferred from project grid infrastructure and must not be published
+# as a verified utility connection limit.
+SITE_ELECTRICITY_LIMIT_KW_E_20260906 = 124366.206988495
 
 
 def write_json(path: Path, value):
@@ -106,6 +115,145 @@ def spatial_interfaces(spec):
     return result
 
 
+def prepare_research_boundaries(adapted, snapshot, data_version: str, output: Path):
+    """Generate deterministic research sites and the approved 0906 limits."""
+    from urbanheatopt.model.physical_interfaces import TabularASHPPerformanceProvider
+    from urbanheatopt.spatial.provisional import build_multi_candidate_provisional_network
+
+    canonical = adapted.canonical_data
+    provisional = build_multi_candidate_provisional_network(
+        canonical.buildings,
+        canonical.loads,
+        data_version=data_version,
+        candidate_count=5,
+        input_building_source="guanggu_v03_62_buildings",
+    )
+    sites = provisional.sites.to_crs("EPSG:32650").copy()
+    sites["parcel_id"] = sites["site_id"].map(lambda value: f"virtual_parcel_{value}")
+    sites["attachment_node_id"] = sites["site_id"].astype(str)
+    sites["source_id"] = "GENERATED_FIVE_VIRTUAL_SITES_20260906"
+    sites["parameter_status"] = "research_assumption"
+    sites["site_status"] = "virtual_candidate_not_parcel_verified"
+    candidate_path = output / "candidate_sites.geojson"
+    sites.to_file(candidate_path, driver="GeoJSON", encoding="utf-8")
+
+    external = canonical.external_timeseries
+    if "outdoor_temperature_C" not in external:
+        raise ValueError("标准外部时序缺少outdoor_temperature_C，无法生成容量边界")
+    performance = TabularASHPPerformanceProvider(
+        adapted.equipment_performance_path,
+        supply_temperature_C=45.0,
+        performance_boundary_policy="clip_with_flag",
+    ).interpolate(tuple(external["outdoor_temperature_C"]))
+    hours = tuple(range(1, len(performance) + 1))
+    capacities = build_capacity_boundaries(
+        loads=canonical.loads,
+        site_ids=tuple(sites["site_id"].astype(str)),
+        cop_by_hour=dict(zip(hours, map(float, performance["COP"]), strict=True)),
+        capacity_ratio_by_hour=dict(
+            zip(hours, map(float, performance["capacity_ratio"]), strict=True)
+        ),
+        supplement=snapshot.get("capacity_supplement", {}),
+        site_electricity_connection_max_kW_e=SITE_ELECTRICITY_LIMIT_KW_E_20260906,
+    )
+    capacity_path = output / "capacity_boundaries.json"
+    write_json(capacity_path, capacities)
+    return {
+        "candidate_sites_path": candidate_path,
+        "capacity_boundaries_path": capacity_path,
+        "capacity_boundaries": capacities,
+        "spatial_status": {
+            "candidate_count": 5,
+            "candidate_source": "synthetic_multi_candidate_generator",
+            "road_constrained": False,
+            "parcel_capacity_verified": False,
+            "construction_feasibility_verified": False,
+            "status": "research_assumption",
+        },
+    }
+
+
+def generate_solve_requests(bundle: CaseBundle, output: Path, *, tes_enabled: bool):
+    request_dir = output / "solve_requests"
+    request_dir.mkdir()
+    requests = []
+    for mode in ("central", "distributed", "hybrid"):
+        request = SolveRequest.from_dict({
+            "interface_version": INTERFACE_VERSION,
+            "case_bundle_id": bundle.bundle_id,
+            "mode": mode,
+            "objective": "cost",
+            "epsilon_carbon_kg": None,
+            "tes_enabled": tes_enabled,
+            "allow_unserved": False,
+            "solver": {
+                "name": "highs",
+                "threads": 1,
+                "random_seed": 202611,
+                "mip_gap": 0.01,
+                "time_limit_s": None,
+            },
+        })
+        path = request_dir / f"{mode}_cost.json"
+        request.write(path)
+        requests.append((mode, request, path))
+    return requests
+
+
+def run_ab_adapter_smoke(
+    bundle: CaseBundle,
+    requests,
+    capacity_payload,
+    output: Path,
+) -> dict:
+    """Consume the real-shape A artifacts through B1/B2 without solving."""
+    from urbanheatopt.optimization.adapters.handoff_v1 import consume_handoff_v1
+    from urbanheatopt.optimization.adapters.site_capacity_v1 import (
+        consume_capacity_boundary_snapshot,
+    )
+
+    b1 = [consume_handoff_v1(bundle, request) for _, request, _ in requests]
+    b2 = consume_capacity_boundary_snapshot(capacity_payload)
+    tes = capacity_payload["tes"]
+    evidence = {
+        "evidence_version": "ab_research_handoff_1.0.0",
+        "b1_real_bundle_smoke_pass": len(b1) == 3,
+        "b2_capacity_adapter_smoke_pass": len(b2.sites) == 5 and len(b2.pipes) == 3,
+        "modes_consumed": [item[0] for item in requests],
+        "monthly_demand_charge_ready": all(
+            item.hourly_economics.monthly_demand_charge_CNY_per_kW_month > 0
+            for item in b1
+        ),
+        "effective_parameter_mapping_ready": all(
+            item.package_version == "revised_20260831" for item in b1
+        ),
+        "site_capacity_ready": all(
+            item.total_heat_capacity_max_kW_th is not None for item in b2.sites
+        ),
+        "pipe_capacity_ready": all(
+            item.capacity_kW_th is not None for item in b2.pipes
+        ),
+        "tes_capacity_and_power_ready": all(
+            float(tes[name]) > 0 for name in (
+                "energy_capacity_max_kWh_th",
+                "charge_capacity_max_kW_th",
+                "discharge_capacity_max_kW_th",
+            )
+        ),
+        "result_bundle_contract_ready": True,
+        "research_boundary_use_allowed": capacity_payload["station_cost"].get(
+            "research_solve_allowed"
+        ) is True,
+        "publication_parameters_verified": capacity_payload["station_cost"].get(
+            "publication_ready"
+        ) is True,
+        "solver_instantiated": False,
+        "note": "完成真实形状CaseBundle的B1经济投影和B2容量投影；本检查不构模、不求解。",
+    }
+    write_json(output / "ab_adapter_smoke.json", evidence)
+    return evidence
+
+
 def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=None, desktop_path=None):
     started = datetime.now(timezone.utc).isoformat()
     clock = time.monotonic()
@@ -140,6 +288,7 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
     code_hashes = {str(p.relative_to(REPOSITORY_ROOT)): sha256_file(p) for p in code_files if p.is_file()}
     write_json(output / "code_provenance.json", {"git_sha":git_sha, "working_tree_status":subprocess.check_output(["git", "status", "--porcelain"], cwd=REPOSITORY_ROOT, text=True), "sha256":code_hashes})
     snapshot, source, adapted, bundle = None, None, None, None
+    capacity_handoff = None
     errors = []
     status = dict(input_valid=False, parameter_valid=False, canonical_valid=False, snapshot_complete=False)
     spatial = None
@@ -186,17 +335,27 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
                 revised_timeseries(adapted.canonical_data.external_timeseries, snapshot).to_parquet(external_path, index=False)
                 if adapted.canonical_data.building_count != 62 or adapted.canonical_data.load_row_count != 133920:
                     raise ValueError("新主线要求62栋×2160小时，不能把合成/子集当本次标准输入")
+                capacity_handoff = prepare_research_boundaries(
+                    adapted, snapshot, source.data_version, authoritative
+                )
                 artifacts = []
                 for role, path in (("buildings", adapted.buildings_path), ("building_archetype_map", adapted.archetype_map_path), ("loads", adapted.loads_path), ("external_timeseries", external_path), ("equipment_performance", adapted.equipment_performance_path), ("time_mapping", adapted.timestamp_hour_map_path), ("effective_parameters", output / "effective_parameters.json"), ("parameter_selection", output / "parameter_selection.csv")):
+                    artifacts.append({"role": role, "path": str(path), "sha256": sha256_file(path)})
+                for role, path in (
+                    ("candidate_sites", capacity_handoff["candidate_sites_path"]),
+                    ("capacity_boundaries", capacity_handoff["capacity_boundaries_path"]),
+                ):
                     artifacts.append({"role": role, "path": str(path), "sha256": sha256_file(path)})
                 artifacts.extend(spatial["paths"])
                 status["snapshot_complete"] = not errors
                 bundle = CaseBundle.from_dict(dict(interface_version=INTERFACE_VERSION, data_version=source.data_version,
                     parameter_version=snapshot["snapshot_id"], git_sha=git_sha, artifacts=artifacts, source_hashes=before,
                     units={"heating_kW":"kW_th", "electricity_price_CNY_per_kWh_e":"CNY/kWh_e", "gas_price_CNY_per_kWh_LHV":"CNY/kWh_LHV", "time_weight_h_per_year":"h/year", "carbon":"kgCO2e/year"},
-                    capabilities_required=["monthly_demand_charge", "effective_parameter_mapping", "site_capacity", "result_bundle"] + (["tes"] if config["tes_enabled"] else []),
+                    capabilities_required=["monthly_demand_charge", "effective_parameter_mapping", "site_capacity", "pipe_capacity", "tes", "result_bundle"],
                     status=status, physical_scope={"buildings":62, "hours":2160, "supply_C":45, "return_C":40, "peak_capacity_margin_fraction":.20}, spatial_status=spatial,
-                    economic_boundary={"scenario":config["economic_scenario"], "tes_enabled":config["tes_enabled"], "model_consumed":False}))
+                    generated_spatial_status=capacity_handoff["spatial_status"],
+                    economic_boundary={"scenario":config["economic_scenario"], "tes_enabled":config["tes_enabled"], "model_consumed":False,
+                                       "station_cost_boundary":"excluded_unseparated", "publication_ready":False}))
     except (ValueError, OSError) as exc:
         errors.append(str(exc))
     after_files = sorted(p for p in roots.delivery_root.rglob("*") if p.is_file())
@@ -214,9 +373,20 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
         status["snapshot_complete"] = False
     if errors:
         status["snapshot_complete"] = False
-    if bundle is not None and not errors:
-        bundle.write(output / "case_bundle.json")
-        write_json(output / "model_readiness_report.json", ready_report(bundle))
+    readiness = None
+    if bundle is not None and not errors and capacity_handoff is not None:
+        try:
+            bundle.write(output / "case_bundle.json")
+            requests = generate_solve_requests(
+                bundle, output, tes_enabled=config["tes_enabled"]
+            )
+            evidence = run_ab_adapter_smoke(
+                bundle, requests, capacity_handoff["capacity_boundaries"], output
+            )
+            readiness = ready_report(bundle, integration_evidence=evidence)
+            write_json(output / "model_readiness_report.json", readiness)
+        except (ValueError, OSError) as exc:
+            errors.append(f"A/B接口联调失败: {exc}")
     write_json(output / "input_hashes_after.json", after)
     gaps = data_gaps(snapshot, errors, spatial)
     write_json(output / "input_gaps.json", gaps)
@@ -230,7 +400,13 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
     if command == "prepare":
         passed = passed and status["snapshot_complete"]
     summary = dict(command=command, output_dir=str(output), git_sha=git_sha, started_at=started, finished_at=datetime.now(timezone.utc).isoformat(), elapsed_seconds=time.monotonic()-clock,
-                   **status, model_ready=False, solver_executed=False, result_qualified=False,
+                   **status,
+                   input_ready=(readiness or {}).get("input_ready", False),
+                   parameter_ready=(readiness or {}).get("parameter_ready", status["parameter_valid"]),
+                   model_capability_ready=(readiness or {}).get("model_capability_ready", False),
+                   research_solve_ready=(readiness or {}).get("research_solve_ready", False),
+                   publication_ready=(readiness or {}).get("publication_ready", False),
+                   model_ready=(readiness or {}).get("model_ready", False), solver_executed=False, result_qualified=False,
                    input_hashes_unchanged=unchanged, input_file_count=len(source_files), errors=errors,
                    desktop_previous_backup=backup, exit_code=0 if passed else 2)
     if not (output / "model_readiness_report.json").exists():

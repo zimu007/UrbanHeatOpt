@@ -22,7 +22,14 @@ def main(argv=None):
         load_config(args.config)
         if args.bundle:
             from urbanheatopt.data.bundles import CaseBundle, ready_report
-            result = ready_report(CaseBundle.read(args.bundle))
+            evidence_path = args.bundle.resolve().parent / "ab_adapter_smoke.json"
+            evidence = (
+                json.loads(evidence_path.read_text(encoding="utf-8"))
+                if evidence_path.is_file() else None
+            )
+            result = ready_report(
+                CaseBundle.read(args.bundle), integration_evidence=evidence
+            )
         else:
             result = {"model_ready": False, "solver_executed": False,
                       "reason": "B/C消费适配器尚未交接；请先validate/prepare。没有旧模型回退。"}
