@@ -9,6 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import json
 from math import isfinite
+import re
+from types import MappingProxyType
+from typing import Mapping
 
 import pyomo.environ as p
 import pandas as pd
@@ -30,12 +33,68 @@ class PipeDesign:
 
 
 @dataclass(frozen=True)
+class MonthlyDemandChargeInput:
+    """Road V2 virtual-meter billing contract."""
+    rate_CNY_per_kW_month: float
+    billing_month_by_hour: Mapping[int, str]
+
+    def __post_init__(self):
+        object.__setattr__(self, 'billing_month_by_hour', MappingProxyType(dict(self.billing_month_by_hour)))
+
+
+@dataclass(frozen=True, slots=True)
+class BoundaryEvidence:
+    source: str
+    status: str
+    evidence_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SiteCapacityBoundary:
+    """Approved engineering limits for one candidate site (never inferred)."""
+    site_id: str
+    allowed_technology_ids: frozenset[str]
+    technology_capacity_max_kW_th: Mapping[str, float]
+    electricity_connection_max_kW_e: float | None
+    electricity_connection_scope: str | None
+    gas_connection_max_kW_LHV: float | None
+    evidence: BoundaryEvidence
+
+    def __post_init__(self):
+        object.__setattr__(self, 'allowed_technology_ids', frozenset(self.allowed_technology_ids))
+        object.__setattr__(self, 'technology_capacity_max_kW_th',
+                           MappingProxyType(dict(self.technology_capacity_max_kW_th)))
+
+
+@dataclass(frozen=True, slots=True)
+class PipeCapacityBoundary:
+    pipe_type_id: str
+    capacity_kW_th: float | None
+    evidence: BoundaryEvidence
+
+
+@dataclass(frozen=True, slots=True)
+class B2CapacityInput:
+    sites: tuple[SiteCapacityBoundary, ...]
+    pipes: tuple[PipeCapacityBoundary, ...]
+    local_hp_capacity_max_kW_th_by_building: Mapping[str, float] | None = None
+    local_hp_evidence: BoundaryEvidence | None = None
+
+    def __post_init__(self):
+        if self.local_hp_capacity_max_kW_th_by_building is not None:
+            object.__setattr__(self, 'local_hp_capacity_max_kW_th_by_building',
+                               MappingProxyType(dict(self.local_hp_capacity_max_kW_th_by_building)))
+
+
+@dataclass(frozen=True)
 class RoadCase:
     common: CoreModelInput
     network_json: str
     pipe_designs: tuple[PipeDesign, ...]
     timestamps: tuple[str, ...]
     parameter_version: str = 'synthetic_test'
+    monthly_demand_charge: MonthlyDemandChargeInput | None = None
+    b2_capacity: B2CapacityInput | None = None
 
     @property
     def network(self):
@@ -63,6 +122,16 @@ def validate_case(case: RoadCase):
         raise ValueError('timestamp必须带时区、严格连续1小时')
     if any(d.economics.time_weight_h_per_year[h] != 1 for h in d.hours):
         raise ValueError('道路V2只接受1h连续时步/权重')
+    demand_charge = case.monthly_demand_charge
+    if demand_charge is not None:
+        rate = demand_charge.rate_CNY_per_kW_month
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not isfinite(rate) or rate < 0:
+            raise ValueError('monthly demand charge rate must be finite and >= 0')
+        if set(demand_charge.billing_month_by_hour) != set(d.hours):
+            raise ValueError('billing_month_by_hour must cover every Road V2 hour exactly')
+        if any(not isinstance(month, str) or re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])', month) is None
+               for month in demand_charge.billing_month_by_hour.values()):
+            raise ValueError('billing_month_by_hour contains an invalid month label')
     if len(case.pipe_designs) != 3 or len({x.pipe_type_id for x in case.pipe_designs}) != 3:
         raise ValueError('必须提供3档唯一管型')
     for level in case.pipe_designs:
@@ -71,8 +140,72 @@ def validate_case(case: RoadCase):
                 raise ValueError('管型参数必须有限非负')
         if level.capacity_kW_th <= 0 or not isinstance(level.lifetime_years, int) or level.lifetime_years <= 0:
             raise ValueError('管型容量/寿命必须为正')
+    if case.b2_capacity is not None:
+        validate_b2_capacity(case)
     if not d.economics.electricity_carbon_kgCO2e_per_kWh_e or not d.economics.gas_carbon_kgCO2e_per_kWh_LHV:
         raise ValueError('V2必须提供电气碳因子')
+
+
+def validate_b2_capacity(case: RoadCase) -> None:
+    """Fail closed on every B2 limit required by this case's requested mode."""
+    boundary = case.b2_capacity
+    if boundary is None:
+        raise ValueError('B2 capacity boundary is missing')
+    d = case.common
+    site_ids = {row['site_id'] for row in case.network['sites']}
+    sites = {row.site_id: row for row in boundary.sites}
+    if set(sites) != site_ids or len(sites) != len(boundary.sites):
+        raise ValueError('B2 site boundaries must uniquely cover every candidate site')
+    central_ids = {tech.technology_id for tech in d.technologies if tech.applicable_scope == 'central'}
+    hp_ids = {tech.technology_id for tech in d.technologies
+              if tech.applicable_scope == 'central' and tech.energy_carrier == 'electricity'}
+    gas_ids = {tech.technology_id for tech in d.technologies
+               if tech.applicable_scope == 'central' and tech.energy_carrier == 'gas'}
+    for site in sites.values():
+        if not all((site.evidence.source, site.evidence.status, site.evidence.evidence_id)):
+            raise ValueError(f'{site.site_id}: B2 evidence is incomplete')
+        if not site.allowed_technology_ids <= central_ids:
+            raise ValueError(f'{site.site_id}: unknown allowed technology')
+        if d.mode != 'distributed' and not site.allowed_technology_ids:
+            raise ValueError(f'{site.site_id}: no allowed central technology')
+        if set(site.technology_capacity_max_kW_th) != set(site.allowed_technology_ids):
+            raise ValueError(f'{site.site_id}: every allowed technology requires an approved maximum')
+        for value in site.technology_capacity_max_kW_th.values():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0:
+                raise ValueError(f'{site.site_id}: technology capacity maximum is missing/invalid')
+        if hp_ids & site.allowed_technology_ids:
+            value = site.electricity_connection_max_kW_e
+            if value is None or not isfinite(value) or value <= 0:
+                raise ValueError(f'{site.site_id}: electricity connection maximum is missing/invalid')
+            if site.electricity_connection_scope != 'central_hp_only':
+                raise ValueError(f'{site.site_id}: electricity connection scope is unresolved')
+        if gas_ids & site.allowed_technology_ids:
+            value = site.gas_connection_max_kW_LHV
+            if value is None or not isfinite(value) or value <= 0:
+                raise ValueError(f'{site.site_id}: gas connection maximum is missing/invalid')
+    pipes = {row.pipe_type_id: row for row in boundary.pipes}
+    if set(pipes) != {row.pipe_type_id for row in case.pipe_designs} or len(pipes) != len(boundary.pipes):
+        raise ValueError('B2 pipe boundaries must uniquely cover every pipe design')
+    for pipe in pipes.values():
+        value = pipe.capacity_kW_th
+        if value is None or not isfinite(value) or value <= 0:
+            raise ValueError(f'{pipe.pipe_type_id}: approved pipe thermal capacity is missing')
+        if not all((pipe.evidence.source, pipe.evidence.status, pipe.evidence.evidence_id)):
+            raise ValueError(f'{pipe.pipe_type_id}: pipe capacity evidence is incomplete')
+        design_value = next(row.capacity_kW_th for row in case.pipe_designs
+                            if row.pipe_type_id == pipe.pipe_type_id)
+        if value != design_value:
+            raise ValueError(f'{pipe.pipe_type_id}: model pipe capacity differs from approved boundary')
+    if d.mode in ('distributed', 'hybrid'):
+        limits = boundary.local_hp_capacity_max_kW_th_by_building
+        if limits is None or set(limits) != set(d.demand_nodes) or boundary.local_hp_evidence is None:
+            raise ValueError('building-level local HP capacity limits/evidence are missing')
+        if not all((boundary.local_hp_evidence.source, boundary.local_hp_evidence.status,
+                    boundary.local_hp_evidence.evidence_id)):
+            raise ValueError('local HP capacity evidence is incomplete')
+        if any(isinstance(value, bool) or not isinstance(value, (int, float))
+               or not isfinite(value) or value <= 0 for value in limits.values()):
+            raise ValueError('building-level local HP capacity limit is invalid')
 
 
 def classify_direction_pair(
@@ -191,6 +324,10 @@ def build_road_model(
     uniform_pumping_rate = next(iter(pumping_rates)) if uniform_pumping else None
     central = {t.technology_id: t for t in d.technologies if t.applicable_scope == 'central'}
     local = next(t for t in d.technologies if t.applicable_scope == 'local')
+    b2_sites = ({row.site_id: row for row in case.b2_capacity.sites}
+                if case.b2_capacity is not None else None)
+    local_b2 = (case.b2_capacity.local_hp_capacity_max_kW_th_by_building
+                if case.b2_capacity is not None else None)
     nodes = [n['node_id'] for n in net['nodes']]
     incident = {n: [] for n in nodes}
     for eid, edge in edges.items():
@@ -396,7 +533,13 @@ def build_road_model(
             c(m.commodity_supply[s] <= len(d.demand_nodes)*m.station_built[s])
             for t, spec in central.items():
                 c(m.installed[s,t] <= m.station_built[s])
-                c(m.capacity[s,t] <= spec.capacity_max_kW*m.installed[s,t])
+                if b2_sites is not None and t not in b2_sites[s].allowed_technology_ids:
+                    m.installed[s,t].fix(0)
+                    m.capacity[s,t].fix(0)
+                capacity_max = (b2_sites[s].technology_capacity_max_kW_th[t]
+                                if b2_sites is not None and t in b2_sites[s].allowed_technology_ids
+                                else spec.capacity_max_kW)
+                c(m.capacity[s,t] <= capacity_max*m.installed[s,t])
                 c(m.capacity[s,t] >= spec.capacity_min_kW*m.installed[s,t])
                 for h in d.hours:
                     c(m.heat[s,t,h] <= m.capacity[s,t]*ratio(t,h))
@@ -422,6 +565,18 @@ def build_road_model(
                 c(m.discharge[s,h] <= st.discharge_capacity_max_kW_th*(m.tes_built[s]-m.charging[s,h]))
                 c(m.soc[s,h] == m.soc[s,d.hours[i-1]]*(1-st.standing_loss_fraction_per_hour)
                   + st.charge_efficiency*m.charge[s,h] - m.discharge[s,h]/st.discharge_efficiency)
+            if b2_sites is not None:
+                hp_ids = tuple(t for t in b2_sites[s].allowed_technology_ids
+                               if central[t].energy_carrier == 'electricity')
+                gas_ids = tuple(t for t in b2_sites[s].allowed_technology_ids
+                                if central[t].energy_carrier == 'gas')
+                for h in d.hours:
+                    if hp_ids:
+                        c(sum(m.heat[s,t,h]/cop(t,h) for t in hp_ids)
+                          <= b2_sites[s].electricity_connection_max_kW_e*m.station_built[s])
+                    if gas_ids:
+                        c(sum(m.heat[s,t,h]/central[t].efficiency for t in gas_ids)
+                          <= b2_sites[s].gas_connection_max_kW_LHV*m.station_built[s])
     for b in d.demand_nodes:
         if not distributed_fastpath:
             c(sum(m.access_selected[o] for o in building_options[b]) == m.connected[b])
@@ -429,7 +584,8 @@ def build_road_model(
         if d.mode == 'hybrid':
             c(m.connected[b] <= sum(m.station_built[s] for s in stations))
         if d.mode != 'central':
-            c(m.local_capacity[b] <= local.capacity_max_kW*m.local_installed[b])
+            c(m.local_capacity[b] <= (local_b2[b] if local_b2 is not None
+                                      else local.capacity_max_kW)*m.local_installed[b])
             c(m.local_capacity[b] >= local.capacity_min_kW*m.local_installed[b])
             required_capacity = max(
                 (1+d.peak_capacity_margin_fraction)*d.heat_demand_kW[b,h]/ratio(local.technology_id,h)
@@ -510,6 +666,42 @@ def build_road_model(
     m.electricity = p.Expression(m.HOURS, rule=lambda _,h:
         sum(m.heat[s,t,h]/cop(t,h) for s in stations for t in central if central[t].energy_carrier == 'electricity')
         +sum(m.local_heat[b,h]/cop(local.technology_id,h) for b in d.demand_nodes)+sum(m.pump[e,h] for e in edges))
+    if b2_sites is not None:
+        m.b2_site_capacity_limit = p.Constraint(
+            m.S, m.T,
+            rule=lambda _, s, t: (
+                m.capacity[s, t] == 0 if t not in b2_sites[s].allowed_technology_ids
+                else m.capacity[s, t] <= b2_sites[s].technology_capacity_max_kW_th[t]
+                * m.installed[s, t]))
+        m.b2_electricity_connection_limit = p.Constraint(
+            m.S, m.HOURS,
+            rule=lambda _, s, h: (
+                sum(m.heat[s, t, h] / cop(t, h) for t in b2_sites[s].allowed_technology_ids
+                    if central[t].energy_carrier == 'electricity')
+                <= b2_sites[s].electricity_connection_max_kW_e * m.station_built[s]
+                if any(central[t].energy_carrier == 'electricity'
+                       for t in b2_sites[s].allowed_technology_ids) else p.Constraint.Skip))
+        m.b2_gas_connection_limit = p.Constraint(
+            m.S, m.HOURS,
+            rule=lambda _, s, h: (
+                sum(m.heat[s, t, h] / central[t].efficiency
+                    for t in b2_sites[s].allowed_technology_ids
+                    if central[t].energy_carrier == 'gas')
+                <= b2_sites[s].gas_connection_max_kW_LHV * m.station_built[s]
+                if any(central[t].energy_carrier == 'gas'
+                       for t in b2_sites[s].allowed_technology_ids) else p.Constraint.Skip))
+    billing_month_by_hour = (case.monthly_demand_charge.billing_month_by_hour
+                             if case.monthly_demand_charge is not None else {
+        h: 'not_applied' for h in d.hours
+    })
+    monthly_demand_rate = (case.monthly_demand_charge.rate_CNY_per_kW_month
+                           if case.monthly_demand_charge is not None else 0.0)
+    billing_months = tuple(dict.fromkeys(billing_month_by_hour[h] for h in d.hours))
+    m.BILLING_MONTHS = p.Set(initialize=billing_months, ordered=True)
+    m.monthly_peak_kW_e = p.Var(m.BILLING_MONTHS, domain=p.NonNegativeReals)
+    m.monthly_peak_constraint = p.Constraint(
+        m.HOURS,
+        rule=lambda _,h: m.monthly_peak_kW_e[billing_month_by_hour[h]] >= m.electricity[h])
     m.gas = p.Expression(m.HOURS, rule=lambda _,h:
         sum(m.heat[s,t,h]/central[t].efficiency for s in stations for t in central if central[t].energy_carrier == 'gas'))
     r = econ.discount_rate
@@ -523,8 +715,11 @@ def build_road_model(
     m.storage_investment = p.Expression(expr=sum(m.tes_energy[s]*st.capex_CNY_per_kWh_th+m.tes_power_cost_capacity[s]*st.power_capex_CNY_per_kW_th+m.tes_built[s]*st.fixed_capex_CNY for s in stations)*crf(r,st.lifetime_years))
     m.electricity_cost = p.Expression(expr=sum(m.electricity[h]*econ.electricity_price_CNY_per_kWh_e[h]*econ.time_weight_h_per_year[h] for h in d.hours))
     m.gas_cost = p.Expression(expr=sum(m.gas[h]*econ.gas_price_CNY_per_kWh_LHV[h]*econ.time_weight_h_per_year[h] for h in d.hours))
+    m.annual_monthly_demand_charge_CNY_per_year = p.Expression(
+        expr=sum(m.monthly_peak_kW_e[month] for month in m.BILLING_MONTHS)
+        * monthly_demand_rate)
     m.variable_om = p.Expression(expr=sum((sum(m.heat[s,t,h]*central[t].variable_om_CNY_per_kWh_th for s in stations for t in central)+sum(m.local_heat[b,h]*local.variable_om_CNY_per_kWh_th for b in d.demand_nodes))*econ.time_weight_h_per_year[h] for h in d.hours))
-    m.annual_real_cost_CNY_per_year = p.Expression(expr=m.device_investment+m.fixed_om+m.pipe_investment+m.station_investment+m.connection_investment+m.storage_investment+m.electricity_cost+m.gas_cost+m.variable_om)
+    m.annual_real_cost_CNY_per_year = p.Expression(expr=m.device_investment+m.fixed_om+m.pipe_investment+m.station_investment+m.connection_investment+m.storage_investment+m.electricity_cost+m.gas_cost+m.variable_om+m.annual_monthly_demand_charge_CNY_per_year)
     m.annual_hns_penalty_CNY_per_year = p.Expression(expr=sum(m.unserved_heat_kW[b,h]*econ.time_weight_h_per_year[h]*econ.hns_penalty_CNY_per_kWh for b in d.demand_nodes for h in d.hours))
     m.annual_operating_physical_carbon_kgCO2e_per_year = p.Expression(expr=sum((m.electricity[h]*econ.electricity_carbon_kgCO2e_per_kWh_e[h]+m.gas[h]*econ.gas_carbon_kgCO2e_per_kWh_LHV[h])*econ.time_weight_h_per_year[h] for h in d.hours))
     m.policy_carbon_cost = p.Expression(expr=m.annual_operating_physical_carbon_kgCO2e_per_year/1000*econ.policy_carbon_price_CNY_per_tCO2e)

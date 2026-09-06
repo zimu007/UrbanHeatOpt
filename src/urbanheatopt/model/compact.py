@@ -486,6 +486,10 @@ def build_compact_model(
     grade_order = tuple(levels)
     station_order = tuple(stations)
     technology_order = tuple(central)
+    b2_site = (next(row for row in case.b2_capacity.sites if row.site_id == design.site_id)
+               if case.b2_capacity is not None else None)
+    local_b2 = (case.b2_capacity.local_hp_capacity_max_kW_th_by_building
+                if case.b2_capacity is not None else None)
 
     model = p.ConcreteModel(name=COMPACT_MODEL_VERSION)
     model.HOURS = p.Set(initialize=hour_order, ordered=True)
@@ -547,7 +551,11 @@ def build_compact_model(
     )
     model.installed = p.Expression(
         model.S, model.T,
-        rule=lambda _, site, tech: model.station_built[site],
+        rule=lambda _, site, tech: (
+            0.0 if b2_site is not None and site == design.site_id
+            and tech not in b2_site.allowed_technology_ids
+            else model.station_built[site]
+        ),
     )
     model.built = p.Expression(
         model.E,
@@ -683,7 +691,8 @@ def build_compact_model(
         )
         for building in d.demand_nodes
     }
-    if any(value > local.capacity_max_kW + 1e-9 for value in local_required.values()):
+    if any(value > (local_b2[building] if local_b2 is not None else local.capacity_max_kW) + 1e-9
+           for building, value in local_required.items()):
         raise ValueError("a full-season local peak exceeds local technology capacity_max_kW")
     model.local_capacity = p.Expression(
         model.DEMAND_NODES,
@@ -876,9 +885,14 @@ def build_compact_model(
     model.central_constraints = p.ConstraintList()
     if d.mode != "distributed":
         for tech in central.values():
+            if b2_site is not None and tech.technology_id not in b2_site.allowed_technology_ids:
+                model._central_capacity[tech.technology_id].fix(0)
+            capacity_max = (b2_site.technology_capacity_max_kW_th[tech.technology_id]
+                            if b2_site is not None and tech.technology_id in b2_site.allowed_technology_ids
+                            else tech.capacity_max_kW)
             model.central_constraints.add(
                 model._central_capacity[tech.technology_id]
-                <= tech.capacity_max_kW * model._station_active
+                <= capacity_max * model._station_active
             )
         for hour in d.hours:
             model.central_constraints.add(
@@ -904,6 +918,41 @@ def build_compact_model(
                 >= (1 + d.peak_capacity_margin_fraction)
                 * model.source_heat_requirement[hour]
             )
+        if b2_site is not None:
+            for hour in d.hours:
+                if hp.technology_id in b2_site.allowed_technology_ids:
+                    model.central_constraints.add(
+                        model._central_hp_heat[hour]
+                        / d.heat_pump_cop_by_hour.get((hp.technology_id, hour), hp.cop)
+                        <= b2_site.electricity_connection_max_kW_e * model._station_active
+                    )
+                if boiler.technology_id in b2_site.allowed_technology_ids:
+                    model.central_constraints.add(
+                        (model.source_generation_requirement[hour] - model._central_hp_heat[hour])
+                        / boiler.efficiency
+                        <= b2_site.gas_connection_max_kW_LHV * model._station_active
+                    )
+            model.b2_site_capacity_limit = p.Constraint(
+                model.T,
+                rule=lambda _, tech: (
+                    model._central_capacity[tech] == 0
+                    if tech not in b2_site.allowed_technology_ids
+                    else model._central_capacity[tech]
+                    <= b2_site.technology_capacity_max_kW_th[tech] * model._station_active))
+            model.b2_electricity_connection_limit = p.Constraint(
+                model.HOURS,
+                rule=lambda _, hour: (
+                    model._central_hp_heat[hour]
+                    / d.heat_pump_cop_by_hour.get((hp.technology_id, hour), hp.cop)
+                    <= b2_site.electricity_connection_max_kW_e * model._station_active
+                    if hp.technology_id in b2_site.allowed_technology_ids else p.Constraint.Skip))
+            model.b2_gas_connection_limit = p.Constraint(
+                model.HOURS,
+                rule=lambda _, hour: (
+                    (model.source_generation_requirement[hour] - model._central_hp_heat[hour])
+                    / boiler.efficiency
+                    <= b2_site.gas_connection_max_kW_LHV * model._station_active
+                    if boiler.technology_id in b2_site.allowed_technology_ids else p.Constraint.Skip))
 
     # Dominance-reduced physical capacity rows.  The witness maps in ``design``
     # certify every omitted hour, while audit_compact_solution checks all hours.
@@ -990,6 +1039,20 @@ def build_compact_model(
             + model.total_pump[hour]
         ),
     )
+    billing_month_by_hour = (case.monthly_demand_charge.billing_month_by_hour
+                             if case.monthly_demand_charge is not None else {
+        hour: "not_applied" for hour in d.hours
+    })
+    monthly_demand_rate = (case.monthly_demand_charge.rate_CNY_per_kW_month
+                           if case.monthly_demand_charge is not None else 0.0)
+    billing_months = tuple(dict.fromkeys(billing_month_by_hour[hour] for hour in d.hours))
+    model.BILLING_MONTHS = p.Set(initialize=billing_months, ordered=True)
+    model.monthly_peak_kW_e = p.Var(model.BILLING_MONTHS, domain=p.NonNegativeReals)
+    model.monthly_peak_constraint = p.Constraint(
+        model.HOURS,
+        rule=lambda _, hour: model.monthly_peak_kW_e[billing_month_by_hour[hour]]
+        >= model.electricity[hour],
+    )
     model.gas = p.Expression(
         model.HOURS,
         rule=lambda _, hour: (
@@ -1066,6 +1129,10 @@ def build_compact_model(
             for hour in d.hours
         )
     )
+    model.annual_monthly_demand_charge_CNY_per_year = p.Expression(
+        expr=sum(model.monthly_peak_kW_e[month] for month in model.BILLING_MONTHS)
+        * monthly_demand_rate
+    )
     model.variable_om = p.Expression(
         expr=sum(
             (
@@ -1085,6 +1152,7 @@ def build_compact_model(
         + model.station_investment + model.connection_investment
         + model.storage_investment + model.electricity_cost + model.gas_cost
         + model.variable_om
+        + model.annual_monthly_demand_charge_CNY_per_year
     )
     model.annual_hns_penalty_CNY_per_year = p.Expression(expr=0.0)
     model.annual_operating_physical_carbon_kgCO2e_per_year = p.Expression(

@@ -7,6 +7,31 @@ adapted into that legacy interface.
 
 from __future__ import annotations
 
+import math
+import re
+from typing import Mapping
+
+
+def monthly_demand_charge(
+    total_purchased_electricity_kW_by_hour: Mapping[int, float],
+    billing_month_by_hour: Mapping[int, str],
+    rate_CNY_per_kW_month: float,
+) -> tuple[dict[str, float], float]:
+    """Independently recalculate virtual-meter monthly peaks and their charge."""
+    if isinstance(rate_CNY_per_kW_month, bool) or not math.isfinite(rate_CNY_per_kW_month) or rate_CNY_per_kW_month < 0:
+        raise ValueError("monthly demand rate must be finite and >= 0")
+    if not total_purchased_electricity_kW_by_hour or set(billing_month_by_hour) != set(total_purchased_electricity_kW_by_hour):
+        raise ValueError("billing_month_by_hour must cover every electricity hour exactly")
+    peaks: dict[str, float] = {}
+    for hour, raw_power in total_purchased_electricity_kW_by_hour.items():
+        month = billing_month_by_hour[hour]
+        if not isinstance(month, str) or re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month) is None:
+            raise ValueError(f"invalid billing month for hour {hour}")
+        if isinstance(raw_power, bool) or not math.isfinite(raw_power) or raw_power < 0:
+            raise ValueError(f"invalid purchased electricity for hour {hour}")
+        peaks[month] = max(peaks.get(month, 0.0), float(raw_power))
+    return peaks, sum(peaks.values()) * float(rate_CNY_per_kW_month)
+
 
 def capital_recovery_factor(discount_rate: float, lifetime_years: float) -> float:
     """Return the capital recovery factor for a lifetime in years."""

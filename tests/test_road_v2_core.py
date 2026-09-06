@@ -245,10 +245,10 @@ def test_fixed_modes_and_demand_identity_remove_only_determined_variables():
     hybrid = build_road_model(shared_case('hybrid'))
 
     assert value(central.deterministic_demand_dispatch)
-    assert central.nvariables() == 69
-    assert distributed.nvariables() == len(distributed.DEMAND_NODES)
-    assert distributed.nconstraints() == 3*len(distributed.DEMAND_NODES)
-    assert hybrid.nvariables() == 73
+    assert central.nvariables() == 70
+    assert distributed.nvariables() == len(distributed.DEMAND_NODES) + 1
+    assert distributed.nconstraints() == 3*len(distributed.DEMAND_NODES) + len(distributed.HOURS)
+    assert hybrid.nvariables() == 74
     for building in distributed.DEMAND_NODES:
         assert value(distributed.local_installed[building]) == 1
         for hour in distributed.HOURS:

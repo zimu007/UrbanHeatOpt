@@ -14,6 +14,7 @@ from pyomo.environ import value
 from shapely.geometry import LineString, mapping
 
 from urbanheatopt.model.road_core import RoadCase, classify_direction_solution
+from urbanheatopt.optimization.mode_diagnostics import classify_realized_mode
 from urbanheatopt.spatial.atomic_network import access_options
 
 
@@ -198,12 +199,21 @@ def export_solution(case: RoadCase, model, root: str | Path):
         pd.DataFrame(edge_hourly).to_parquet(root/'network_hourly.parquet',index=False)
     _json(root/'network_decisions.geojson',dict(type='FeatureCollection',crs={'type':'name','properties':{'name':net['crs']}},features=features))
     names = ['device_investment','fixed_om','pipe_investment','station_investment','connection_investment',
-             'storage_investment','electricity_cost','gas_cost','variable_om']
+             'storage_investment','electricity_cost','gas_cost','variable_om',
+             'annual_monthly_demand_charge_CNY_per_year']
     reported_costs = {name: value(getattr(m,name)) for name in names}
     pd.DataFrame([dict(component=name,annual_CNY=reported_costs[name]) for name in names]).to_csv(root/'cost_breakdown.csv',index=False)
     carbon = value(m.annual_operating_physical_carbon_kgCO2e_per_year)
     hns_penalty = value(m.annual_hns_penalty_CNY_per_year)
-    summary = dict(mode=d.mode,model_version='road_joint_v2',building_count=len(d.demand_nodes),hour_count=len(d.hours),
+    connected_values = {row['building_id']: row['connected'] for row in buildings}
+    connected_count = sum(float(selected) > .5 for selected in connected_values.values())
+    selected_sites = [site['site_id'] for site in net['sites'] if value(m.station_built[site['site_id']]) > .5]
+    summary = dict(mode=d.mode,requested_mode=d.mode,
+        realized_mode=classify_realized_mode(connected_values),
+        connected_building_count=connected_count,
+        local_building_count=len(d.demand_nodes)-connected_count,
+        selected_site=selected_sites[0] if len(selected_sites)==1 else None,
+        model_version='road_joint_v2',building_count=len(d.demand_nodes),hour_count=len(d.hours),
         real_cost_CNY=fsum(reported_costs.values()),hns_penalty_CNY=hns_penalty,
         carbon_kgCO2e=carbon,
         carbon_tCO2e=carbon/1000,
@@ -632,6 +642,14 @@ def audit_export(case: RoadCase, root: str | Path):
     costs['electricity_cost']=fsum(electricity_by_hour*electricity_price*time_weight)
     costs['gas_cost']=fsum(gas_by_hour*gas_price*time_weight)
     costs['variable_om']=fsum(variable_cost)
+    month_peaks={}
+    billing=(case.monthly_demand_charge.billing_month_by_hour
+             if case.monthly_demand_charge is not None else {h:'not_applied' for h in hours})
+    for index,h in enumerate(hours):
+        month_peaks[billing[h]]=max(month_peaks.get(billing[h],0.),float(electricity_by_hour[index]))
+    demand_rate=(case.monthly_demand_charge.rate_CNY_per_kW_month
+                 if case.monthly_demand_charge is not None else 0.)
+    costs['annual_monthly_demand_charge_CNY_per_year']=fsum(month_peaks.values())*demand_rate
     reported=reported_cost_table.set_index('component')['annual_CNY']
     record('cost_CNY',max(abs(costs[k]-reported[k]) for k in costs))
     record('cost_CNY',abs(fsum(costs.values())-summary['real_cost_CNY']))

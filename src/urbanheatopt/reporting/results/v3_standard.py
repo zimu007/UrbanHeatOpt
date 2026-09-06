@@ -313,12 +313,13 @@ def _manual_costs(model: Any) -> dict[str, float]:
         * value(model.gas_price_CNY_per_kWh_LHV[hour])
         for station in model.STATIONS for tech in model.CENTRAL_GAS_BOILERS for hour in model.HOURS
     )
+    monthly_demand_charge = value(getattr(model, "annual_monthly_demand_charge_CNY_per_year", 0.0))
     return {
         "device_capex": float(device), "network_capex": float(network),
         "connection_capex": float(connection), "station_capex": float(station),
         "storage_capex": float(storage), "fixed_om": float(fixed_om),
         "variable_om": float(variable_om), "electricity": float(electricity),
-        "gas": float(gas),
+        "gas": float(gas), "monthly_demand_charge": float(monthly_demand_charge),
     }
 
 

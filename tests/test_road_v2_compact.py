@@ -5,6 +5,7 @@ import json
 import pandas as pd
 import pytest
 from pyomo.environ import Objective, Var, value
+from pyomo.repn import generate_standard_repn
 
 from urbanheatopt.model.compact import (
     audit_compact_solution,
@@ -13,7 +14,10 @@ from urbanheatopt.model.compact import (
     compact_model_metadata,
     export_compact_solution,
 )
-from urbanheatopt.model.road_core import build_road_model
+from urbanheatopt.model.road_core import MonthlyDemandChargeInput, build_road_model
+from urbanheatopt.data.road_builder import load_case, save_case
+from urbanheatopt.model.reference_core import ThermalStorageSpec
+from urbanheatopt.model.costing.annualized import capital_recovery_factor
 from urbanheatopt.qa.road_results import export_solution
 from urbanheatopt.optimization.solvers import solve_pyomo_model
 from tests.test_road_v2_core import shared_case
@@ -21,6 +25,86 @@ from tests.test_road_v2_core import shared_case
 
 def _design(case, site="S1"):
     return next(item for item in build_compact_tree_designs(case) if item.site_id == site)
+
+
+def test_compact_and_road_core_share_monthly_virtual_meter_charge_structure():
+    base = shared_case("hybrid")
+    case = replace(base, monthly_demand_charge=MonthlyDemandChargeInput(
+        42.0, {1: "2025-12", 2: "2025-12"}))
+    road = build_road_model(case)
+    compact = build_compact_model(case, _design(case))
+    assert len(road.monthly_peak_constraint) == len(compact.monthly_peak_constraint) == 2
+    assert set(road.BILLING_MONTHS) == set(compact.BILLING_MONTHS) == {"2025-12"}
+    road.monthly_peak_kW_e["2025-12"].set_value(150)
+    compact.monthly_peak_kW_e["2025-12"].set_value(150)
+    assert value(road.annual_monthly_demand_charge_CNY_per_year) == 150 * 42
+    assert value(compact.annual_monthly_demand_charge_CNY_per_year) == 150 * 42
+
+
+def test_monthly_demand_charge_survives_case_round_trip(tmp_path):
+    case = replace(shared_case(), monthly_demand_charge=MonthlyDemandChargeInput(
+        42.0, {1: "2025-12", 2: "2026-01"}))
+    path = tmp_path / "case.json"
+    save_case(case, path)
+    restored = load_case(path)
+    assert restored.monthly_demand_charge == case.monthly_demand_charge
+
+
+def _linear_coefficient(expression, variable):
+    repn = generate_standard_repn(expression)
+    return next(coef for item, coef in zip(repn.linear_vars, repn.linear_coefs, strict=True)
+                if item is variable)
+
+
+def test_revised_b1_economics_are_actual_compact_expression_coefficients():
+    base = shared_case("hybrid")
+    technologies = tuple(replace(
+        tech,
+        capex_CNY_per_kW=(782.0 if tech.technology_type == "gas_boiler" else 3000.0),
+        lifetime_years=(15 if tech.technology_type == "gas_boiler" else 20),
+        fixed_maintenance_fraction_per_year=(.04 if tech.technology_type == "gas_boiler" else .01),
+        variable_om_CNY_per_kWh_th=0.0,
+    ) for tech in base.common.technologies)
+    economics = replace(
+        base.common.economics,
+        electricity_price_CNY_per_kWh_e={1: .41, 2: .83},
+        gas_price_CNY_per_kWh_LHV={1: .32, 2: .32},
+        gas_carbon_kgCO2e_per_kWh_LHV={1: .21, 2: .21},
+        connection_capex_CNY={"A": 1000., "B": 1000.},
+        connection_lifetime_years={"A": 20, "B": 20},
+        station_fixed_capex_CNY=0.0,
+        policy_carbon_price_CNY_per_tCO2e=0.0,
+    )
+    storage = ThermalStorageSpec("tes", 1000., 100., 100., .95, .94, 1/2400,
+                                 1135.0, 450.0, 12000.0, 20)
+    common = replace(base.common, technologies=technologies, economics=economics, storage=storage)
+    pipes = tuple(replace(pipe, capex_CNY_per_route_m=cost)
+                  for pipe, cost in zip(base.pipe_designs, (1000., 1500., 2000.), strict=True))
+    case = replace(base, common=common, pipe_designs=pipes,
+                   monthly_demand_charge=MonthlyDemandChargeInput(42., {1: "2025-12", 2: "2025-12"}))
+    design = _design(case)
+    model = build_compact_model(case, design, enable_tes=True)
+    tech = {item.technology_id: item for item in technologies}
+    hp = next(item for item in technologies if item.technology_type == "air_source_heat_pump" and item.applicable_scope == "central")
+    boiler = next(item for item in technologies if item.technology_type == "gas_boiler")
+    assert _linear_coefficient(model.device_investment.expr, model._central_capacity[hp.technology_id]) == pytest.approx(3000 * capital_recovery_factor(.05, 20))
+    assert _linear_coefficient(model.device_investment.expr, model._central_capacity[boiler.technology_id]) == pytest.approx(782 * capital_recovery_factor(.05, 15))
+    assert _linear_coefficient(model.fixed_om.expr, model._central_capacity[hp.technology_id]) == pytest.approx(3000 * .01)
+    assert _linear_coefficient(model.fixed_om.expr, model._central_capacity[boiler.technology_id]) == pytest.approx(782 * .04)
+    assert _linear_coefficient(model.electricity_cost.expr, model._central_hp_heat[1]) == pytest.approx(.41 / hp.cop)
+    assert _linear_coefficient(model.gas_cost.expr, model._central_hp_heat[1]) == pytest.approx(-.32 / .94)
+    assert _linear_coefficient(model.annual_operating_physical_carbon_kgCO2e_per_year.expr, model._central_hp_heat[1]) == pytest.approx(base.common.economics.electricity_carbon_kgCO2e_per_kWh_e[1] / hp.cop - .21 / .94)
+    assert _linear_coefficient(model.connection_investment.expr, model.connected["A"]) == pytest.approx(1000 * capital_recovery_factor(.05, 20))
+    edge = next(iter(design.variable_grade_edge_ids))
+    grade = next(iter(model.K))
+    pipe = next(item for item in pipes if item.pipe_type_id == grade)
+    assert _linear_coefficient(model.pipe_investment.expr, model._grade_selected[edge, grade]) == pytest.approx(
+        next(item["length_m"] for item in case.network["edges"] if item["edge_id"] == edge)
+        * pipe.capex_CNY_per_route_m * capital_recovery_factor(.05, pipe.lifetime_years))
+    assert _linear_coefficient(model.storage_investment.expr, model._tes_energy["S1"]) == pytest.approx(1135 * capital_recovery_factor(.05, 20))
+    assert _linear_coefficient(model.storage_investment.expr, model._tes_power_cost_capacity["S1"]) == pytest.approx(450 * capital_recovery_factor(.05, 20))
+    station_repn = generate_standard_repn(model.station_investment.expr)
+    assert station_repn.is_constant() and station_repn.constant == 0
 
 
 def _fix_generic_to_compact_design(model, case, design, connected):

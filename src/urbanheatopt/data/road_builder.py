@@ -7,10 +7,15 @@ from pathlib import Path
 
 from urbanheatopt.model.reference_core import CoreModelInput, EconomicInput, TechnologySpec, ThermalStorageSpec
 from urbanheatopt.model.physical_interfaces import TabularASHPPerformanceProvider
-from urbanheatopt.model.road_core import RoadCase, PipeDesign, validate_case
+from urbanheatopt.model.road_core import (
+    B2CapacityInput, BoundaryEvidence, MonthlyDemandChargeInput,
+    PipeCapacityBoundary, PipeDesign, RoadCase, SiteCapacityBoundary, validate_case,
+)
 
 
 def build_season_case(adaptation, network: dict, snapshot: dict) -> RoadCase:
+    if snapshot.get('package_version') == 'revised_20260831':
+        raise ValueError('revised_20260831 must use the B1 handoff adapter; legacy snapshot values are forbidden')
     if not adaptation.source_report.valid or not adaptation.canonical_report.valid:
         raise ValueError('源/标准输入校验未通过，禁止构模')
     data=adaptation.canonical_data
@@ -75,12 +80,31 @@ def save_case(case: RoadCase, path: str | Path):
     for name in d.economics.__dataclass_fields__:
         val=getattr(d.economics,name)
         econ[name]=dict(val) if hasattr(val,'items') else val
+    b2 = case.b2_capacity
+    b2_payload = None if b2 is None else dict(
+        sites=[dict(site_id=row.site_id,
+                    allowed_technology_ids=sorted(row.allowed_technology_ids),
+                    technology_capacity_max_kW_th=dict(row.technology_capacity_max_kW_th),
+                    electricity_connection_max_kW_e=row.electricity_connection_max_kW_e,
+                    electricity_connection_scope=row.electricity_connection_scope,
+                    gas_connection_max_kW_LHV=row.gas_connection_max_kW_LHV,
+                    evidence=asdict(row.evidence)) for row in b2.sites],
+        pipes=[dict(pipe_type_id=row.pipe_type_id, capacity_kW_th=row.capacity_kW_th,
+                    evidence=asdict(row.evidence)) for row in b2.pipes],
+        local_hp_capacity_max_kW_th_by_building=(
+            dict(b2.local_hp_capacity_max_kW_th_by_building)
+            if b2.local_hp_capacity_max_kW_th_by_building is not None else None),
+        local_hp_evidence=(asdict(b2.local_hp_evidence) if b2.local_hp_evidence else None))
     payload=dict(schema='road_joint_v2_case_1',network=case.network,pipes=[asdict(x) for x in case.pipe_designs],
         timestamps=case.timestamps,parameter_version=case.parameter_version,
         mode=d.mode,hours=d.hours,buildings=d.demand_nodes,sites=d.candidate_station_nodes,
         demand=[[b,h,q] for (b,h),q in sorted(d.heat_demand_kW.items())],
         technologies=[asdict(t) for t in d.technologies],economics=econ,
         storage=asdict(d.storage) if d.storage else None,
+        monthly_demand_charge=(dict(
+            rate_CNY_per_kW_month=case.monthly_demand_charge.rate_CNY_per_kW_month,
+            billing_month_by_hour=dict(case.monthly_demand_charge.billing_month_by_hour),
+        ) if case.monthly_demand_charge else None), b2_capacity=b2_payload,
         cop=[[t,h,x] for (t,h),x in sorted(d.heat_pump_cop_by_hour.items())],
         capacity_ratio=[[t,h,x] for (t,h),x in sorted(d.heat_pump_capacity_ratio_by_hour.items())],
         allow_unserved=d.allow_unserved,peak_margin=d.peak_capacity_margin_fraction)
@@ -103,7 +127,30 @@ def load_case(path: str | Path) -> RoadCase:
         heat_pump_capacity_ratio_by_hour={(t,h):x for t,h,x in obj['capacity_ratio']},
         allow_unserved=obj['allow_unserved'],peak_capacity_margin_fraction=obj['peak_margin'],
         candidate_station_nodes=tuple(obj['sites']))
+    demand_charge = obj.get('monthly_demand_charge')
+    if demand_charge is not None:
+        demand_charge = dict(demand_charge)
+        demand_charge['billing_month_by_hour'] = {
+            int(hour): month for hour, month in demand_charge['billing_month_by_hour'].items()
+        }
+        demand_charge = MonthlyDemandChargeInput(**demand_charge)
+    b2 = obj.get('b2_capacity')
+    if b2 is not None:
+        b2 = B2CapacityInput(
+            sites=tuple(SiteCapacityBoundary(
+                site_id=row['site_id'], allowed_technology_ids=frozenset(row['allowed_technology_ids']),
+                technology_capacity_max_kW_th=row['technology_capacity_max_kW_th'],
+                electricity_connection_max_kW_e=row['electricity_connection_max_kW_e'],
+                electricity_connection_scope=row['electricity_connection_scope'],
+                gas_connection_max_kW_LHV=row['gas_connection_max_kW_LHV'],
+                evidence=BoundaryEvidence(**row['evidence'])) for row in b2['sites']),
+            pipes=tuple(PipeCapacityBoundary(row['pipe_type_id'], row['capacity_kW_th'],
+                                               BoundaryEvidence(**row['evidence']))
+                        for row in b2['pipes']),
+            local_hp_capacity_max_kW_th_by_building=b2['local_hp_capacity_max_kW_th_by_building'],
+            local_hp_evidence=(BoundaryEvidence(**b2['local_hp_evidence'])
+                               if b2['local_hp_evidence'] else None))
     case=RoadCase(d,json.dumps(obj['network'],sort_keys=True),tuple(PipeDesign(**p) for p in obj['pipes']),
-                  tuple(obj['timestamps']),obj['parameter_version'])
+                  tuple(obj['timestamps']),obj['parameter_version'],demand_charge,b2)
     validate_case(case)
     return case
