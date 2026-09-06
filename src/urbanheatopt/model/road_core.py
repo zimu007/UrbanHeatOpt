@@ -54,6 +54,7 @@ class SiteCapacityBoundary:
     """Approved engineering limits for one candidate site (never inferred)."""
     site_id: str
     allowed_technology_ids: frozenset[str]
+    total_heat_capacity_max_kW_th: float
     technology_capacity_max_kW_th: Mapping[str, float]
     electricity_connection_max_kW_e: float | None
     electricity_connection_scope: str | None
@@ -164,6 +165,13 @@ def validate_b2_capacity(case: RoadCase) -> None:
     for site in sites.values():
         if not all((site.evidence.source, site.evidence.status, site.evidence.evidence_id)):
             raise ValueError(f'{site.site_id}: B2 evidence is incomplete')
+        if site.evidence.status not in {'verified', 'research_assumption'}:
+            raise ValueError(f'{site.site_id}: B2 evidence status is not executable')
+        if (isinstance(site.total_heat_capacity_max_kW_th, bool)
+                or not isinstance(site.total_heat_capacity_max_kW_th, (int, float))
+                or not isfinite(site.total_heat_capacity_max_kW_th)
+                or site.total_heat_capacity_max_kW_th <= 0):
+            raise ValueError(f'{site.site_id}: total heat capacity maximum is missing/invalid')
         if not site.allowed_technology_ids <= central_ids:
             raise ValueError(f'{site.site_id}: unknown allowed technology')
         if d.mode != 'distributed' and not site.allowed_technology_ids:
@@ -543,6 +551,9 @@ def build_road_model(
                 c(m.capacity[s,t] >= spec.capacity_min_kW*m.installed[s,t])
                 for h in d.hours:
                     c(m.heat[s,t,h] <= m.capacity[s,t]*ratio(t,h))
+            if b2_sites is not None:
+                c(sum(m.capacity[s,t] for t in central)
+                  <= b2_sites[s].total_heat_capacity_max_kW_th*m.station_built[s])
             c(m.tes_built[s] <= m.station_built[s])
             if d.storage is None:
                 m.tes_built[s].fix(0)
@@ -667,6 +678,10 @@ def build_road_model(
         sum(m.heat[s,t,h]/cop(t,h) for s in stations for t in central if central[t].energy_carrier == 'electricity')
         +sum(m.local_heat[b,h]/cop(local.technology_id,h) for b in d.demand_nodes)+sum(m.pump[e,h] for e in edges))
     if b2_sites is not None:
+        m.b2_site_total_heat_capacity_limit = p.Constraint(
+            m.S,
+            rule=lambda _, s: sum(m.capacity[s, t] for t in m.T)
+            <= b2_sites[s].total_heat_capacity_max_kW_th * m.station_built[s])
         m.b2_site_capacity_limit = p.Constraint(
             m.S, m.T,
             rule=lambda _, s, t: (

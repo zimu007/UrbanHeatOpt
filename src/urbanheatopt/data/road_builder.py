@@ -84,6 +84,7 @@ def save_case(case: RoadCase, path: str | Path):
     b2_payload = None if b2 is None else dict(
         sites=[dict(site_id=row.site_id,
                     allowed_technology_ids=sorted(row.allowed_technology_ids),
+                    total_heat_capacity_max_kW_th=row.total_heat_capacity_max_kW_th,
                     technology_capacity_max_kW_th=dict(row.technology_capacity_max_kW_th),
                     electricity_connection_max_kW_e=row.electricity_connection_max_kW_e,
                     electricity_connection_scope=row.electricity_connection_scope,
@@ -139,6 +140,7 @@ def load_case(path: str | Path) -> RoadCase:
         b2 = B2CapacityInput(
             sites=tuple(SiteCapacityBoundary(
                 site_id=row['site_id'], allowed_technology_ids=frozenset(row['allowed_technology_ids']),
+                total_heat_capacity_max_kW_th=row['total_heat_capacity_max_kW_th'],
                 technology_capacity_max_kW_th=row['technology_capacity_max_kW_th'],
                 electricity_connection_max_kW_e=row['electricity_connection_max_kW_e'],
                 electricity_connection_scope=row['electricity_connection_scope'],

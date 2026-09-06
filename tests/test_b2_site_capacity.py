@@ -21,6 +21,7 @@ def _boundary(case, *, s1_allowed=('hp', 'gas'), hp_max=1000., gas_max=5000.,
         maxima = {tech: (hp_max if tech == 'hp' else gas_max * .94) for tech in allowed}
         sites.append(dict(
             site_id=site['site_id'], allowed_technology_ids=allowed,
+            total_heat_capacity_max_kW_th=(hp_max if hp_max is not None else 1000.) + gas_max * .94,
             technology_capacity_max_kW_th=maxima,
             electricity_connection_max_kW_e=electric_max if 'hp' in allowed else None,
             electricity_connection_scope=scope if 'hp' in allowed else None,
@@ -66,6 +67,45 @@ def test_boiler_capacity_and_lhv_gas_input_limits_are_enforced():
     assert value(row.body) == pytest.approx(0)
     model.heat['S1', 'gas', 1].set_value(4701)
     assert value(row.body) > 0
+
+
+def test_total_station_heat_capacity_is_not_two_independent_maxima():
+    base = shared_case()
+    records = _boundary(base, hp_max=1000., gas_max=5000.)
+    sites = []
+    for row in records.sites:
+        sites.append(dict(
+            site_id=row.site_id,
+            allowed_technology_ids=row.allowed_technology_ids,
+            total_heat_capacity_max_kW_th=1000.,
+            technology_capacity_max_kW_th=row.technology_capacity_max_kW_th,
+            electricity_connection_max_kW_e=row.electricity_connection_max_kW_e,
+            electricity_connection_scope=row.electricity_connection_scope,
+            gas_connection_max_kW_LHV=row.gas_connection_max_kW_LHV,
+            source=row.evidence.source,
+            status=row.evidence.status,
+            evidence_id=row.evidence.evidence_id,
+        ))
+    boundary = build_b2_capacity_input(
+        site_records=sites,
+        pipe_records=[dict(
+            pipe_type_id=row.pipe_type_id,
+            capacity_kW_th=row.capacity_kW_th,
+            source=row.evidence.source,
+            status=row.evidence.status,
+            evidence_id=row.evidence.evidence_id,
+        ) for row in records.pipes],
+    )
+    case = apply_b2_capacity_input(base, boundary)
+    road = build_road_model(case)
+    road.station_built['S1'].set_value(1)
+    road.capacity['S1', 'hp'].set_value(600)
+    road.capacity['S1', 'gas'].set_value(500)
+    assert value(road.b2_site_total_heat_capacity_limit['S1'].body) > 0
+    compact = build_compact_model(case, design=build_compact_tree_design(case, 'S1'))
+    compact._central_capacity['hp'].set_value(600)
+    compact._central_capacity['gas'].set_value(500)
+    assert value(compact.b2_site_total_heat_capacity_limit.body) > 0
 
 
 def test_electricity_connection_uses_central_hp_input_power():

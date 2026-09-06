@@ -30,6 +30,7 @@ def build_b2_capacity_input(
     sites = tuple(SiteCapacityBoundary(
         site_id=str(row['site_id']),
         allowed_technology_ids=frozenset(row['allowed_technology_ids']),
+        total_heat_capacity_max_kW_th=row.get('total_heat_capacity_max_kW_th'),
         technology_capacity_max_kW_th=dict(row['technology_capacity_max_kW_th']),
         electricity_connection_max_kW_e=row.get('electricity_connection_max_kW_e'),
         electricity_connection_scope=row.get('electricity_connection_scope'),

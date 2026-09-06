@@ -919,6 +919,10 @@ def build_compact_model(
                 * model.source_heat_requirement[hour]
             )
         if b2_site is not None:
+            model.b2_site_total_heat_capacity_limit = p.Constraint(
+                expr=sum(model._central_capacity[tech] for tech in model.T)
+                <= b2_site.total_heat_capacity_max_kW_th * model._station_active
+            )
             for hour in d.hours:
                 if hp.technology_id in b2_site.allowed_technology_ids:
                     model.central_constraints.add(
