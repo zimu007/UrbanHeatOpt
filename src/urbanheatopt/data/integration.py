@@ -25,6 +25,12 @@ from urbanheatopt.parameters.revised_economics import (
 )
 
 
+DEFAULT_SPATIAL_BASELINE = (
+    REPOSITORY_ROOT
+    / "baselines/spatial/guanggu_osm_20260828/osm_overpass_snapshot.json"
+)
+
+
 # User-confirmed 2026-09-06 research boundary for the frozen Guanggu data set.
 # It is not inferred from project grid infrastructure and must not be published
 # as a verified utility connection limit.
@@ -69,12 +75,23 @@ def resolve_path(value):
 
 def spatial_interfaces(spec):
     """Validate supplied handoff files, without inventing sites or capacities."""
-    known = {"candidate_sites", "site_limits", "pipe_capacity_limits"}
+    network_roles = {
+        "osm_snapshot", "obstacle_buildings", "allowed_corridors", "forbidden_areas"
+    }
+    known = {"candidate_sites", "site_limits", "pipe_capacity_limits"} | network_roles
     if set(spec) - known:
         raise ValueError(f"未知空间接口: {set(spec)-known}")
-    result = {"provided": [], "missing": sorted(known-set(spec)), "paths": []}
+    legacy_roles = {"candidate_sites", "site_limits", "pipe_capacity_limits"}
+    result = {
+        "provided": [],
+        "missing": sorted(legacy_roles-set(spec)),
+        "paths": [],
+        "network_inputs": sorted(set(spec) & network_roles),
+    }
     site_ids = None
     for role, name in spec.items():
+        if role in network_roles:
+            continue
         path = resolve_path(name)
         allowed_source = REPOSITORY_ROOT.parent / "IN_DATA/原始输入数据/v0.2"
         if "v0.1" in path.parts or not (path.is_relative_to(REPOSITORY_ROOT) or path.is_relative_to(allowed_source)):
@@ -119,27 +136,104 @@ def spatial_interfaces(spec):
     return result
 
 
-def prepare_research_boundaries(adapted, snapshot, data_version: str, output: Path):
-    """Generate deterministic research sites and the approved 0906 limits."""
+def resolve_spatial_network_inputs(spec: dict, delivery_root: Path) -> dict:
+    """Resolve the versioned road snapshot and optional planning layers.
+
+    The snapshot is explicit and hash checked.  No file is discovered from a
+    historical run directory and no network request is made at runtime.
+    """
+    from urbanheatopt.spatial.atomic_network import read_optional_layers
+
+    snapshot_path = resolve_path(spec.get("osm_snapshot", DEFAULT_SPATIAL_BASELINE))
+    allowed_root = (REPOSITORY_ROOT.parent / "IN_DATA/原始输入数据/v0.2").resolve()
+    if not (
+        snapshot_path.is_relative_to(REPOSITORY_ROOT)
+        or snapshot_path.is_relative_to(allowed_root)
+    ) or "v0.1" in snapshot_path.parts:
+        raise ValueError(f"道路快照超出授权仓库/v0.2范围: {snapshot_path}")
+    if not snapshot_path.is_file():
+        raise ValueError(f"道路快照不存在: {snapshot_path}")
+    try:
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"道路快照无法解析: {snapshot_path}: {exc}") from exc
+    if snapshot.get("version") != 0.6 or not isinstance(snapshot.get("elements"), list):
+        raise ValueError("道路快照不是受支持的OSM Overpass JSON 0.6")
+    manifest_path = snapshot_path.with_name("manifest.json")
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected = str(manifest.get("sha256", "")).lower()
+        actual = sha256_file(snapshot_path)
+        if actual != expected:
+            raise ValueError("道路快照SHA-256与版本基线manifest不一致")
+        if manifest.get("network_policy_version") != "planning_corridor_2.1.0":
+            raise ValueError("道路快照manifest的网络策略版本不受支持")
+    else:
+        manifest = {
+            "baseline_id": "external_configured_snapshot",
+            "sha256": sha256_file(snapshot_path),
+            "network_policy_version": "planning_corridor_2.1.0",
+        }
+
+    optional = {
+        "obstacle_buildings": spec.get("obstacle_buildings"),
+        "allowed_corridors": spec.get("allowed_corridors"),
+        "forbidden_areas": spec.get("forbidden_areas"),
+    }
+    layers, paths = read_optional_layers(
+        delivery_root,
+        obstacle_buildings=optional["obstacle_buildings"],
+        allowed_corridors=optional["allowed_corridors"],
+        forbidden_areas=optional["forbidden_areas"],
+    )
+    for path in paths:
+        if not (
+            path.is_relative_to(REPOSITORY_ROOT)
+            or path.is_relative_to(allowed_root)
+        ) or "v0.1" in path.parts:
+            raise ValueError(f"空间约束文件超出授权仓库/v0.2范围: {path}")
+    source_paths = [snapshot_path, *paths]
+    if manifest_path.is_file():
+        source_paths.append(manifest_path)
+    return {
+        "snapshot": snapshot,
+        "snapshot_path": snapshot_path,
+        "manifest": manifest,
+        "layers": layers,
+        "source_paths": tuple(source_paths),
+    }
+
+
+def prepare_research_boundaries(
+    adapted,
+    snapshot,
+    data_version: str,
+    output: Path,
+    *,
+    delivery_root: Path,
+    spatial_spec: dict,
+):
+    """Generate the authoritative road network and approved capacity limits."""
     from urbanheatopt.model.physical_interfaces import TabularASHPPerformanceProvider
-    from urbanheatopt.spatial.provisional import build_multi_candidate_provisional_network
+    from urbanheatopt.spatial.atomic_network import atomize_snapshot, write_network
 
     canonical = adapted.canonical_data
-    provisional = build_multi_candidate_provisional_network(
-        canonical.buildings,
-        canonical.loads,
-        data_version=data_version,
-        candidate_count=5,
-        input_building_source="guanggu_v03_62_buildings",
+    network_inputs = resolve_spatial_network_inputs(spatial_spec, delivery_root)
+    annual_heat = (
+        canonical.loads.groupby("building_id", sort=True)["heating_kW"].sum().astype(float).to_dict()
     )
-    sites = provisional.sites.to_crs("EPSG:32650").copy()
-    sites["parcel_id"] = sites["site_id"].map(lambda value: f"virtual_parcel_{value}")
-    sites["attachment_node_id"] = sites["site_id"].astype(str)
-    sites["source_id"] = "GENERATED_FIVE_VIRTUAL_SITES_20260906"
-    sites["parameter_status"] = "research_assumption"
-    sites["site_status"] = "virtual_candidate_not_parcel_verified"
-    candidate_path = output / "candidate_sites.geojson"
-    sites.to_file(candidate_path, driver="GeoJSON", encoding="utf-8")
+    network = atomize_snapshot(
+        network_inputs["snapshot"],
+        canonical.buildings,
+        annual_heat,
+        candidate_count=5,
+        obstacles=network_inputs["layers"].get("obstacles"),
+        corridors=network_inputs["layers"].get("corridors"),
+        forbidden_areas=network_inputs["layers"].get("forbidden_areas"),
+    )
+    spatial_output = output / "spatial"
+    write_network(network, spatial_output)
+    candidate_path = spatial_output / "candidate_sites.geojson"
 
     external = canonical.external_timeseries
     if "outdoor_temperature_C" not in external:
@@ -152,7 +246,7 @@ def prepare_research_boundaries(adapted, snapshot, data_version: str, output: Pa
     hours = tuple(range(1, len(performance) + 1))
     capacities = build_capacity_boundaries(
         loads=canonical.loads,
-        site_ids=tuple(sites["site_id"].astype(str)),
+        site_ids=tuple(site["site_id"] for site in network["sites"]),
         cop_by_hour=dict(zip(hours, map(float, performance["COP"]), strict=True)),
         capacity_ratio_by_hour=dict(
             zip(hours, map(float, performance["capacity_ratio"]), strict=True)
@@ -163,17 +257,72 @@ def prepare_research_boundaries(adapted, snapshot, data_version: str, output: Pa
     )
     capacity_path = output / "capacity_boundaries.json"
     write_json(capacity_path, capacities)
+    network_artifacts = []
+    for role, name in (
+        ("road_network", "road_network.json"),
+        ("candidate_nodes", "candidate_nodes.geojson"),
+        ("candidate_edges", "candidate_edges.geojson"),
+        ("candidate_sites", "candidate_sites.geojson"),
+        ("candidate_access_options", "candidate_access_options.csv"),
+        ("building_access_diagnostics", "building_access_diagnostics.csv"),
+    ):
+        path = spatial_output / name
+        network_artifacts.append(
+            {"role": role, "path": str(path.resolve()), "sha256": sha256_file(path)}
+        )
+    preview_files = sorted((spatial_output / "preview").glob("*"))
+    for index, path in enumerate(preview_files, 1):
+        if path.is_file():
+            network_artifacts.append(
+                {
+                    "role": f"network_preview_{index}",
+                    "path": str(path.resolve()),
+                    "sha256": sha256_file(path),
+                }
+            )
+    network_manifest = {
+        "schema": "urbanheatopt_network_product_1.0.0",
+        "data_version": data_version,
+        "network_contract_version": network["contract_version"],
+        "network_policy_version": network["metadata"]["network_policy_version"],
+        "baseline_id": network_inputs["manifest"].get("baseline_id"),
+        "snapshot_path": str(network_inputs["snapshot_path"]),
+        "snapshot_sha256": sha256_file(network_inputs["snapshot_path"]),
+        "network_sha256": network["network_sha256"],
+        "node_count": len(network["nodes"]),
+        "edge_count": len(network["edges"]),
+        "site_count": len(network["sites"]),
+        "access_option_count": len(network.get("access_options", [])),
+        "building_count": canonical.building_count,
+        "road_constrained": True,
+        "construction_feasibility_verified": False,
+        "optimization_scope": "five_candidate_shortest_path_trees",
+        "artifacts": network_artifacts,
+    }
+    manifest_path = spatial_output / "network_manifest.json"
+    write_json(manifest_path, network_manifest)
+    network_artifacts.append(
+        {"role": "network_manifest", "path": str(manifest_path.resolve()), "sha256": sha256_file(manifest_path)}
+    )
     return {
         "candidate_sites_path": candidate_path,
+        "road_network_path": spatial_output / "road_network.json",
+        "network_manifest_path": manifest_path,
+        "network_artifacts": network_artifacts,
+        "network": network,
+        "network_source_paths": network_inputs["source_paths"],
         "capacity_boundaries_path": capacity_path,
         "capacity_boundaries": capacities,
         "spatial_status": {
             "candidate_count": 5,
-            "candidate_source": "synthetic_multi_candidate_generator",
-            "road_constrained": False,
+            "candidate_source": "deterministic_heat_centroid_extent_snapped",
+            "road_constrained": True,
             "parcel_capacity_verified": False,
             "construction_feasibility_verified": False,
-            "status": "research_assumption",
+            "status": "planning_optimization_baseline",
+            "network_sha256": network["network_sha256"],
+            "network_policy_version": network["metadata"]["network_policy_version"],
+            "optimization_scope": "five_candidate_shortest_path_trees",
         },
     }
 
@@ -270,6 +419,9 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
     clock = time.monotonic()
     config = load_config(config_path)
     roots = resolve_guanggu_v03_source_roots(resolve_path(config["delivery_root"]))
+    network_inputs = resolve_spatial_network_inputs(
+        config["spatial_inputs"], roots.delivery_root
+    )
     output_base = resolve_path(output_root or config["output_root"])
     # All generated artifacts stay in this repo's work/runs, never IN_DATA/OUT_RESULT.
     if not any(output_base.is_relative_to(REPOSITORY_ROOT / folder) for folder in ("work", "runs")):
@@ -282,8 +434,19 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
     source_files = sorted(p for p in roots.delivery_root.rglob("*") if p.is_file())
     if roots.equipment_patch_root:
         source_files += sorted(p for p in roots.equipment_patch_root.rglob("*") if p.is_file())
+    source_files = sorted(
+        {p.resolve() for p in [*source_files, *network_inputs["source_paths"]]},
+        key=lambda path: str(path).casefold(),
+    )
     for path in source_files:
-        if not path.resolve().is_relative_to(roots.scope_root) or "v0.1" in path.resolve().parts:
+        resolved = path.resolve()
+        if (
+            not (
+                resolved.is_relative_to(roots.scope_root)
+                or resolved.is_relative_to(REPOSITORY_ROOT)
+            )
+            or "v0.1" in resolved.parts
+        ):
             raise ValueError(f"禁止越界读取: {path}")
     before = {str(p.resolve()): sha256_file(p) for p in source_files}
     before[str(config_path.resolve())] = sha256_file(config_path)
@@ -348,16 +511,21 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
                 if adapted.canonical_data.building_count != 62 or adapted.canonical_data.load_row_count != 133920:
                     raise ValueError("新主线要求62栋×2160小时，不能把合成/子集当本次标准输入")
                 capacity_handoff = prepare_research_boundaries(
-                    adapted, snapshot, source.data_version, authoritative
+                    adapted,
+                    snapshot,
+                    source.data_version,
+                    authoritative,
+                    delivery_root=roots.delivery_root,
+                    spatial_spec=config["spatial_inputs"],
                 )
                 artifacts = []
                 for role, path in (("buildings", adapted.buildings_path), ("building_archetype_map", adapted.archetype_map_path), ("loads", adapted.loads_path), ("external_timeseries", external_path), ("equipment_performance", adapted.equipment_performance_path), ("time_mapping", adapted.timestamp_hour_map_path), ("effective_parameters", output / "effective_parameters.json"), ("parameter_selection", output / "parameter_selection.csv")):
                     artifacts.append({"role": role, "path": str(path), "sha256": sha256_file(path)})
                 for role, path in (
-                    ("candidate_sites", capacity_handoff["candidate_sites_path"]),
                     ("capacity_boundaries", capacity_handoff["capacity_boundaries_path"]),
                 ):
                     artifacts.append({"role": role, "path": str(path), "sha256": sha256_file(path)})
+                artifacts.extend(capacity_handoff["network_artifacts"])
                 artifacts.extend(spatial["paths"])
                 status["snapshot_complete"] = not errors
                 bundle = CaseBundle.from_dict(dict(interface_version=INTERFACE_VERSION, data_version=source.data_version,
@@ -389,6 +557,10 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
     after_files = sorted(p for p in roots.delivery_root.rglob("*") if p.is_file())
     if roots.equipment_patch_root:
         after_files += sorted(p for p in roots.equipment_patch_root.rglob("*") if p.is_file())
+    after_files = sorted(
+        {p.resolve() for p in [*after_files, *network_inputs["source_paths"]]},
+        key=lambda path: str(path).casefold(),
+    )
     after = {}
     for p in [*after_files, config_path]:
         try:

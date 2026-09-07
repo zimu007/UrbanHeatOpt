@@ -88,13 +88,29 @@ def synthetic_pipeline(tmp_path, monkeypatch):
         assert active_snapshot["snapshot_id"] == snapshot["snapshot_id"]
         return frame.copy(deep=True)
 
-    def capacity_handoff(adapted, active_snapshot, data_version, output):
-        candidate = output / "candidate_sites.geojson"
+    def capacity_handoff(
+        adapted, active_snapshot, data_version, output, *, delivery_root, spatial_spec
+    ):
+        spatial_output = output / "spatial"
+        spatial_output.mkdir()
+        candidate = spatial_output / "candidate_sites.geojson"
+        network = spatial_output / "road_network.json"
+        manifest = spatial_output / "network_manifest.json"
         capacity = output / "capacity_boundaries.json"
         candidate.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+        network.write_text('{"synthetic_interface_test_only":true}', encoding="utf-8")
+        manifest.write_text('{"synthetic_interface_test_only":true}', encoding="utf-8")
         capacity.write_text('{"synthetic_interface_test_only":true}', encoding="utf-8")
         return {
             "candidate_sites_path": candidate,
+            "road_network_path": network,
+            "network_manifest_path": manifest,
+            "network_artifacts": [
+                {"role": "candidate_sites", "path": str(candidate), "sha256": sha256_file(candidate)},
+                {"role": "road_network", "path": str(network), "sha256": sha256_file(network)},
+                {"role": "network_manifest", "path": str(manifest), "sha256": sha256_file(manifest)},
+            ],
+            "network_source_paths": (source_path,),
             "capacity_boundaries_path": capacity,
             "capacity_boundaries": {"synthetic_interface_test_only": True},
             "spatial_status": {"status": "synthetic_interface_test_only"},
@@ -123,6 +139,17 @@ def synthetic_pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(integration, "adapt_guanggu_v03_sources", adapter)
     monkeypatch.setattr(integration, "read_revised_package", package_reader)
     monkeypatch.setattr(integration, "revised_timeseries", external_adapter)
+    monkeypatch.setattr(
+        integration,
+        "resolve_spatial_network_inputs",
+        lambda spec, delivery_root: {
+            "snapshot": {"version": 0.6, "elements": []},
+            "snapshot_path": source_path,
+            "manifest": {"baseline_id": "synthetic"},
+            "layers": {},
+            "source_paths": (source_path,),
+        },
+    )
     monkeypatch.setattr(integration, "prepare_research_boundaries", capacity_handoff)
     monkeypatch.setattr(integration, "run_ab_adapter_smoke", ab_smoke)
     monkeypatch.setattr(integration.subprocess, "check_output", lambda *args, **kwargs: "synthetic_git_identity\n")
@@ -195,6 +222,9 @@ def test_a_synthetic_prepare_bundle_and_independent_states(synthetic_pipeline):
     bundle = CaseBundle.read(output / "case_bundle.json")
     assert bundle.payload["data_version"] == "SYNTHETIC_INTERFACE_TEST_ONLY"
     assert bundle.verify_artifacts(check_sources=True)["passed"]
+    assert {item["role"] for item in bundle.payload["artifacts"]} >= {
+        "road_network", "network_manifest", "candidate_sites"
+    }
     assert bundle.payload["physical_scope"] == {"buildings": 62, "hours": 2160, "supply_C": 45, "return_C": 40, "peak_capacity_margin_fraction": 0.20}
     gate = json.loads((output / "model_readiness_report.json").read_text(encoding="utf-8"))
     assert gate["snapshot_complete"] and gate["model_ready"]
@@ -275,3 +305,13 @@ def test_a_cli_invalid_config_returns2(synthetic_pipeline, capsys):
     path = save_config(synthetic_pipeline, economic_package="old")
     assert cli.main(["prepare", "--config", str(path)]) == 2
     assert "输入/接口错误" in capsys.readouterr().err
+
+
+def test_versioned_osm_baseline_is_explicit_and_hash_checked(tmp_path):
+    resolved = integration.resolve_spatial_network_inputs(
+        {"osm_snapshot": str(integration.DEFAULT_SPATIAL_BASELINE)}, tmp_path
+    )
+    assert resolved["manifest"]["baseline_id"] == "guanggu_osm_20260828"
+    assert resolved["manifest"]["network_policy_version"] == "planning_corridor_2.1.0"
+    assert resolved["manifest"]["sha256"] == sha256_file(resolved["snapshot_path"])
+    assert resolved["snapshot_path"].is_relative_to(integration.REPOSITORY_ROOT)

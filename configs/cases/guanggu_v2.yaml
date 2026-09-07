@@ -10,5 +10,6 @@ scope: heating-season
 full_audit: true
 mode_scope: [central, distributed, hybrid]
 tes_enabled: false
-spatial_inputs: {}
+spatial_inputs:
+  osm_snapshot: baselines/spatial/guanggu_osm_20260828/osm_overpass_snapshot.json
 desktop_gap_report: true

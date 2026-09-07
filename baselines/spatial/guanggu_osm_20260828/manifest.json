@@ -1,0 +1,13 @@
+{
+  "baseline_id": "guanggu_osm_20260828",
+  "source_file": "osm_overpass_snapshot.json",
+  "sha256": "edff6c62d5d4096fbb05484b437c1ba4b8411d43dace2fc4ea2a50c4c45024c6",
+  "source_timestamp_utc": "2026-08-28T14:15:48Z",
+  "captured_at_utc": "2026-08-28T14:17:14Z",
+  "generator": "Overpass API 0.7.62.11 87bfad18",
+  "license": "OpenStreetMap data © OpenStreetMap contributors, ODbL 1.0",
+  "attribution_url": "https://www.openstreetmap.org/copyright",
+  "projected_crs": "EPSG:32650",
+  "network_policy_version": "planning_corridor_2.1.0",
+  "purpose": "UrbanHeatOpt规划优化候选道路基线；不代表施工可实施性"
+}
