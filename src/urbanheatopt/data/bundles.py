@@ -201,6 +201,14 @@ class SolveRequest(_JsonBundle):
 
     def _validate(self, payload: dict[str, Any]) -> None:
         _hash(payload.get("case_bundle_id"), "case_bundle_id")
+        _require(
+            payload.get("model_profile") == "compact_five_tree_fullseason_v2",
+            "model_profile 必须为 compact_five_tree_fullseason_v2",
+        )
+        _require(
+            payload.get("optimization_scope") == "five_candidate_shortest_path_trees",
+            "optimization_scope 必须为 five_candidate_shortest_path_trees",
+        )
         _require(payload.get("mode") in ("central", "distributed", "hybrid"), "mode 必须为 central/distributed/hybrid")
         _require(payload.get("objective") in ("cost", "carbon", "lexicographic_carbon"), "objective 非法")
         epsilon = payload.get("epsilon_carbon_kg")
@@ -208,11 +216,14 @@ class SolveRequest(_JsonBundle):
             _number(epsilon, "epsilon_carbon_kg")
             _require(payload["objective"] == "cost", "ε 碳上限仅用于 cost 目标请求")
         _boolean(payload.get("tes_enabled"), "tes_enabled")
+        _boolean(payload.get("allow_unserved"), "allow_unserved")
+        _require(payload["allow_unserved"] is False, "生产SolveRequest不允许未供热")
         solver = payload.get("solver")
         _require(isinstance(solver, dict), "solver 必须为对象")
         _require(solver.get("name") in ("highs", "gurobi", "auto"), "solver.name 非法")
         for field, minimum in (("threads", 1), ("random_seed", 0)):
             _require(type(solver.get(field)) is int and solver[field] >= minimum, f"solver.{field} 必须为整数且 ≥{minimum}")
+        _require(solver["threads"] in (1, 4, 8), "solver.threads 只能为 1、4 或 8")
         _number(solver.get("mip_gap"), "solver.mip_gap", maximum=1)
         if solver.get("time_limit_s") is not None:
             _number(solver["time_limit_s"], "solver.time_limit_s")
@@ -362,7 +373,11 @@ def ready_report(
         "model_ready": research_solve_ready,
         "solver_executed": False,
         "result_qualified": False,
-        "registered_model_adapter": "handoff_v1+site_capacity_v1" if b1_ready and b2_ready else None,
+        "registered_model_adapter": (
+            "handoff_v1+site_capacity_v1+road_case_builder_1.0.0+solve_request_executor_1.0.0"
+            if b1_ready and b2_ready and road_case_ready and solver_pipeline_ready
+            else None
+        ),
         "blockers": blockers,
         "artifact_integrity": integrity,
         "integration_evidence": evidence,

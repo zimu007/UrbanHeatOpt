@@ -78,8 +78,11 @@ def handoff(tmp_path):
         "status": {"input_valid": True, "parameter_valid": True, "canonical_valid": True, "snapshot_complete": True},
     })
     request = SolveRequest.from_dict({
-        "interface_version": INTERFACE_VERSION, "case_bundle_id": case.bundle_id, "mode": "hybrid",
+        "interface_version": INTERFACE_VERSION, "case_bundle_id": case.bundle_id,
+        "model_profile": "compact_five_tree_fullseason_v2",
+        "optimization_scope": "five_candidate_shortest_path_trees", "mode": "hybrid",
         "objective": "cost", "epsilon_carbon_kg": None, "tes_enabled": True,
+        "allow_unserved": False,
         "solver": {"name": "highs", "threads": 1, "random_seed": 1, "mip_gap": .01, "time_limit_s": None},
     })
     return case, request, snapshot, external

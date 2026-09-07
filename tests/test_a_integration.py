@@ -223,9 +223,9 @@ def test_a_synthetic_prepare_bundle_and_independent_states(synthetic_pipeline):
         assert summary[key] is True
     assert summary["network_ready"] is True
     assert summary["road_case_ready"] is True
-    assert summary["solver_pipeline_ready"] is False
-    assert summary["model_ready"] is False
-    assert summary["research_solve_ready"] is False
+    assert summary["solver_pipeline_ready"] is True
+    assert summary["model_ready"] is True
+    assert summary["research_solve_ready"] is True
     assert summary["publication_ready"] is False
     assert summary["solver_executed"] is False
     assert summary["result_qualified"] is False
@@ -239,10 +239,10 @@ def test_a_synthetic_prepare_bundle_and_independent_states(synthetic_pipeline):
     }
     assert bundle.payload["physical_scope"] == {"buildings": 62, "hours": 2160, "supply_C": 45, "return_C": 40, "peak_capacity_margin_fraction": 0.20}
     gate = json.loads((output / "model_readiness_report.json").read_text(encoding="utf-8"))
-    assert gate["snapshot_complete"] and not gate["model_ready"]
+    assert gate["snapshot_complete"] and gate["model_ready"]
     assert gate["network_ready"] and gate["road_case_ready"]
-    assert not gate["research_solve_ready"] and not gate["publication_ready"]
-    assert any(item["id"] == "solve_request_executor" for item in gate["blockers"])
+    assert gate["research_solve_ready"]
+    assert not any(item["id"] == "solve_request_executor" for item in gate["blockers"])
     assert [call[0] for call in f.calls] == ["source", "parameters", "adapter"]
     assert f.calls[0][2]["full_audit"] is True
     assert f.calls[2][2]["full_audit"] is True
@@ -299,7 +299,7 @@ def test_a_cli_prepare_calls_new_pipeline(synthetic_pipeline, capsys):
     assert (f.repository / "work" / "case" / "cli_prepare" / "case_bundle.json").is_file()
 
 
-@pytest.mark.parametrize("command", ["solve", "report", "diagnose", "tes-check"])
+@pytest.mark.parametrize("command", ["report", "diagnose", "tes-check"])
 def test_a_unregistered_cli_never_imports_or_calls_legacy(synthetic_pipeline, monkeypatch, capsys, command):
     original_import = builtins.__import__
 
@@ -312,6 +312,11 @@ def test_a_unregistered_cli_never_imports_or_calls_legacy(synthetic_pipeline, mo
     assert cli.main([command, "--config", str(synthetic_pipeline.config_path)]) == 2
     assert "没有旧模型回退" in capsys.readouterr().out
     assert not (synthetic_pipeline.repository / "work").exists()
+
+
+def test_solve_requires_explicit_bundle_request_and_fresh_output(synthetic_pipeline, capsys):
+    assert cli.main(["solve", "--config", str(synthetic_pipeline.config_path)]) == 2
+    assert "--bundle" in capsys.readouterr().err
 
 
 def test_a_cli_invalid_config_returns2(synthetic_pipeline, capsys):

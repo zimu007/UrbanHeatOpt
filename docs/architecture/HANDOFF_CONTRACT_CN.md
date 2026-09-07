@@ -43,17 +43,20 @@
 | 字段 | 允许值/单位 |
 | --- | --- |
 | `case_bundle_id` | 被消费CaseBundle的SHA-256 |
+| `model_profile` | 固定为`compact_five_tree_fullseason_v2` |
+| `optimization_scope` | 固定为`five_candidate_shortest_path_trees` |
 | `mode` | central / distributed / hybrid |
 | `objective` | cost / carbon / lexicographic_carbon |
 | `epsilon_carbon_kg` | null 或有限非负 kgCO2e；仅cost目标使用碳上限 |
 | `tes_enabled` | 严格布尔，不隐式默认为开启 |
+| `allow_unserved` | 生产请求固定为false |
 | `solver.name` | highs / gurobi / auto；不代表许可证或可用性检查通过 |
 | `solver.threads` | ≥1的整数，不接受布尔值 |
 | `solver.random_seed` | ≥0的整数 |
 | `solver.mip_gap` | [0,1]有限数值 |
 | `solver.time_limit_s` | null 或有限正数，秒 |
 
-站点/树、网络版本等附加字段可带入请求并参与身份哈希，但须由后续B消费接口另行校验。本版不把未经消费者验证的附加字段解释为已启用约束。
+执行器逐站构建固定道路树；请求不能自行指定旧树或从历史结果补网络。以上模型档案与优化范围进入请求身份哈希，任何变化必须生成新请求。
 
 ## 4. ResultBundle与资格判定
 
@@ -75,7 +78,7 @@
 
 A侧现在自动生成5个虚拟研究候选站、62栋/2160小时容量边界、三种模式的成本SolveRequest，并以真实形状CaseBundle调用B1经济投影和B2容量投影。联调证据写入`ab_adapter_smoke.json`；它不是YAML手填状态，也不实例化求解器。DN250/400/500物理参考容量不进入执行边界，执行侧使用已确认的规划容量代理档。
 
-## 5. CaseBundle 到 RoadCase 的唯一构建器
+## 6. CaseBundle 到 RoadCase 的唯一构建器
 
 生产入口固定调用：
 
@@ -89,7 +92,7 @@ build_road_case(case_bundle) -> RoadCaseBuildResult
 
 `bundle_id`是包含绝对路径的交接信封哈希；`case_bundle_content_id`排除输出目录差异，用于证明两个新prepare目录包含相同内容。`road_case_content_sha256`是模型输入内容哈希，任一有效输入、参数或网络变化都会改变该值。
 
-`research_solve_ready=true`仅表示研究输入和B1/B2接口具备交接条件；它不等于已经构模、已经求解或结果合格。站房固定投资边界未确认期间，`publication_ready`必须为false。即使研究门禁通过，`solver_executed`仍为false，直至B产生带求解日志和独立QA的ResultBundle。正式入口仍禁止静默调用legacy或V1现成结果。
+`research_solve_ready=true`仅表示研究输入、RoadCase和生产执行器具备交接条件；它不等于已经求解或结果合格。`solver_executed`仍为false，直至执行器产生带求解日志和独立QA的ResultBundle。正式入口禁止静默调用legacy或V1现成结果。
 
 常见能力ID：
 
@@ -104,7 +107,24 @@ build_road_case(case_bundle) -> RoadCaseBuildResult
 
 输入和参数通过而B1/B2联调失败时，`prepare`输出退出码2及具体错误；联调通过时可交付研究任务，但准备完成仍不等于新增经济包已在优化目标中求解或正式发布。
 
-## 6. 调用与验证
+## 7. SolveRequest生产执行器
+
+执行器版本为`solve_request_executor_1.0.0`，统一入口为`run.py solve`。它首先重新复核CaseBundle及RoadCase哈希，再按请求构建新紧凑模型。分布式只求一个无站网结果；集中式、混合式分别枚举5个候选站的确定性道路树。只有5个站点子任务均取得有效可行解和下界，合成gap不超过请求阈值，且选中方案的紧凑全时域QA与导出后独立QA均通过，才能写`qualified=true`。
+
+执行结果固定标注`optimization_scope=five_candidate_shortest_path_trees`，不能称为完整自由拓扑或施工级最优。每个候选站保留独立日志、求解证据和状态；根目录保存站点比较、选中方案、标准结果文件、合成界和ResultBundle。输出目录必须是仓库`runs/`内不存在的新目录。
+
+当前成本端点批量命令为：
+
+```powershell
+python run.py solve --config configs/cases/guanggu_v2.yaml `
+  --bundle "<prepare目录>\case_bundle.json" `
+  --request-set cost-endpoints `
+  --run-id "<唯一RUN_ID>" --output-root runs/v2
+```
+
+本接口不复用旧任务成功状态，不接受未供热，不会在候选失败时用其余站点冒充全局证书。TES由请求显式开关；首轮自动请求固定为关闭。
+
+## 8. 调用与验证
 
 在仓库根目录运行接口专项测试：
 

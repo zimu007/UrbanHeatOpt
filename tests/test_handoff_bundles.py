@@ -35,8 +35,10 @@ def solve_payload(case_payload):
     return {
         "interface_version": INTERFACE_VERSION,
         "case_bundle_id": CaseBundle.from_dict(case_payload).bundle_id,
+        "model_profile": "compact_five_tree_fullseason_v2",
+        "optimization_scope": "five_candidate_shortest_path_trees",
         "mode": "hybrid", "objective": "cost", "epsilon_carbon_kg": 1000.0,
-        "tes_enabled": False,
+        "tes_enabled": False, "allow_unserved": False,
         "solver": {"name": "highs", "threads": 1, "random_seed": 202611, "mip_gap": 0.01, "time_limit_s": None},
     }
 
@@ -165,6 +167,9 @@ def test_executable_adapter_evidence_unlocks_research_but_not_publication(case_p
         "effective_parameter_mapping_ready": True,
         "site_capacity_ready": True,
         "result_bundle_contract_ready": True,
+        "network_product_ready": True,
+        "road_case_build_pass": True,
+        "solver_pipeline_ready": True,
         "research_boundary_use_allowed": True,
         "publication_parameters_verified": False,
     }
@@ -175,7 +180,7 @@ def test_executable_adapter_evidence_unlocks_research_but_not_publication(case_p
     assert report["model_capability_ready"] and report["research_solve_ready"]
     assert report["model_ready"] and not report["publication_ready"]
     assert not report["solver_executed"] and not report["result_qualified"]
-    assert report["registered_model_adapter"] == "handoff_v1+site_capacity_v1"
+    assert report["registered_model_adapter"].endswith("solve_request_executor_1.0.0")
 
 
 def result_payload(case_payload):

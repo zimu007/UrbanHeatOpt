@@ -1,6 +1,6 @@
 # A输入与主线集成操作手册
 
-更新：2026-09-07。完成输入、0907冻结参数、容量边界、A/B接口和动态门禁；不在本手册步骤中进行V2长求解或绘图。
+更新：2026-09-07。完成输入、0907冻结参数、容量边界、RoadCase与SolveRequest生产执行器接线；准备与求解状态仍分开记录。
 
 ## 1. 最短操作
 
@@ -57,6 +57,9 @@ conda run --no-capture-output -n urbanheatopt_env python run.py prepare --config
 | parameter_selection.csv | 逐参数应用/未采用原因，model_consumed=false |
 | inputs/external_timeseries.parquet | 全部准备通过后供B消费的新经济时序 |
 | case_bundle.json | 全部准备与hash通过后生成，不允许半合格冒充 |
+| road_case.json | 唯一Builder生成的62栋×2160小时模型输入；执行前会重新构建并比对内容哈希 |
+| road_case_build_report.json | 字段、技术角色、规模和构建门禁证据 |
+| road_case_hashes.json | CaseBundle内容、网络、参数和RoadCase文件/内容哈希 |
 | inputs/candidate_sites.geojson | 5个确定性虚拟研究候选站；不是已核实地块 |
 | inputs/capacity_boundaries.json | 站点、设备、能源、逐栋热泵及0907管型/TES/站房冻结边界 |
 | solve_requests/*.json | central/distributed/hybrid成本请求，由代码生成而非用户补交 |
@@ -78,7 +81,17 @@ conda run --no-capture-output -n urbanheatopt_env python tools/check_core_model_
 conda run --no-capture-output -n urbanheatopt_env python run.py solve --config configs/cases/guanggu_v2.yaml
 ```
 
-最后一条不执行求解。附`--bundle <完整case_bundle.json路径>`时只复核hash和动态门禁；即使显示`research_solve_ready=true`，仍以退出2结束并保持`solver_executed=false`，等待B显式消费SolveRequest，且不会静默求解。
+上面未带请求的solve命令仍以退出2拒绝执行。单个成本请求：
+
+```powershell
+conda run --no-capture-output -n urbanheatopt_env python run.py solve `
+  --config configs/cases/guanggu_v2.yaml `
+  --bundle "<prepare目录>\case_bundle.json" `
+  --request "<prepare目录>\solve_requests\central_cost.json" `
+  --run-id CENTRAL_COST_001 --output-root runs/v2
+```
+
+三模式成本端点批量请求将`--request`替换为`--request-set cost-endpoints`。运行目录已存在、哈希不一致、任一候选站失败、gap超限或QA失败都会拒绝合格状态且不覆盖旧结果。
 
 - 退出0：仅该命令所述校验／准备通过；看其他状态不要推断求解成功。
 - 退出2：输入、参数、路径、版本或尚未接通能力；读errors及缺失清单。
@@ -92,7 +105,7 @@ conda run --no-capture-output -n urbanheatopt_env python run.py solve --config c
 
 A：目录、任务书、参数、0906/0907补充边界和接口已交付；真实源标准化、正式扩容情景、CaseBundle、三模式SolveRequest及B1/B2投影通过。
 
-B：B1～B5框架已合并；下一步显式消费本次请求完成新版端点和TES配对，本轮未执行2160小时求解。标准结果接口已预留TES实际容量、实际最大充放功率和上限触及标记。C：ResultBundle独立复算及展示仍未在本轮实施。老师/用户：本轮A/B外部参数缺口已清零。
+B：B1～B5框架、RoadCase和生产执行器已经接通；下一步使用同一RoadCase完成真实成本端点，再继续碳端点、ε点和TES配对。当前代码接线测试不等于已经得到2160小时结果。C：ResultBundle结构和独立QA产物已可交接，PPT级展示仍未在本轮实施。老师/用户：本轮A/B外部参数缺口已清零。
 
 本轮未提交任何原始数据、桌面副本或运行结果，不推送。V1结果目录、标签和数学实现保留。
 

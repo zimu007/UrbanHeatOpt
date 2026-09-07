@@ -75,6 +75,8 @@ def _projection_request(bundle: CaseBundle) -> SolveRequest:
     return SolveRequest.from_dict({
         "interface_version": INTERFACE_VERSION,
         "case_bundle_id": bundle.bundle_id,
+        "model_profile": "compact_five_tree_fullseason_v2",
+        "optimization_scope": "five_candidate_shortest_path_trees",
         "mode": "central",
         "objective": "cost",
         "epsilon_carbon_kg": None,

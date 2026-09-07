@@ -14,14 +14,14 @@ conda run --no-capture-output -n urbanheatopt_env python run.py --help
 conda run --no-capture-output -n urbanheatopt_env python -m pytest -q
 ```
 
-`run.py validate/prepare`已接入自动源校验、新经济包与全供暖季标准化；solve、report、diagnose、tes-check在B/C接入前退出2，不回退旧模型。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
+`run.py validate/prepare`已接入自动源校验、新经济包、全供暖季标准化和RoadCase构建；`run.py solve`显式消费CaseBundle与SolveRequest，调用紧凑五树新核心，不回退旧模型。report、diagnose、tes-check仍是未启用门禁。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
 
 ```powershell
 python run.py validate --config configs/cases/guanggu_v2.yaml
 python run.py prepare --config configs/cases/guanggu_v2.yaml
 ```
 
-输出在`work/guanggu_v2/<新RUN_ID>/`，桌面缺失清单自动更新。用户20260905确认后，8项审计来源许可冲突按最终报价处理并保留追溯；真实443源文件、87项参数登记与62栋×2160h准备通过，已生成CaseBundle。新模型B/C消费者仍未接通，未执行求解。详细操作与状态见[集成手册](docs/runbooks/A_INTEGRATION_CN.md)，总体方向及三人分工见`docs/team/`。
+准备输出在`work/guanggu_v2/<新RUN_ID>/`，求解输出在`runs/v2/<新RUN_ID>/`。真实输入、参数、网络和62栋×2160h RoadCase已能自动准备；求解只有在显式给出请求、新目录且全部候选站界与QA合格时才产生ResultBundle。代码接线通过不代表真实全季结果已经完成。详细操作与状态见[集成手册](docs/runbooks/A_INTEGRATION_CN.md)，总体方向及三人分工见`docs/team/`。
 
 ## 目录
 

@@ -340,6 +340,8 @@ def generate_solve_requests(bundle: CaseBundle, output: Path, *, tes_enabled: bo
         request = SolveRequest.from_dict({
             "interface_version": INTERFACE_VERSION,
             "case_bundle_id": bundle.bundle_id,
+            "model_profile": "compact_five_tree_fullseason_v2",
+            "optimization_scope": "five_candidate_shortest_path_trees",
             "mode": mode,
             "objective": "cost",
             "epsilon_carbon_kg": None,
@@ -609,8 +611,17 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
                 "road_case_build_pass": road_build.ready,
                 "road_case_builder_version": ROAD_CASE_BUILDER_VERSION,
                 "road_case_content_sha256": road_build.report["road_case_content_sha256"],
-                # Set true only when the production executor is delivered.
-                "solver_pipeline_ready": False,
+                "solver_pipeline_ready": all(
+                    request.to_dict()["model_profile"]
+                    == "compact_five_tree_fullseason_v2"
+                    and request.to_dict()["optimization_scope"]
+                    == "five_candidate_shortest_path_trees"
+                    and request.to_dict()["allow_unserved"] is False
+                    and request.to_dict()["tes_enabled"] is False
+                    and request.to_dict()["objective"] == "cost"
+                    for _, request, _ in requests
+                ),
+                "solve_request_executor_version": "solve_request_executor_1.0.0",
             })
             readiness = ready_report(bundle, integration_evidence=evidence)
             write_json(output / "model_readiness_report.json", readiness)
