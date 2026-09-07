@@ -14,6 +14,7 @@ from pyomo.environ import value
 from shapely.geometry import LineString, mapping
 
 from urbanheatopt.model.road_core import RoadCase, classify_direction_solution
+from urbanheatopt.model.reference_core import capacity_margin_requirement
 from urbanheatopt.optimization.mode_diagnostics import classify_realized_mode
 from urbanheatopt.spatial.atomic_network import access_options
 
@@ -642,9 +643,16 @@ def audit_export(case: RoadCase, root: str | Path):
             available+=row.capacity_kW_th*np.asarray([
                 d.heat_pump_capacity_ratio_by_hour.get((row.technology_id,h),1.) for h in hours
             ],dtype=float)
-    required=(1+d.peak_capacity_margin_fraction)*(
-        np.sum(canonical_demand*connection_by_building[:,None],axis=0)+loss_total)
-    record('margin_kW',np.max(np.maximum(0.,required-available)))
+    if d.peak_capacity_margin_fraction > 0:
+        required=capacity_margin_requirement(
+            np.sum(canonical_demand*connection_by_building[:,None],axis=0),
+            loss_total,
+            d.peak_capacity_margin_fraction,
+            d.capacity_margin_basis,
+        )
+        record('margin_kW',np.max(np.maximum(0.,required-available)))
+    else:
+        record('margin_kW',0.)
     record('heat_balance_kW',np.max(np.abs(node_balance)))
     built_sites=[s for s in sites.index if sites.loc[s,'built']>.5]
     if len(built_sites)>1:

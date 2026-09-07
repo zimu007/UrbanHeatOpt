@@ -7,6 +7,7 @@ from urbanheatopt.optimization.b4_tes_research import (
     RESEARCH_EVIDENCE, audit_b4_solution, build_b4_research_case,
     soc_transition, solve_b4_research_case,
 )
+from urbanheatopt.model.reference_core import CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS
 
 
 @pytest.fixture(scope='module')
@@ -23,6 +24,7 @@ def test_case_is_explicit_two_node_24_hour_research_boundary():
     assert len(case.common.hours) == 24
     assert case.parameter_version == 'research/revised_20260831/B4_single_case'
     assert RESEARCH_EVIDENCE['status'] == 'research_assumption'
+    assert RESEARCH_EVIDENCE['capacity_margin_basis'] == CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS
     assert RESEARCH_EVIDENCE['maxima_basis'] == 'explicit_B4_research_boundary_not_peak_multiplier'
 
 

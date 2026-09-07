@@ -4,7 +4,10 @@ import json
 import pytest
 from pyomo.environ import value
 
-from urbanheatopt.model.reference_core import CoreModelInput, EconomicInput, TechnologySpec, ThermalStorageSpec, build_core_model
+from urbanheatopt.model.reference_core import (
+    CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS,
+    CoreModelInput, EconomicInput, TechnologySpec, ThermalStorageSpec, build_core_model,
+)
 from urbanheatopt.optimization.solvers import SolverSettings, solve_pyomo_model, SolverNotOptimalError
 from urbanheatopt.model.road_core import (
     RoadCase,
@@ -16,7 +19,11 @@ from urbanheatopt.model.road_core import (
 from urbanheatopt.qa.road_results import export_solution, audit_export
 
 
-def shared_case(mode='central', loss=.02):
+def shared_case(
+    mode='central',
+    loss=.02,
+    capacity_margin_basis=CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS,
+):
     nodes = [dict(node_id=n, node_type=kind, x_m=x, y_m=y)
              for n,kind,x,y in [('R','road',0,0),('J','road',300,0),('A','building',300,10),('B','building',300,-10)]]
     edges = [dict(edge_id=e, node_u=u, node_v=v, coordinates=coords, length_m=length,
@@ -37,6 +44,7 @@ def shared_case(mode='central', loss=.02):
         electricity_carbon_kgCO2e_per_kWh_e={1:.4,2:.6},gas_carbon_kgCO2e_per_kWh_LHV={1:.2,2:.2})
     common = CoreModelInput(mode,(1,2),None,('A','B'),{('A',1):40.,('A',2):30.,('B',1):60.,('B',2):50.},
                            techs,(),econ,allow_unserved=False,peak_capacity_margin_fraction=.2,
+                           capacity_margin_basis=capacity_margin_basis,
                            candidate_station_nodes=('S1','S2'))
     levels = tuple(PipeDesign(f'test_{i}',cap,cost,30,loss,1e-5) for i,cap,cost in [(1,50,1),(2,100,2),(3,200,3)])
     return RoadCase(common,json.dumps(network),levels,('2026-12-01T00:00:00+08:00','2026-12-01T01:00:00+08:00'))

@@ -16,7 +16,12 @@ from typing import Mapping
 import pyomo.environ as p
 import pandas as pd
 
-from urbanheatopt.model.reference_core import CoreModelInput, validate_core_input, ThermalStorageSpec
+from urbanheatopt.model.reference_core import (
+    CoreModelInput,
+    ThermalStorageSpec,
+    capacity_margin_requirement,
+    validate_core_input,
+)
 from urbanheatopt.model.costing.annualized import capital_recovery_factor as crf
 from urbanheatopt.spatial.atomic_network import validate_network, access_options
 
@@ -673,9 +678,15 @@ def build_road_model(
                 thermal = sum(sign*m.flow[e,h]-m.edge_loss[e]/2 for e,sign in incident[n])
                 thermal += sum(sum(m.heat[s,t,h] for t in central)+m.discharge[s,h]-m.charge[s,h] for s in sources[n])
                 c(thermal == (m.network_heat[n,h] if n in d.demand_nodes else 0))
-        for h in d.hours:
-            c(sum(m.capacity[s,t]*ratio(t,h) for s in stations for t in central)
-              >= (1+d.peak_capacity_margin_fraction)*(sum(d.heat_demand_kW[b,h]*m.connected[b] for b in d.demand_nodes)+sum(m.edge_loss[e] for e in edges)))
+        if d.peak_capacity_margin_fraction > 0:
+            for h in d.hours:
+                c(sum(m.capacity[s,t]*ratio(t,h) for s in stations for t in central)
+                  >= capacity_margin_requirement(
+                      sum(d.heat_demand_kW[b,h]*m.connected[b] for b in d.demand_nodes),
+                      sum(m.edge_loss[e] for e in edges),
+                      d.peak_capacity_margin_fraction,
+                      d.capacity_margin_basis,
+                  ))
     m.electricity = p.Expression(m.HOURS, rule=lambda _,h:
         sum(m.heat[s,t,h]/cop(t,h) for s in stations for t in central if central[t].energy_carrier == 'electricity')
         +sum(m.local_heat[b,h]/cop(local.technology_id,h) for b in d.demand_nodes)+sum(m.pump[e,h] for e in edges))
