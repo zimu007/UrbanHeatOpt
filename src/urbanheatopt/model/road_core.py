@@ -165,7 +165,9 @@ def validate_b2_capacity(case: RoadCase) -> None:
     for site in sites.values():
         if not all((site.evidence.source, site.evidence.status, site.evidence.evidence_id)):
             raise ValueError(f'{site.site_id}: B2 evidence is incomplete')
-        if site.evidence.status not in {'verified', 'research_assumption'}:
+        if site.evidence.status not in {
+            'verified', 'research_assumption', 'teacher_confirmed_research_assumption'
+        }:
             raise ValueError(f'{site.site_id}: B2 evidence status is not executable')
         if (isinstance(site.total_heat_capacity_max_kW_th, bool)
                 or not isinstance(site.total_heat_capacity_max_kW_th, (int, float))

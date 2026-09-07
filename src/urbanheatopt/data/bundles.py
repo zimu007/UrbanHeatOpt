@@ -148,6 +148,25 @@ class CaseBundle(_JsonBundle):
 
     __slots__ = ()
 
+    @property
+    def content_id(self) -> str:
+        """Path-independent identity for equivalent fresh prepare outputs."""
+        payload = self.to_dict()
+        identity = {
+            "interface_version": payload["interface_version"],
+            "data_version": payload["data_version"],
+            "parameter_version": payload["parameter_version"],
+            "artifacts": sorted(
+                (row["role"], row["sha256"]) for row in payload["artifacts"]
+            ),
+            "source_sha256": sorted(payload["source_hashes"].values()),
+            "units": payload["units"],
+            "physical_scope": payload.get("physical_scope"),
+            "economic_boundary": payload.get("economic_boundary"),
+            "generated_spatial_status": payload.get("generated_spatial_status"),
+        }
+        return hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
+
     def _validate(self, payload: dict[str, Any]) -> None:
         for name in ("data_version", "parameter_version", "git_sha"):
             _nonempty(payload.get(name), name)
@@ -294,8 +313,18 @@ def ready_report(
         evidence.get(evidence_keys[capability]) is True
         for capability in required_model_capabilities
     )
+    network_ready = evidence.get("network_product_ready") is True
+    road_case_ready = evidence.get("road_case_build_pass") is True
+    solver_pipeline_ready = evidence.get("solver_pipeline_ready") is True
+    if not network_ready:
+        blockers.append({"id": "network_product", "owner": "A", "reason": "版本化网络产物尚未通过消费校验"})
+    if not road_case_ready:
+        blockers.append({"id": "road_case_builder", "owner": "A/B", "reason": "最新CaseBundle尚未构建为合格RoadCase"})
+    if not solver_pipeline_ready:
+        blockers.append({"id": "solve_request_executor", "owner": "B", "reason": "SolveRequest生产执行器尚未接通"})
     research_solve_ready = (
         input_ready and parameter_ready and model_capability_ready
+        and network_ready and road_case_ready and solver_pipeline_ready
         and evidence.get("research_boundary_use_allowed") is True
     )
     publication_ready = (
@@ -315,6 +344,9 @@ def ready_report(
         "artifact_integrity_passed": integrity["passed"],
         "input_ready": input_ready,
         "parameter_ready": parameter_ready,
+        "network_ready": network_ready,
+        "road_case_ready": road_case_ready,
+        "solver_pipeline_ready": solver_pipeline_ready,
         "model_capability_ready": model_capability_ready,
         "research_solve_ready": research_solve_ready,
         "program_feasibility_input_ready": (

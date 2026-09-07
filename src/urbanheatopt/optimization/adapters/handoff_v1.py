@@ -332,14 +332,14 @@ def apply_b1_economics_to_road_case(projection: B1HandoffInputs, case: RoadCase)
             technologies.append(replace(item, capex_CNY_per_kW=source.capex_CNY_per_kW_th,
                 fixed_maintenance_fraction_per_year=source.fixed_om_fraction_per_year,
                 variable_om_CNY_per_kWh_th=0.0, lifetime_years=source.lifetime_years,
-                source=projection.snapshot_id, assumption_flag="revised_20260831"))
+                source=projection.snapshot_id, assumption_flag="scenario_assumption"))
         elif item.technology_type == "gas_boiler":
             source = projection.boiler
             technologies.append(replace(item, efficiency=source.efficiency,
                 capex_CNY_per_kW=source.capex_CNY_per_kW_th,
                 fixed_maintenance_fraction_per_year=source.fixed_om_fraction_per_year,
                 variable_om_CNY_per_kWh_th=0.0, lifetime_years=source.lifetime_years,
-                source=projection.snapshot_id, assumption_flag="revised_20260831_LHV"))
+                source=projection.snapshot_id, assumption_flag="scenario_assumption"))
         else:
             raise HandoffConsumerError(f"unexpected B1 technology: {item.technology_id}")
     if len(technologies) != 3:

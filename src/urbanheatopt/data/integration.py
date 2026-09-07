@@ -19,6 +19,11 @@ from urbanheatopt.data.bundles import (
     CaseBundle, INTERFACE_VERSION, SolveRequest, ready_report, sha256_file,
 )
 from urbanheatopt.data.capacity_boundaries import build_capacity_boundaries
+from urbanheatopt.data.road_builder import (
+    ROAD_CASE_BUILDER_VERSION,
+    build_road_case,
+    save_case,
+)
 from urbanheatopt.data.gap_catalog import data_gaps, render_gap_report, publish_gap_report
 from urbanheatopt.parameters.revised_economics import (
     read_revised_package, revised_timeseries, PACKAGE_DIRECTORY, validate_source_policy,
@@ -583,6 +588,30 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
             evidence = run_ab_adapter_smoke(
                 bundle, requests, capacity_handoff["capacity_boundaries"], output
             )
+            road_build = build_road_case(bundle)
+            road_case_path = output / "road_case.json"
+            save_case(road_build.road_case, road_case_path)
+            road_case_file_sha = sha256_file(road_case_path)
+            road_build.report["road_case_file_sha256"] = road_case_file_sha
+            road_build.report["road_case_path"] = str(road_case_path.resolve())
+            write_json(output / "road_case_build_report.json", road_build.report)
+            write_json(output / "road_case_hashes.json", {
+                "builder_version": ROAD_CASE_BUILDER_VERSION,
+                "case_bundle_id": bundle.bundle_id,
+                "case_bundle_content_id": bundle.content_id,
+                "road_case_content_sha256": road_build.report["road_case_content_sha256"],
+                "road_case_file_sha256": road_case_file_sha,
+                "network_sha256": road_build.report["network_sha256"],
+                "parameter_version": bundle.to_dict()["parameter_version"],
+            })
+            evidence.update({
+                "network_product_ready": True,
+                "road_case_build_pass": road_build.ready,
+                "road_case_builder_version": ROAD_CASE_BUILDER_VERSION,
+                "road_case_content_sha256": road_build.report["road_case_content_sha256"],
+                # Set true only when the production executor is delivered.
+                "solver_pipeline_ready": False,
+            })
             readiness = ready_report(bundle, integration_evidence=evidence)
             write_json(output / "model_readiness_report.json", readiness)
         except (ValueError, OSError) as exc:
@@ -603,6 +632,9 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
                    **status,
                    input_ready=(readiness or {}).get("input_ready", False),
                    parameter_ready=(readiness or {}).get("parameter_ready", status["parameter_valid"]),
+                   network_ready=(readiness or {}).get("network_ready", False),
+                   road_case_ready=(readiness or {}).get("road_case_ready", False),
+                   solver_pipeline_ready=(readiness or {}).get("solver_pipeline_ready", False),
                    model_capability_ready=(readiness or {}).get("model_capability_ready", False),
                    research_solve_ready=(readiness or {}).get("research_solve_ready", False),
                    program_feasibility_input_ready=(readiness or {}).get(

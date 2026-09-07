@@ -75,6 +75,20 @@
 
 A侧现在自动生成5个虚拟研究候选站、62栋/2160小时容量边界、三种模式的成本SolveRequest，并以真实形状CaseBundle调用B1经济投影和B2容量投影。联调证据写入`ab_adapter_smoke.json`；它不是YAML手填状态，也不实例化求解器。DN250/400/500物理参考容量不进入执行边界，执行侧使用已确认的规划容量代理档。
 
+## 5. CaseBundle 到 RoadCase 的唯一构建器
+
+生产入口固定调用：
+
+```python
+build_road_case(case_bundle) -> RoadCaseBuildResult
+```
+
+构建器版本为`road_case_builder_1.0.0`。它先复核CaseBundle全部产物及源文件SHA-256，再核对网络内部哈希和manifest，随后通过B1/B2适配器一次装配62栋×2160小时负荷、5个候选站、道路原子边、温度COP、LHV锅炉、三档规划容量、TES上限、300万元站房基准及42元/kW·月需量费。任何ID、小时、单位、情景互斥或哈希不一致都会在构模前失败。
+
+`road_case.json`保留完整TES接口；是否启用TES只由SolveRequest决定。执行管型的`dn_mm`保持空值，并标记为`planning_capacity_tier_not_hydraulic_dn`，避免把规划容量代理档误述成水力管径。构建器不读取历史runs、不加载旧RoadCase，也不调用旧模型。
+
+`bundle_id`是包含绝对路径的交接信封哈希；`case_bundle_content_id`排除输出目录差异，用于证明两个新prepare目录包含相同内容。`road_case_content_sha256`是模型输入内容哈希，任一有效输入、参数或网络变化都会改变该值。
+
 `research_solve_ready=true`仅表示研究输入和B1/B2接口具备交接条件；它不等于已经构模、已经求解或结果合格。站房固定投资边界未确认期间，`publication_ready`必须为false。即使研究门禁通过，`solver_executed`仍为false，直至B产生带求解日志和独立QA的ResultBundle。正式入口仍禁止静默调用legacy或V1现成结果。
 
 常见能力ID：

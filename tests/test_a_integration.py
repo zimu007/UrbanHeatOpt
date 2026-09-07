@@ -152,6 +152,15 @@ def synthetic_pipeline(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(integration, "prepare_research_boundaries", capacity_handoff)
     monkeypatch.setattr(integration, "run_ab_adapter_smoke", ab_smoke)
+    monkeypatch.setattr(integration, "build_road_case", lambda bundle: SimpleNamespace(
+        road_case={"synthetic": True}, ready=True,
+        report={"road_case_ready": True, "road_case_content_sha256": "1" * 64,
+                "network_sha256": "2" * 64},
+    ))
+    monkeypatch.setattr(
+        integration, "save_case",
+        lambda case, path: Path(path).write_text('{"synthetic_road_case":true}', encoding="utf-8"),
+    )
     monkeypatch.setattr(integration.subprocess, "check_output", lambda *args, **kwargs: "synthetic_git_identity\n")
     return SimpleNamespace(repository=repository, roots=roots, source=source_path, config=config,
                            config_path=config_path, calls=calls, snapshot=snapshot, adapter=adapter)
@@ -212,8 +221,11 @@ def test_a_synthetic_prepare_bundle_and_independent_states(synthetic_pipeline):
     assert summary["exit_code"] == 0
     for key in ("input_valid", "parameter_valid", "canonical_valid", "snapshot_complete", "input_hashes_unchanged"):
         assert summary[key] is True
-    assert summary["model_ready"] is True
-    assert summary["research_solve_ready"] is True
+    assert summary["network_ready"] is True
+    assert summary["road_case_ready"] is True
+    assert summary["solver_pipeline_ready"] is False
+    assert summary["model_ready"] is False
+    assert summary["research_solve_ready"] is False
     assert summary["publication_ready"] is False
     assert summary["solver_executed"] is False
     assert summary["result_qualified"] is False
@@ -227,9 +239,10 @@ def test_a_synthetic_prepare_bundle_and_independent_states(synthetic_pipeline):
     }
     assert bundle.payload["physical_scope"] == {"buildings": 62, "hours": 2160, "supply_C": 45, "return_C": 40, "peak_capacity_margin_fraction": 0.20}
     gate = json.loads((output / "model_readiness_report.json").read_text(encoding="utf-8"))
-    assert gate["snapshot_complete"] and gate["model_ready"]
-    assert gate["research_solve_ready"] and not gate["publication_ready"]
-    assert any(item["id"] == "publication_station_cost_boundary" for item in gate["blockers"])
+    assert gate["snapshot_complete"] and not gate["model_ready"]
+    assert gate["network_ready"] and gate["road_case_ready"]
+    assert not gate["research_solve_ready"] and not gate["publication_ready"]
+    assert any(item["id"] == "solve_request_executor" for item in gate["blockers"])
     assert [call[0] for call in f.calls] == ["source", "parameters", "adapter"]
     assert f.calls[0][2]["full_audit"] is True
     assert f.calls[2][2]["full_audit"] is True
