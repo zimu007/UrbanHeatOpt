@@ -86,8 +86,9 @@ def test_on_off_delta_is_computed_without_assuming_its_sign(solved_pair):
     assert all(value == pytest.approx(value) for value in delta)
 
 
-def test_formal_model_ready_remains_false():
+def test_input_readiness_cannot_be_misreported_as_reliable_result():
     source = Path('src/urbanheatopt/data/bundles.py').read_text(encoding='utf-8')
     handoff = Path('src/urbanheatopt/optimization/adapters/handoff_v1.py').read_text(encoding='utf-8')
-    assert '"model_ready": False' in source
+    assert '"economic_result_reliable": False' in source
+    assert '"solver_executed": False' in source
     assert 'model_ready: bool = False' in handoff

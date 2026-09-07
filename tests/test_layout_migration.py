@@ -5,8 +5,10 @@ import sys
 from tools.verify_layout import verify
 
 
-def test_mathematical_bodies_are_unchanged():
-    assert verify()["passed"]
+def test_layout_has_no_unreviewed_mathematical_body_drift():
+    result = verify()
+    assert result["passed"]
+    assert result["approved_post_migration_commit"].startswith("fe98b7e")
 
 
 def test_entry_does_not_import_legacy():

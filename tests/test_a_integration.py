@@ -36,7 +36,8 @@ def synthetic_pipeline(tmp_path, monkeypatch):
                             delivery_root=delivery.resolve(), equipment_patch_root=None)
     config = dict(config_version="guanggu_v2_a_1.0.0", delivery_root=str(delivery_scope),
                   source_profile="guanggu_v03", economic_package="revised_20260831",
-                  economic_scenario="revised_base", source_permission_policy="require_consistent",
+                  economic_scenario="revised_base", v2_parameter_scenario="v2_primary_expansion_check",
+                  source_permission_policy="require_consistent",
                   output_root=str(repository / "work" / "case"), scope="heating-season",
                   full_audit=True, mode_scope=["central", "distributed", "hybrid"],
                   tes_enabled=False, spatial_inputs={}, desktop_gap_report=False)
@@ -73,7 +74,11 @@ def synthetic_pipeline(tmp_path, monkeypatch):
 
     snapshot = dict(snapshot_id="synthetic_parameter_snapshot", parameter_valid=True,
                     registry={"synthetic": {"parameter_id": "synthetic", "value": 3}},
-                    effective={"station_cost_boundary": "excluded_unseparated"}, pending=[])
+                    effective={"station_cost_boundary": "teacher_confirmed_v2_scenario",
+                               "station_cost_scenario": "base", "station_capex_CNY": 3_000_000},
+                    v2_freeze_patch={"program_feasibility_scope": False,
+                                     "economic_conclusion_scope": True,
+                                     "allowed_for_primary_economic_conclusion": True}, pending=[])
 
     def package_reader(root, scenario, **kwargs):
         calls.append(("parameters", root, scenario))
@@ -135,6 +140,7 @@ def save_config(fixture, **changes):
 @pytest.mark.parametrize("changes", [
     {"unknown_field": True}, {"config_version": "old"},
     {"economic_package": "provisional_20260829"}, {"source_profile": "wuhan_v02"},
+    {"v2_parameter_scenario": "unknown"},
     {"full_audit": False}, {"source_permission_policy": "ignore"},
     {"mode_scope": ["central"]}, {"spatial_inputs": []},
 ])

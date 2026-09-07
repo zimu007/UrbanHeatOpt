@@ -32,6 +32,11 @@ from urbanheatopt.parameters.revised_economics import (
 from urbanheatopt.parameters.capacity_supplement_0906 import (
     SUPPLEMENT_DIRECTORY, SUPPLEMENT_FILES,
 )
+from urbanheatopt.parameters.v2_freeze_0907 import (
+    PATCH_DIRECTORY as V2_PATCH_DIRECTORY,
+    PATCH_FILES as V2_PATCH_FILES,
+    read_v2_freeze_0907,
+)
 
 
 EQUIPMENT_PATCH_FILES = (
@@ -261,6 +266,13 @@ def _classify_inventory(
             and parts[2] in SUPPLEMENT_FILES
         ):
             category_counts["capacity_supplement_20260906"] += 1
+        elif (
+            len(parts) == 3
+            and parts[0] == REVISED_DIRECTORY
+            and parts[1] == V2_PATCH_DIRECTORY
+            and parts[2] in V2_PATCH_FILES
+        ):
+            category_counts["v2_parameter_freeze_20260907"] += 1
         elif parts[0] in directories:
             category_counts[str(directories[parts[0]])] += 1
         else:
@@ -294,6 +306,17 @@ def _validate_inventory(
         except (ValueError, OSError, UnicodeError) as exc:
             _issue(report, "ECONOMIC_EXTENSION_INVALID", str(exc), root / REVISED_DIRECTORY,
                    "warning" if profile.get("economic_parameters_separate_gate") is True else "error")
+        patch_root = root / REVISED_DIRECTORY / V2_PATCH_DIRECTORY
+        if patch_root.is_dir():
+            try:
+                report.datasets["v2_parameter_freeze_20260907"] = read_v2_freeze_0907(
+                    patch_root, "v2_primary_expansion_check"
+                )
+            except (ValueError, OSError, UnicodeError) as exc:
+                _issue(
+                    report, "V2_PARAMETER_PATCH_INVALID", str(exc), patch_root,
+                    "warning" if profile.get("economic_parameters_separate_gate") is True else "error",
+                )
     if (root / PACKAGE_DIRECTORY).is_dir():
         package_root = root / PACKAGE_DIRECTORY
         for name in PACKAGE_FILES:

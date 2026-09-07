@@ -317,7 +317,16 @@ def ready_report(
         "parameter_ready": parameter_ready,
         "model_capability_ready": model_capability_ready,
         "research_solve_ready": research_solve_ready,
+        "program_feasibility_input_ready": (
+            research_solve_ready
+            and evidence.get("program_feasibility_input_ready") is True
+        ),
+        "economic_conclusion_input_ready": (
+            research_solve_ready
+            and evidence.get("economic_conclusion_input_ready") is True
+        ),
         "publication_ready": publication_ready,
+        "economic_result_reliable": False,
         "model_ready": research_solve_ready,
         "solver_executed": False,
         "result_qualified": False,
@@ -325,5 +334,5 @@ def ready_report(
         "blockers": blockers,
         "artifact_integrity": integrity,
         "integration_evidence": evidence,
-        "note": "research_solve_ready仅表示A/B研究输入接口具备交接条件；本报告未执行求解，也不等于正式经济结论。",
+        "note": "输入口径就绪与结果可靠分开验收：本报告未执行求解，economic_result_reliable固定为false。",
     }

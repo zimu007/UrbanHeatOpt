@@ -410,18 +410,54 @@ def export_v3_solution(
          "service_mode": "central" if value(model.connected[node]) > 0.5 else "distributed"}
         for node in model.DEMAND_NODES
     ]).to_csv(target / "building_connection.csv", index=False)
-    pd.DataFrame([
-        {
+    storage_rows = []
+    storage_spec = case.storage
+    energy_upper = float(getattr(storage_spec, "energy_capacity_max_kWh_th", 0.0))
+    charge_upper = float(getattr(storage_spec, "charge_capacity_max_kW_th", 0.0))
+    discharge_upper = float(getattr(storage_spec, "discharge_capacity_max_kW_th", 0.0))
+    report_limits = all(value > 0 for value in (energy_upper, charge_upper, discharge_upper))
+    for station in model.STATIONS:
+        energy = value(model.storage_energy_capacity_by_station_kWh[station])
+        charge_capacity = value(model.storage_charge_capacity_by_station_kW[station])
+        discharge_capacity = value(model.storage_discharge_capacity_by_station_kW[station])
+        peak_charge = max(
+            (value(model.storage_charge_by_station_kW[station, hour]) for hour in model.HOURS),
+            default=0.0,
+        )
+        peak_discharge = max(
+            (value(model.storage_discharge_by_station_kW[station, hour]) for hour in model.HOURS),
+            default=0.0,
+        )
+        tolerance = 1e-6
+        storage_rows.append({
             "mode": point.mode,
             "station_id": str(station),
-            "technology_id": case.storage.technology_id,
+            "technology_id": storage_spec.technology_id,
             "installed": round(value(model.storage_installed_by_station[station])),
-            "energy_capacity_kWh_th": value(model.storage_energy_capacity_by_station_kWh[station]),
-            "charge_capacity_kW_th": value(model.storage_charge_capacity_by_station_kW[station]),
-            "discharge_capacity_kW_th": value(model.storage_discharge_capacity_by_station_kW[station]),
-        }
-        for station in model.STATIONS
-    ]).to_csv(target / "storage_decisions.csv", index=False)
+            "energy_capacity_kWh_th": energy,
+            "charge_capacity_kW_th": charge_capacity,
+            "discharge_capacity_kW_th": discharge_capacity,
+            "energy_capacity_upper_kWh_th": energy_upper,
+            "charge_capacity_upper_kW_th": charge_upper,
+            "discharge_capacity_upper_kW_th": discharge_upper,
+            "actual_peak_charge_kW_th": peak_charge,
+            "actual_peak_discharge_kW_th": peak_discharge,
+            "energy_upper_bound_binding": bool(
+                report_limits
+                and abs(energy - energy_upper) <= tolerance * max(1.0, energy_upper)
+            ),
+            "charge_upper_bound_binding": bool(
+                report_limits
+                and abs(charge_capacity - charge_upper) <= tolerance * max(1.0, charge_upper)
+            ),
+            "discharge_upper_bound_binding": bool(
+                report_limits
+                and abs(discharge_capacity - discharge_upper)
+                <= tolerance * max(1.0, discharge_upper)
+            ),
+            "capacity_margin_offset_allowed": False,
+        })
+    pd.DataFrame(storage_rows).to_csv(target / "storage_decisions.csv", index=False)
 
     network = network_input.copy()
     built = {str(segment): round(value(model.pipe_built[segment])) for segment in model.SEGMENTS}

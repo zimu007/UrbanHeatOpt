@@ -24,7 +24,8 @@ def _effective() -> dict:
         "hp_life_years": 20.0, "boiler_fixed_om_fraction_per_year": .04, "boiler_life_years": 15.0,
         "connection_capex_CNY_per_building": 325714.2857, "connection_life_years": 20.0,
         "discount_rate": 0.05,
-        "pipe_life_years": 30.0, "station_cost_boundary": "excluded_unseparated", "station_capex_CNY": None,
+        "pipe_life_years": 30.0, "station_life_years": 30.0,
+        "station_cost_boundary": "excluded_unseparated", "station_capex_CNY": None,
         "monthly_demand_CNY_per_kW_month": 42.0,
         "tes_energy_capex_CNY_per_kWh_th": 1135.212613473483, "tes_power_capex_CNY_per_kW_th": 450.0,
         "tes_fixed_capex_CNY": 12000.0, "tes_eta_charge": .95, "tes_eta_discharge": .94,
@@ -137,6 +138,79 @@ def test_projection_overlays_economics_without_changing_physical_limits(handoff)
     assert projected.common.economics.station_fixed_capex_CNY == 0
     assert [item.capacity_kW_th for item in projected.pipe_designs] == [item.capacity_kW_th for item in scaffold.pipe_designs]
     assert projected.common.storage is None
+
+
+def test_teacher_confirmed_v2_station_and_pipe_loss_are_projected_once(handoff):
+    case, request, snapshot_path, external_path = handoff
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    snapshot["effective"].update({
+        "station_cost_boundary": "teacher_confirmed_v2_scenario",
+        "station_capex_CNY": 3_000_000.0,
+        "station_cost_scenario": "base",
+        "station_cost_replaces_other": True,
+        "station_cost_additive": False,
+    })
+    snapshot["v2_freeze_patch"] = {"scenario_id": "v2_primary_expansion_check"}
+    for index, pipe in enumerate(snapshot["pipes"], 1):
+        pipe["heat_loss_kW_per_route_m"] = index / 10
+    snapshot["snapshot_id"] = "c" * 64
+    snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    external = pd.read_parquet(external_path)
+    external["economic_snapshot_id"] = snapshot["snapshot_id"]
+    external.to_parquet(external_path, index=False)
+
+    case_payload = case.to_dict()
+    case_payload["parameter_version"] = snapshot["snapshot_id"]
+    next(
+        item for item in case_payload["artifacts"]
+        if item["role"] == "effective_parameters"
+    )["sha256"] = sha256_file(snapshot_path)
+    next(
+        item for item in case_payload["artifacts"]
+        if item["role"] == "external_timeseries"
+    )["sha256"] = sha256_file(external_path)
+    updated_case = CaseBundle.from_dict(case_payload)
+    request_payload = request.to_dict()
+    request_payload["case_bundle_id"] = updated_case.bundle_id
+    updated_request = SolveRequest.from_dict(request_payload)
+
+    projection = consume_handoff_v1(updated_case, updated_request)
+    assert projection.station_fixed_capex_CNY == 3_000_000
+    assert projection.station_base_boundary.status == "teacher_confirmed_v2_scenario"
+    assert [item.heat_loss_kW_per_supply_return_route_m for item in projection.pipe_routes] == pytest.approx(
+        [.1, .2, .3]
+    )
+
+    base = shared_case()
+    hourly = replace(
+        projection.hourly_economics,
+        time_weight_h_per_year={1: 1., 2: 1.},
+        electricity_price_CNY_per_kWh_e={1: .4, 2: .4},
+        electricity_carbon_kgCO2e_per_kWh_e={1: .5, 2: .5},
+        gas_price_CNY_per_kWh_LHV={1: .3, 2: .3},
+        gas_carbon_kgCO2e_per_kWh_LHV={1: .2, 2: .2},
+        billing_month={1: "2025-12", 2: "2025-12"},
+    )
+    pipe_routes = tuple(
+        replace(
+            item,
+            pipe_type_id=base.pipe_designs[index].pipe_type_id,
+        )
+        for index, item in enumerate(projection.pipe_routes)
+    )
+    projection = replace(
+        projection,
+        hourly_economics=hourly,
+        pipe_routes=pipe_routes,
+        tes=replace(projection.tes, enabled_in_request=False),
+    )
+    projected = apply_b1_economics_to_road_case(
+        projection, replace(base, parameter_version=projection.snapshot_id)
+    )
+    assert projected.common.economics.station_fixed_capex_CNY == 3_000_000
+    assert [item.pair_loss_kW_per_route_m for item in projected.pipe_designs] == pytest.approx(
+        [.1, .2, .3]
+    )
 
 
 def test_snapshot_mismatch_still_fails(handoff):

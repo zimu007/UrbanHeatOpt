@@ -408,6 +408,18 @@ def test_multi_candidate_standard_results_keep_true_station_mapping(
     storage = pd.read_csv(central_dir / "storage_decisions.csv")
     assert set(storage["station_id"]) == {"station_A", "station_B"}
     assert (storage.loc[storage.station_id.eq("station_B"), "energy_capacity_kWh_th"] == 0).all()
+    assert {
+        "energy_capacity_upper_kWh_th",
+        "charge_capacity_upper_kW_th",
+        "discharge_capacity_upper_kW_th",
+        "actual_peak_charge_kW_th",
+        "actual_peak_discharge_kW_th",
+        "energy_upper_bound_binding",
+        "charge_upper_bound_binding",
+        "discharge_upper_bound_binding",
+        "capacity_margin_offset_allowed",
+    } <= set(storage)
+    assert not storage["capacity_margin_offset_allowed"].astype(bool).any()
 
     distributed = pd.read_csv(
         exported.output_dir / "solutions" / "distributed_cost" / "station_decisions.csv"

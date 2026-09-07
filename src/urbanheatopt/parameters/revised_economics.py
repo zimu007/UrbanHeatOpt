@@ -16,6 +16,10 @@ from urbanheatopt.parameters.capacity_supplement_0906 import (
     SUPPLEMENT_DIRECTORY,
     read_capacity_supplement_0906,
 )
+from urbanheatopt.parameters.v2_freeze_0907 import (
+    PATCH_DIRECTORY as V2_PATCH_DIRECTORY,
+    read_v2_freeze_0907,
+)
 
 SPEC = json.loads((PACKAGE_ROOT / "data/profile_resources/revised_20260831.json").read_text(encoding="utf-8"))
 PACKAGE_DIRECTORY = SPEC["package_directory"]
@@ -156,14 +160,19 @@ def _validate_row(row: dict, expected_unit: str, sources: dict,
 
 
 def read_revised_package(root: Path | str, scenario: str = "revised_base", *,
-                         source_permission_policy: str = STRICT_SOURCE_POLICY) -> dict:
+                         source_permission_policy: str = STRICT_SOURCE_POLICY,
+                         v2_parameter_scenario: str | None = None) -> dict:
     validate_source_policy(source_permission_policy)
     root = Path(root).resolve()
     if scenario not in {"revised_base", "station_mixed_scope_high"}:
         raise PackageError(f"未知经济情景: {scenario}")
     actual_all = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
     supplement_prefix = SUPPLEMENT_DIRECTORY + "/"
-    actual = {name for name in actual_all if not name.startswith(supplement_prefix)}
+    patch_prefix = V2_PATCH_DIRECTORY + "/"
+    actual = {
+        name for name in actual_all
+        if not name.startswith(supplement_prefix) and not name.startswith(patch_prefix)
+    }
     if actual != set(PACKAGE_FILES):
         raise PackageError(f"经济扩展包文件：缺少{sorted(set(PACKAGE_FILES)-actual)}；未分类{sorted(actual-set(PACKAGE_FILES))}")
     hashes = {name: file_hash(root / name) for name in sorted(actual)}
@@ -172,6 +181,11 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base", *,
     if supplement_root.exists():
         supplement = read_capacity_supplement_0906(
             supplement_root, authoritative_pipe_types=root / "pipe_types.csv"
+        )
+    v2_patch = None
+    if v2_parameter_scenario is not None:
+        v2_patch = read_v2_freeze_0907(
+            root / V2_PATCH_DIRECTORY, v2_parameter_scenario
         )
     errors = []
     sources = {}
@@ -309,6 +323,31 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base", *,
                      station_cost_boundary="excluded_unseparated" if scenario == "revised_base" else "mixed_scope_sensitivity",
                      station_capex_CNY=None if scenario == "revised_base" else registry["station_fixed_capex_actual"]["value"],
                      demand_meter_scope="virtual_park_heating_total", peak_capacity_margin_fraction=0.20)
+    if v2_patch is not None:
+        selected_by_id = {
+            row["pipe_type_id"]: row for row in v2_patch["selected_pipe_types"]
+        }
+        for pipe in pipes:
+            selected = selected_by_id[pipe["pipe_type_id"]]
+            pipe["base_20260831_route_cost_CNY_per_m"] = pipe["value"]
+            pipe["base_20260831_heat_loss_kW_per_route_m"] = pipe["heat_loss_kW_per_route_m"]
+            pipe["value"] = selected["route_cost_CNY_per_m"]
+            pipe["heat_loss_kW_per_route_m"] = selected["heat_loss_kW_per_m"]
+            pipe["v2_parameter_scenario"] = v2_parameter_scenario
+            pipe["v2_parameter_status"] = selected["parameter_status"]
+            pipe["v2_source_id"] = selected["source_id"]
+        station = v2_patch["station_cost"]
+        effective.update(
+            station_cost_boundary="teacher_confirmed_v2_scenario",
+            station_capex_CNY=station["station_fixed_capex_CNY_per_site"],
+            station_cost_scenario=station["station_cost_scenario"],
+            station_cost_replaces_other=True,
+            station_cost_additive=False,
+            v2_parameter_scenario=v2_parameter_scenario,
+            v2_primary_economic_conclusion_allowed=v2_patch[
+                "allowed_for_primary_economic_conclusion"
+            ],
+        )
     resolutions = [{"parameter_id": pid, "source_id": row["source_id"],
                     "original_source_code_use_allowed": row["source_code_use_allowed"],
                     "parameter_code_use_allowed": row["code_use_allowed"],
@@ -320,7 +359,7 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base", *,
                    quotation_display_policy="用户20260905：新包审计报价按本研究最终参数展示；保留原来源，不将历史替代报价叠加计费，不等于已求解结果",
                    scenario=scenario, package_root=str(root), source_hashes=hashes, registry=registry,
                    sources=sources, pipes=pipes, pending=pending, effective=effective,
-                   capacity_supplement=supplement,
+                   capacity_supplement=supplement, v2_freeze_patch=v2_patch,
                    period_map=PERIODS, period_map_source="20260829同ID政策时段，20260831时段字段为空，显式版本化继承；倍率只来自新包",
                    volume_normalization="CNY/m3与MJ/Nm3按包说明1:1研究归一化；非气质实测保证",
                    warnings=["跨月份公开平价与政策倍率组合为研究电价，不等于项目结算单",
@@ -333,6 +372,11 @@ def read_revised_package(root: Path | str, scenario: str = "revised_base", *,
         for name, digest in supplement["source_hashes"].items():
             if file_hash(supplement_root / name) != digest:
                 raise PackageError(f"读取过程中0906补充输入发生变化: {name}")
+    if v2_patch is not None:
+        patch_root = root / V2_PATCH_DIRECTORY
+        for name, digest in v2_patch["source_hashes"].items():
+            if file_hash(patch_root / name) != digest:
+                raise PackageError(f"读取过程中0907冻结补丁输入发生变化: {name}")
     payload["snapshot_id"] = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
     return payload
 

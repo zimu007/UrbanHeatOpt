@@ -68,6 +68,7 @@ class PipeRouteEconomicProjection:
     pipe_type_id: str
     capex_CNY_per_supply_return_route_m: float
     lifetime_years: int
+    heat_loss_kW_per_supply_return_route_m: float = 0.0
     capacity_kW_th: None = None
     capacity_status: str = "missing_thermal_capacity_not_inferred_from_DN"
 
@@ -107,6 +108,8 @@ class B1HandoffInputs:
     policy_carbon_price_boundary: BoundaryState
     unmet_heat_penalty_boundary: BoundaryState
     station_base_boundary: BoundaryState
+    station_fixed_capex_CNY: float
+    station_lifetime_years: int
     allow_unserved: bool
     artifact_paths: Mapping[str, Path]
     artifact_hashes: Mapping[str, str]
@@ -201,7 +204,15 @@ def _pipes(snapshot: dict, effective: dict) -> tuple[PipeRouteEconomicProjection
     for item in raw:
         if item.get("capacity_kW_th") is not None or item.get("capacity_status") != "missing_thermal_capacity_not_inferred_from_DN":
             raise HandoffConsumerError("pipe capacity must remain explicitly unresolved in B1")
-        result.append(PipeRouteEconomicProjection(str(item["pipe_type_id"]), _finite(item, "value", positive=True), life))
+        loss = item.get("heat_loss_kW_per_route_m", 0.0)
+        if snapshot.get("v2_freeze_patch") is not None:
+            loss = _finite({"loss": loss}, "loss", positive=True)
+        else:
+            loss = _finite({"loss": loss}, "loss")
+        result.append(PipeRouteEconomicProjection(
+            str(item["pipe_type_id"]), _finite(item, "value", positive=True), life,
+            loss,
+        ))
     if len({x.pipe_type_id for x in result}) != len(result):
         raise HandoffConsumerError("duplicate pipe_type_id")
     return tuple(result)
@@ -247,7 +258,21 @@ def consume_handoff_v1(case_bundle: str | Path | CaseBundle,
     if not {"building_id", "hour"} <= set(loads) or len(loads) != 62 * 2160 or loads.building_id.astype(str).nunique() != 62:
         raise HandoffConsumerError("loads must contain 62 buildings x 2160 hours")
     _validate_equipment(artifacts["equipment_performance"])
-    if effective.get("station_cost_boundary") != "excluded_unseparated" or effective.get("station_capex_CNY") is not None:
+    station_boundary = effective.get("station_cost_boundary")
+    if station_boundary == "teacher_confirmed_v2_scenario":
+        station_capex = _finite(effective, "station_capex_CNY", positive=True)
+        if effective.get("station_cost_replaces_other") is not True or effective.get("station_cost_additive") is not False:
+            raise HandoffConsumerError("0907站房费用必须替换而不得叠加")
+        station_state = BoundaryState(
+            "teacher_confirmed_v2_scenario",
+            f"v2_freeze_patch.station_cost:{effective.get('station_cost_scenario')}",
+        )
+    elif station_boundary == "excluded_unseparated" and effective.get("station_capex_CNY") is None:
+        station_capex = 0.0
+        station_state = BoundaryState(
+            "excluded_unseparated", "revised_base station_capex_CNY is null"
+        )
+    else:
         raise HandoffConsumerError("revised_base station boundary is inconsistent")
     if rp.get("allow_unserved", False) is not False:
         raise HandoffConsumerError("allow_unserved=True requires a formally sourced penalty contract")
@@ -282,7 +307,9 @@ def consume_handoff_v1(case_bundle: str | Path | CaseBundle,
         variable_om_boundary=BoundaryState("excluded_not_applied", "separate_variable_om is registered_not_applied"),
         policy_carbon_price_boundary=BoundaryState("not_applied", "revised_base has no selected policy carbon price"),
         unmet_heat_penalty_boundary=BoundaryState("not_applicable", "allow_unserved=False"),
-        station_base_boundary=BoundaryState("excluded_unseparated", "revised_base station_capex_CNY is null"),
+        station_base_boundary=station_state,
+        station_fixed_capex_CNY=station_capex,
+        station_lifetime_years=_integer(effective, "station_life_years"),
         allow_unserved=False, artifact_paths=artifacts, artifact_hashes=hashes,
         source_hashes=dict(snapshot["source_hashes"]),
         unresolved_capabilities=("site_capacity", "pipe_capacity", "tes_capacity_and_power"), model_ready=False,
@@ -326,7 +353,8 @@ def apply_b1_economics_to_road_case(projection: B1HandoffInputs, case: RoadCase)
         connection_capex_CNY={b: projection.connection.capex_CNY_per_building for b in buildings},
         connection_lifetime_years={b: projection.connection.lifetime_years for b in buildings},
         hns_penalty_CNY_per_kWh=0.0, discount_rate=projection.discount_rate,
-        station_fixed_capex_CNY=0.0,
+        station_fixed_capex_CNY=projection.station_fixed_capex_CNY,
+        station_lifetime_years=projection.station_lifetime_years,
         electricity_carbon_kgCO2e_per_kWh_e=hourly.electricity_carbon_kgCO2e_per_kWh_e,
         gas_carbon_kgCO2e_per_kWh_LHV=hourly.gas_carbon_kgCO2e_per_kWh_LHV,
         policy_carbon_price_CNY_per_tCO2e=0.0)
@@ -335,6 +363,7 @@ def apply_b1_economics_to_road_case(projection: B1HandoffInputs, case: RoadCase)
         raise HandoffConsumerError("RoadCase pipe IDs do not match B1 economic projection")
     pipes = tuple(replace(item,
         capex_CNY_per_route_m=pipe_by_id[item.pipe_type_id].capex_CNY_per_supply_return_route_m,
+        pair_loss_kW_per_route_m=pipe_by_id[item.pipe_type_id].heat_loss_kW_per_supply_return_route_m,
         lifetime_years=pipe_by_id[item.pipe_type_id].lifetime_years) for item in case.pipe_designs)
     storage = case.common.storage
     if projection.tes.enabled_in_request and storage is None:
@@ -348,5 +377,11 @@ def apply_b1_economics_to_road_case(projection: B1HandoffInputs, case: RoadCase)
             fixed_capex_CNY=projection.tes.fixed_bop_capex_CNY,
             lifetime_years=projection.tes.lifetime_years)
     common = replace(case.common, technologies=tuple(technologies), economics=economics, storage=storage)
-    return replace(case, common=common, monthly_demand_charge=MonthlyDemandChargeInput(
-        hourly.monthly_demand_charge_CNY_per_kW_month, hourly.billing_month))
+    return replace(
+        case,
+        common=common,
+        pipe_designs=pipes,
+        monthly_demand_charge=MonthlyDemandChargeInput(
+            hourly.monthly_demand_charge_CNY_per_kW_month, hourly.billing_month
+        ),
+    )

@@ -40,7 +40,7 @@ def load_config(path: Path):
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(config, dict) or config.get("config_version") != "guanggu_v2_a_1.0.0":
         raise ValueError("未知运行配置版本")
-    allowed = {"config_version", "delivery_root", "source_profile", "economic_package", "economic_scenario", "source_permission_policy", "output_root", "scope", "full_audit", "mode_scope", "tes_enabled", "spatial_inputs", "desktop_gap_report"}
+    allowed = {"config_version", "delivery_root", "source_profile", "economic_package", "economic_scenario", "v2_parameter_scenario", "source_permission_policy", "output_root", "scope", "full_audit", "mode_scope", "tes_enabled", "spatial_inputs", "desktop_gap_report"}
     if set(config) != allowed:
         raise ValueError(f"配置缺少/未知字段: {sorted(set(config)^allowed)}")
     for key in ("tes_enabled", "full_audit", "desktop_gap_report"):
@@ -50,6 +50,10 @@ def load_config(path: Path):
         raise ValueError("A主线要求guanggu_v03完整供暖季及full_audit=true")
     if config["economic_package"] != "revised_20260831":
         raise ValueError("新主线只接受显式revised_20260831；旧包仅历史回归")
+    if config["v2_parameter_scenario"] not in {
+        "v2_debug", "v2_primary_expansion_check", "v2_station_high_cost_stress"
+    }:
+        raise ValueError("未知v2_parameter_scenario")
     validate_source_policy(config["source_permission_policy"])
     if config["mode_scope"] != ["central", "distributed", "hybrid"]:
         raise ValueError("三模式必须共用一个输入边界")
@@ -154,6 +158,7 @@ def prepare_research_boundaries(adapted, snapshot, data_version: str, output: Pa
             zip(hours, map(float, performance["capacity_ratio"]), strict=True)
         ),
         supplement=snapshot.get("capacity_supplement", {}),
+        v2_freeze_patch=snapshot.get("v2_freeze_patch"),
         site_electricity_connection_max_kW_e=SITE_ELECTRICITY_LIMIT_KW_E_20260906,
     )
     capacity_path = output / "capacity_boundaries.json"
@@ -244,7 +249,13 @@ def run_ab_adapter_smoke(
         "research_boundary_use_allowed": capacity_payload["station_cost"].get(
             "research_solve_allowed"
         ) is True,
-        "publication_parameters_verified": capacity_payload["station_cost"].get(
+        "publication_parameters_verified": (
+            capacity_payload["station_cost"].get("publication_ready") is True
+            and all(item.station_fixed_capex_CNY > 0 for item in b1)
+            and all(item.station_base_boundary.status == "teacher_confirmed_v2_scenario" for item in b1)
+        ),
+        "program_feasibility_input_ready": True,
+        "economic_conclusion_input_ready": capacity_payload["station_cost"].get(
             "publication_ready"
         ) is True,
         "solver_instantiated": False,
@@ -301,7 +312,8 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
         print("[2/4] 新经济包逐参数校验与选择", flush=True)
         try:
             snapshot = read_revised_package(roots.delivery_root / PACKAGE_DIRECTORY, config["economic_scenario"],
-                                           source_permission_policy=config["source_permission_policy"])
+                                           source_permission_policy=config["source_permission_policy"],
+                                           v2_parameter_scenario=config["v2_parameter_scenario"])
             write_json(output / "effective_parameters.json", snapshot)
             pd.DataFrame(snapshot["registry"].values()).to_csv(output / "parameter_selection.csv", index=False, encoding="utf-8-sig")
             status["parameter_valid"] = True
@@ -354,8 +366,24 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
                     capabilities_required=["monthly_demand_charge", "effective_parameter_mapping", "site_capacity", "pipe_capacity", "tes", "result_bundle"],
                     status=status, physical_scope={"buildings":62, "hours":2160, "supply_C":45, "return_C":40, "peak_capacity_margin_fraction":.20}, spatial_status=spatial,
                     generated_spatial_status=capacity_handoff["spatial_status"],
-                    economic_boundary={"scenario":config["economic_scenario"], "tes_enabled":config["tes_enabled"], "model_consumed":False,
-                                       "station_cost_boundary":"excluded_unseparated", "publication_ready":False}))
+                    economic_boundary={
+                        "scenario": config["economic_scenario"],
+                        "v2_parameter_scenario": config["v2_parameter_scenario"],
+                        "tes_enabled": config["tes_enabled"],
+                        "model_consumed": False,
+                        "station_cost_boundary": snapshot["effective"]["station_cost_boundary"],
+                        "station_cost_scenario": snapshot["effective"].get("station_cost_scenario"),
+                        "station_fixed_capex_CNY": snapshot["effective"].get("station_capex_CNY"),
+                        "program_feasibility_scope": snapshot.get("v2_freeze_patch", {}).get(
+                            "program_feasibility_scope", False
+                        ),
+                        "economic_conclusion_scope": snapshot.get("v2_freeze_patch", {}).get(
+                            "economic_conclusion_scope", False
+                        ),
+                        "publication_ready": snapshot.get("v2_freeze_patch", {}).get(
+                            "allowed_for_primary_economic_conclusion", False
+                        ),
+                    }))
     except (ValueError, OSError) as exc:
         errors.append(str(exc))
     after_files = sorted(p for p in roots.delivery_root.rglob("*") if p.is_file())
@@ -405,12 +433,22 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
                    parameter_ready=(readiness or {}).get("parameter_ready", status["parameter_valid"]),
                    model_capability_ready=(readiness or {}).get("model_capability_ready", False),
                    research_solve_ready=(readiness or {}).get("research_solve_ready", False),
+                   program_feasibility_input_ready=(readiness or {}).get(
+                       "program_feasibility_input_ready", False
+                   ),
+                   economic_conclusion_input_ready=(readiness or {}).get(
+                       "economic_conclusion_input_ready", False
+                   ),
                    publication_ready=(readiness or {}).get("publication_ready", False),
+                   economic_result_reliable=False,
                    model_ready=(readiness or {}).get("model_ready", False), solver_executed=False, result_qualified=False,
                    input_hashes_unchanged=unchanged, input_file_count=len(source_files), errors=errors,
                    desktop_previous_backup=backup, exit_code=0 if passed else 2)
     if not (output / "model_readiness_report.json").exists():
         write_json(output / "model_readiness_report.json", {**status, "model_ready":False,
+            "program_feasibility_input_ready":False,
+            "economic_conclusion_input_ready":False,
+            "economic_result_reliable":False,
             "solver_executed":False, "result_qualified":False,
             "blockers":errors + ["B消费新经济/需量/站址接口尚未接通", "C独立结果消费尚未接通"],
             "note":"没有合格CaseBundle，不实例化求解器"})

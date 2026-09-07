@@ -20,6 +20,21 @@ TARGETS = {
     "competition/physical_interfaces.py": "src/urbanheatopt/model/physical_interfaces.py",
 }
 
+# These bodies were deliberately revised by the separately reviewed B1--B5
+# model-integration commit (fe98b7e).  The layout check remains useful for
+# detecting any *additional* accidental migration drift, but it must not keep
+# claiming that intentionally versioned post-migration mathematics is equal to
+# the old pre-migration implementation.
+APPROVED_POST_MIGRATION_CHANGES = {
+    "src/urbanheatopt/model/road_core.py": {
+        "BoundaryEvidence", "SiteCapacityBoundary", "PipeCapacityBoundary",
+        "B2CapacityInput", "MonthlyDemandChargeInput", "RoadCase",
+        "validate_b2_capacity", "validate_case", "build_road_model",
+    },
+    "src/urbanheatopt/model/compact.py": {"build_compact_model"},
+    "src/urbanheatopt/model/costing/annualized.py": {"monthly_demand_charge"},
+}
+
 
 class Normalize(ast.NodeTransformer):
     def visit_Import(self, node):
@@ -46,11 +61,30 @@ def verify():
         original = subprocess.check_output(["git", "show", f"{BASELINE}:{old}"], cwd=ROOT).decode("utf-8-sig")
         current = (ROOT / new).read_text(encoding="utf-8-sig")
         left, right = bodies(original), bodies(current)
-        changed = [name for name in left.keys() | right.keys() if left.get(name) != right.get(name)]
+        changed = {
+            name for name in left.keys() | right.keys()
+            if left.get(name) != right.get(name)
+        }
+        approved = APPROVED_POST_MIGRATION_CHANGES.get(new, set())
+        unexpected = sorted(changed - approved)
+        missing_approved = sorted(approved - changed)
         evidence.append({"old_path": old, "new_path": new, "verified_body_count": len(left),
-                         "changed_bodies": changed, "sha256_before": sha256(original.encode()).hexdigest(),
+                         "approved_changed_bodies": sorted(changed & approved),
+                         "unexpected_changed_bodies": unexpected,
+                         "missing_approved_changes": missing_approved,
+                         "changed_bodies": sorted(changed),
+                         "sha256_before": sha256(original.encode()).hexdigest(),
                          "sha256_after": sha256((ROOT / new).read_bytes()).hexdigest()})
-    return {"baseline_git_sha": BASELINE, "passed": all(not r["changed_bodies"] for r in evidence), "checks": evidence}
+    return {
+        "baseline_git_sha": BASELINE,
+        "approved_post_migration_commit": "fe98b7e5a517cb15e406c634fd5015db8d0edeab",
+        "passed": all(
+            not row["unexpected_changed_bodies"]
+            and not row["missing_approved_changes"]
+            for row in evidence
+        ),
+        "checks": evidence,
+    }
 
 
 if __name__ == "__main__":

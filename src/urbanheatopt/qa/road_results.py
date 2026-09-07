@@ -70,9 +70,41 @@ def export_solution(case: RoadCase, model, root: str | Path):
         features=[dict(type='Feature', properties={k:v for k,v in row.items() if k != 'coordinates'},
                        geometry=mapping(LineString(row['coordinates']))) for row in accesses]))
     pd.DataFrame([dict(**site,built=value(m.station_built[site['site_id']])) for site in net['sites']]).to_csv(root/'station_decisions.csv',index=False)
-    storage = [dict(site_id=s,built=value(m.tes_built[s]),energy_capacity_kWh=value(m.tes_energy[s]),
-        charge_capacity_kW=value(m.tes_charge_capacity[s]),discharge_capacity_kW=value(m.tes_discharge_capacity[s]),
-        power_cost_capacity_kW=value(m.tes_power_cost_capacity[s])) for s in m.S]
+    storage = []
+    for s in m.S:
+        spec = d.storage
+        energy = value(m.tes_energy[s])
+        charge_capacity = value(m.tes_charge_capacity[s])
+        discharge_capacity = value(m.tes_discharge_capacity[s])
+        peak_charge = max((value(m.charge[s, h]) for h in d.hours), default=0.0)
+        peak_discharge = max((value(m.discharge[s, h]) for h in d.hours), default=0.0)
+        energy_upper = spec.energy_capacity_max_kWh_th if spec is not None else 0.0
+        charge_upper = spec.charge_capacity_max_kW_th if spec is not None else 0.0
+        discharge_upper = spec.discharge_capacity_max_kW_th if spec is not None else 0.0
+        tolerance = 1e-6
+        storage.append(dict(
+            site_id=s,
+            built=value(m.tes_built[s]),
+            energy_capacity_kWh=energy,
+            charge_capacity_kW=charge_capacity,
+            discharge_capacity_kW=discharge_capacity,
+            power_cost_capacity_kW=value(m.tes_power_cost_capacity[s]),
+            energy_capacity_upper_kWh_th=energy_upper,
+            charge_capacity_upper_kW_th=charge_upper,
+            discharge_capacity_upper_kW_th=discharge_upper,
+            actual_peak_charge_kW_th=peak_charge,
+            actual_peak_discharge_kW_th=peak_discharge,
+            energy_upper_bound_binding=bool(
+                spec is not None and abs(energy - energy_upper) <= tolerance * max(1.0, energy_upper)
+            ),
+            charge_upper_bound_binding=bool(
+                spec is not None and abs(charge_capacity - charge_upper) <= tolerance * max(1.0, charge_upper)
+            ),
+            discharge_upper_bound_binding=bool(
+                spec is not None and abs(discharge_capacity - discharge_upper) <= tolerance * max(1.0, discharge_upper)
+            ),
+            capacity_margin_offset_allowed=False,
+        ))
     pd.DataFrame(storage).to_csv(root/'storage_decisions.csv',index=False)
     pd.DataFrame([dict(site_id=s,hour=h,timestamp=timestamps[h],charge_kW=value(m.charge[s,h]),
         discharge_kW=value(m.discharge[s,h]),soc_kWh=value(m.soc[s,h]),charging=value(m.charging[s,h]))
