@@ -1,6 +1,6 @@
-# A / B / C 标准交接契约 handoff_1.0.0
+# A / B / C 标准交接契约 handoff_1.1.0
 
-版本：2026-09-05。适用范围：新输入和经济包主线的接口集成，不修改冻结 V1 数学模型。源码为 `src/urbanheatopt/data/bundles.py`，测试为 `tests/test_handoff_bundles.py`。
+版本：2026-09-07。适用范围：新输入、道路网络、经济包与生产求解链的接口集成，不修改冻结 V1 数学模型。源码为 `src/urbanheatopt/data/bundles.py`，测试为 `tests/test_handoff_bundles.py`。
 
 ## 1. 三个对象分别证明什么
 
@@ -10,7 +10,7 @@
 | `SolveRequest` | A统一入口→B | 本次模式、目标、ε、TES开关、求解设置明确 | 求解器可用、数学模型正确 |
 | `ResultBundle` | B→C/A | 结果证据满足结构条件，关联输入及请求 | 仅有 `optimal` 就代表工程结论正确 |
 
-三者必须显式包含 `interface_version: handoff_1.0.0`。不静默兼容旧契约，不向历史结果追加伪造的新版本标签。数据版本、参数版本、接口版本、数学模型版本是不同字段，不能互换。
+三者必须显式包含 `interface_version: handoff_1.1.0`。1.1新增生产请求的`model_profile`、`optimization_scope`与`allow_unserved`硬门禁；旧1.0请求必须重新prepare，不能静默迁移。数据版本、参数版本、接口版本、数学模型版本是不同字段，不能互换。
 
 内部仅存储一份规范 JSON 字符串；构造时对调用方数据复制，对外 `payload`、`to_dict()` 返回新深副本。下游修改副本不会改变 A 的输入对象。`bundle_id` 是完整规范内容的 SHA-256：参数版本、数值、文件哈希等任何内容变化都产生新身份，字典键排序不影响身份。列表顺序保留语义，A须稳定排序产物与能力列表。
 

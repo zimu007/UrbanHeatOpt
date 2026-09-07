@@ -55,6 +55,12 @@ def test_bundle_freezes_nested_caller_and_returned_data(case_payload):
         bundle._json = "{}"
 
 
+def test_previous_handoff_version_requires_explicit_reprepare(case_payload):
+    case_payload["interface_version"] = "handoff_1.0.0"
+    with pytest.raises(BundleValidationError, match="不自动迁移旧版本"):
+        CaseBundle.from_dict(case_payload)
+
+
 def test_hash_canonical_order_and_parameter_change(case_payload):
     initial = CaseBundle.from_dict(case_payload)
     assert initial.bundle_id == CaseBundle.from_dict(dict(reversed(list(case_payload.items())))).bundle_id

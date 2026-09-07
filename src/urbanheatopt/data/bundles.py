@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-INTERFACE_VERSION = "handoff_1.0.0"
+INTERFACE_VERSION = "handoff_1.1.0"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CASE_STATUS = ("input_valid", "parameter_valid", "canonical_valid", "snapshot_complete")
 

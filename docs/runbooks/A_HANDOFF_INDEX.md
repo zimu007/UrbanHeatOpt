@@ -5,7 +5,7 @@
 - 目录迁移：7fba2b1；总体方向／任务书：36f7099；经济登记：b890461；接口与门禁：b628107；最终报价权限与清单收口：本索引最新提交。
 - 工作期间另有外部配置提交2f53041、d742ed1及合并0a4c4be，原样保留；并非本任务执行推送或合并。
 - [操作手册](A_INTEGRATION_CN.md)、[接口契约](../architecture/HANDOFF_CONTRACT_CN.md)、[目录说明](../architecture/DIRECTORY_MIGRATION_CN.md)。
-- [总体方向](../team/UrbanHeatOpt_总体方向与三人分工.md)、[A任务](../team/UrbanHeatOpt_A_主线参数与集成任务书.md)、[B任务](../team/UrbanHeatOpt_B_模型诊断站址与储热任务书.md)、[C任务](../team/UrbanHeatOpt_C_独立QA与成果展示任务书.md)。桌面同名四文件为同版本副本。
+- [总体方向](../team/UrbanHeatOpt_总体方向与三人分工.md)、[A任务](../team/UrbanHeatOpt_A_主线参数与集成任务书.md)、[B原任务](../team/UrbanHeatOpt_B_模型诊断站址与储热任务书.md)、[B三层接线后续任务](../team/UrbanHeatOpt_B_三层接线后续任务书.md)、[C任务](../team/UrbanHeatOpt_C_独立QA与成果展示任务书.md)。
 
 ## 本次证据（不提交Git）
 
@@ -32,4 +32,4 @@
 2. B按任务书接通新经济、月需量和站址能力接口，完成有／无TES单例；C完成ResultBundle独立QA与展示。
 3. 后续真实V2求解前统一highspy版本；本轮未安装或降级要求。
 
-A代码及新经济完整有效快照已可交接；V2求解未完成。没有改数学公式、增加变量或实施B/C研究任务，没有运行新V2全季。
+A代码、新经济快照、道路网络、RoadCase Builder和SolveRequest执行器已可交接；真实V2全季成本端点仍需执行。没有改数学公式或增加模型变量；合成测试不能替代真实2160小时结果。

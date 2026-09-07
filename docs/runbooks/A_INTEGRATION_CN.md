@@ -20,7 +20,7 @@ conda run --no-capture-output -n urbanheatopt_env python run.py prepare --config
 
 20260907最新真实准备证据在`work/guanggu_v2/AB_0907_REAL_20260907_R1`：459个输入文件（原交付412＋旧经济4＋新经济17＋0906补充4＋0907冻结补丁12＋设备补丁10），62栋、2160h、133920行标准负荷，前后源哈希一致。
 
-`input_ready/parameter_ready/model_capability_ready/research_solve_ready/economic_conclusion_input_ready/publication_ready=true`，`solver_executed/result_qualified/economic_result_reliable=false`。prepare退出0并已生成有效参数、容量边界、CaseBundle和三模式SolveRequest；B1/B2无求解联调通过。参数及接口就绪不能被解释为已构模、已求解或已有可靠经济结果。
+`input_ready/parameter_ready/model_capability_ready/network_ready/road_case_ready/solver_pipeline_ready/research_solve_ready/economic_conclusion_input_ready/publication_ready=true`，`solver_executed/result_qualified/economic_result_reliable=false`。prepare退出0并已生成有效参数、容量边界、CaseBundle、RoadCase和三模式SolveRequest；参数及接口就绪不能被解释为已求解或已有可靠经济结果。
 
 默认读取`scenario_parameter_manifest.csv`选定的`v2_primary_expansion_check`：规划三档容量来自`pipe_capacity_limits.csv`，正式扩容费用与热损来自`pipe_types_v2_expansion_check.csv`，TES上限来自`tes_limits.csv`，站房基准为300万元/座。1800万元只用于`v2_station_high_cost_stress`替换情景，不与基准叠加；纯分布式或未建站由模型建设变量使站房费为零。`v2_debug`只用于程序联调，不能支撑正式经济比较。
 

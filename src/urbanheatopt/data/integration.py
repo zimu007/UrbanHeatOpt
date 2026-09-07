@@ -24,6 +24,7 @@ from urbanheatopt.data.road_builder import (
     build_road_case,
     save_case,
 )
+from urbanheatopt.optimization.solve_executor import MODEL_PROFILE, SOLVE_EXECUTOR_VERSION
 from urbanheatopt.data.gap_catalog import data_gaps, render_gap_report, publish_gap_report
 from urbanheatopt.parameters.revised_economics import (
     read_revised_package, revised_timeseries, PACKAGE_DIRECTORY, validate_source_policy,
@@ -340,7 +341,7 @@ def generate_solve_requests(bundle: CaseBundle, output: Path, *, tes_enabled: bo
         request = SolveRequest.from_dict({
             "interface_version": INTERFACE_VERSION,
             "case_bundle_id": bundle.bundle_id,
-            "model_profile": "compact_five_tree_fullseason_v2",
+            "model_profile": MODEL_PROFILE,
             "optimization_scope": "five_candidate_shortest_path_trees",
             "mode": mode,
             "objective": "cost",
@@ -613,7 +614,7 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
                 "road_case_content_sha256": road_build.report["road_case_content_sha256"],
                 "solver_pipeline_ready": all(
                     request.to_dict()["model_profile"]
-                    == "compact_five_tree_fullseason_v2"
+                    == MODEL_PROFILE
                     and request.to_dict()["optimization_scope"]
                     == "five_candidate_shortest_path_trees"
                     and request.to_dict()["allow_unserved"] is False
@@ -621,7 +622,7 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
                     and request.to_dict()["objective"] == "cost"
                     for _, request, _ in requests
                 ),
-                "solve_request_executor_version": "solve_request_executor_1.0.0",
+                "solve_request_executor_version": SOLVE_EXECUTOR_VERSION,
             })
             readiness = ready_report(bundle, integration_evidence=evidence)
             write_json(output / "model_readiness_report.json", readiness)

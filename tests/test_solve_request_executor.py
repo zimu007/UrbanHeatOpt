@@ -122,9 +122,7 @@ def test_executor_never_overwrites_existing_run_directory(tmp_path):
         execute_request(bundle, shared_case(), _request(bundle, "central"), target)
     assert (target / "keep.txt").read_text(encoding="utf-8") == "keep"
 
-
 @pytest.mark.parametrize("value", ["", "bad space", "../bad", "a" * 101])
 def test_run_id_is_path_safe(value):
     with pytest.raises(ValueError):
         validate_run_id(value)
-

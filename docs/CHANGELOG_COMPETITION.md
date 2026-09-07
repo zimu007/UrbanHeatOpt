@@ -838,3 +838,10 @@ git status --short --branch
 - 目的：使自动生成的SolveRequest真正进入新紧凑Pyomo核心和HiGHS，消除“有请求文件但仍靠手工运行模型”的断链；任何哈希、候选站、gap或QA失败均封闭失败，不调用旧`model.run_model()`或历史结果。
 - 验证：三模式2栋×2小时合成案例均通过同一执行器实解、站点范围认证和导出QA；接口/执行器专项92项通过。真实旧prepare目录的481项产物/来源哈希复核后，RoadCase重新构建为62栋×2160小时、5候选站且内容哈希完全一致，本验证未启动真实全季求解。
 - 边界：结果范围固定为`five_candidate_shortest_path_trees`，不是完整自由拓扑或施工级道路最优；本节点尚未产出真实62栋成本端点，碳端点、ε点、膝点和TES配对交后续B组节点。
+
+# 2026-09-07 三层接线节点4：联合验收与B组交接
+
+- 修改：将交接契约提升为`handoff_1.1.0`，旧1.0请求不静默迁移；`prepare`从执行器常量生成三模式成本请求并动态报告九项就绪状态。新增B组三层接线后续任务书，冻结成本端点→碳端点→少量ε点/膝点→有无TES配对顺序及禁止自行改CaseBundle的协作边界。
+- 目的：让B组接手时只消费唯一RoadCase与SolveRequest，不再重复建设数据/网络读取链，也不把准备完成、执行过求解和结果通过QA混为一谈。
+- 验证：最终全量回归`694 passed / 3 skipped`；真实v0.3/0907数据重新prepare退出0，461项输入/基线文件前后哈希一致，62栋×2160小时CaseBundle、RoadCase和三份`handoff_1.1.0`成本请求自动生成。`input/parameter/network/road_case/solver_pipeline/research_solve/publication_ready=true`，`solver_executed/result_qualified/economic_result_reliable=false`，符合“已接线、尚未真实求解”的状态。
+- 边界：真实准备证据位于忽略目录`work/guanggu_v2/THREE_LAYER_ACCEPT_20260907_R1`；不提交原始输入或运行产物。本节点不代替B执行碳端点、ε点、膝点或TES全季配对。
