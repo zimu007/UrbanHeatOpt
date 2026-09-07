@@ -31,7 +31,12 @@ APPROVED_POST_MIGRATION_CHANGES = {
         "B2CapacityInput", "MonthlyDemandChargeInput", "RoadCase",
         "validate_b2_capacity", "validate_case", "build_road_model",
     },
-    "src/urbanheatopt/model/compact.py": {"build_compact_model"},
+    # 2026-09-07 teacher-confirmed capacity-margin clarification changes both
+    # the compact constraint and its independent certificate: pipe loss stays
+    # in heat balance but is excluded from the 20% useful-load reserve basis.
+    "src/urbanheatopt/model/compact.py": {
+        "build_compact_model", "audit_compact_solution",
+    },
     "src/urbanheatopt/model/costing/annualized.py": {"monthly_demand_charge"},
 }
 

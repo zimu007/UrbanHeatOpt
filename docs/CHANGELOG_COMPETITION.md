@@ -845,3 +845,11 @@ git status --short --branch
 - 目的：让B组接手时只消费唯一RoadCase与SolveRequest，不再重复建设数据/网络读取链，也不把准备完成、执行过求解和结果通过QA混为一谈。
 - 验证：最终全量回归`694 passed / 3 skipped`；真实v0.3/0907数据重新prepare退出0，461项输入/基线文件前后哈希一致，62栋×2160小时CaseBundle、RoadCase和三份`handoff_1.1.0`成本请求自动生成。`input/parameter/network/road_case/solver_pipeline/research_solve/publication_ready=true`，`solver_executed/result_qualified/economic_result_reliable=false`，符合“已接线、尚未真实求解”的状态。
 - 边界：真实准备证据位于忽略目录`work/guanggu_v2/THREE_LAYER_ACCEPT_20260907_R1`；不提交原始输入或运行产物。本节点不代替B执行碳端点、ε点、膝点或TES全季配对。
+
+# 2026-09-08 容量裕度口径更新：仅作用于建筑有用热负荷
+
+- 修改：按0907冻结补丁新增`capacity_margin_rules.csv`、`capacity_margin_validation.csv`和实施说明的严格读取与交叉校验；A侧容量边界、通用道路V2核心、紧凑五树核心及独立QA统一采用`可用中央设备容量 >= 1.20 × 接网建筑有用热负荷`。管网热损仍完整进入逐时节点热平衡，但不再乘1.20；TES放热不计入设备容量裕度；站点热泵与锅炉总安装容量上限继续固定为158721.376739411 kW_th。
+- 目的：消除对同一园区建筑峰值重复配置容量裕度的问题，并让参数补丁、两套核心和独立QA使用同一老师确认口径；未修改建筑负荷、DeST结果、管损公式、经济参数或五候选树求解范围。
+- 自动验证：参数/容量/通用核心/紧凑核心专项`60 passed`，目录迁移门禁更新后相关专项`58 passed`；真实prepare退出0，自动读取464个输入/空间基线文件并生成62栋×2160小时RoadCase，输入前后哈希一致。CaseBundle ID为`b27cb049…`，RoadCase SHA-256为`44ea8732…`。
+- 真实回归：`CAPACITY_MARGIN_COST_20260907_R1`完成62栋×2160小时、TES关闭的三模式成本端点。5个集中式站点和5个混合式站点均有可行解、有效下界且gap不超过1%，分布式结果合格；全部方案未供热为0，独立QA通过。集中式各站总安装容量均为158721.376739411 kW_th，峰值小时容量裕度余量为0；混合式中央安装容量为142710.675～148804.594 kW_th，中央及逐栋本地裕度最小余量仅有约`3e-11 kW`的浮点舍入，均在`1e-6 kW`容差内。
+- 结果与边界：准备产物位于`work/guanggu_v2/CAPACITY_MARGIN_20260907_R1`，求解结果位于`runs/v2/CAPACITY_MARGIN_COST_20260907_R1`，均属于忽略目录且不提交Git。正式经济比较继续使用`pipe_types_v2_expansion_check.csv`；本轮TES关闭，因此不能作为有/无TES配对、碳端点或Pareto验收证据。

@@ -260,6 +260,33 @@ def test_central_compact_matches_generic_physics_and_existing_export(tmp_path):
     assert compact._compact_export_views_materialized is True
 
 
+def test_compact_capacity_margin_excludes_network_loss_and_matches_generic():
+    case = shared_case("central", loss=0.1)
+    design = _design(case)
+    compact = build_compact_model(case, design)
+    solve_pyomo_model(compact)
+    generic = build_road_model(case)
+    generic.station_built["S1"].fix(1)
+    solve_pyomo_model(generic)
+
+    compact_capacity = sum(value(compact.capacity["S1", tech]) for tech in compact.T)
+    generic_capacity = sum(value(generic.capacity["S1", tech]) for tech in generic.T)
+    building_peak = max(
+        sum(case.common.heat_demand_kW[building, hour] for building in case.common.demand_nodes)
+        for hour in case.common.hours
+    )
+    total_loss = sum(value(compact.edge_loss[edge]) for edge in design.selected_edge_ids)
+    assert compact_capacity == pytest.approx(generic_capacity, abs=1e-6)
+    assert compact_capacity == pytest.approx(building_peak + total_loss, abs=1e-6)
+    assert compact_capacity >= 1.2 * building_peak - 1e-6
+    assert compact_capacity < 1.2 * (building_peak + total_loss)
+    audit = audit_compact_solution(case, compact)
+    assert audit["passed"]
+    assert audit["capacity_margin_basis"] == "connected_building_useful_heat_demand_only"
+    assert audit["network_heat_loss_in_capacity_margin"] is False
+    assert audit["storage_counted_in_capacity_margin"] is False
+
+
 @pytest.mark.parametrize(
     "connected",
     [

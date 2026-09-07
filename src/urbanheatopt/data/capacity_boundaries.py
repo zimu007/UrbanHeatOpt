@@ -116,11 +116,33 @@ def build_capacity_boundaries(
     if v2_freeze_patch is not None:
         if v2_freeze_patch.get("engineering_reference_consumed") is not False:
             raise ValueError("0907 DN物理参考容量不得作为执行容量")
+        margin_rule = v2_freeze_patch.get("capacity_margin_rule", {})
+        frozen_ratio = margin_rule.get("capacity_margin_ratio")
+        frozen_design_peak = margin_rule.get(
+            "station_total_installed_capacity_upper_kW_th"
+        )
+        if (
+            not isinstance(frozen_ratio, (int, float))
+            or not math.isclose(float(frozen_ratio), 1 + margin, abs_tol=1e-12)
+            or margin_rule.get("include_network_heat_loss_in_constraint") is not False
+            or margin_rule.get("include_tes_discharge_in_constraint") is not False
+        ):
+            raise ValueError("0907容量裕度规则未冻结为建筑有用热负荷口径")
         patch_peak = v2_freeze_patch.get("load_peak", {}).get("simultaneous_peak_kW_th")
         if not isinstance(patch_peak, (int, float)) or not math.isclose(
             peak, float(patch_peak), abs_tol=0.01
         ):
             raise ValueError("逐时负荷重算峰值与0907冻结峰值不一致")
+        if (
+            not isinstance(frozen_design_peak, (int, float))
+            or not math.isclose(
+                float(frozen_design_peak), (1 + margin) * peak, abs_tol=0.01
+            )
+        ):
+            raise ValueError("0907站点安装容量上限与建筑峰值×容量裕度不一致")
+        # Use the teacher-frozen full-precision upper bound rather than a
+        # independently rounded reconstruction.
+        design_peak = float(frozen_design_peak)
         capacity_by_id = {
             row["pipe_type_id"]: _positive(row["capacity_kW_th"], "pipe.capacity")
             for row in v2_freeze_patch.get("pipe_capacity_limits", [])
@@ -223,6 +245,9 @@ def build_capacity_boundaries(
         ),
         "technology_role_mapping": TECHNOLOGY_ROLE_MAPPING,
         "peak_capacity_margin_fraction": margin,
+        "capacity_margin_basis": "connected_building_useful_heat_demand_only",
+        "network_heat_loss_in_capacity_margin": False,
+        "tes_discharge_in_capacity_margin": False,
         "full_park_peak_kW_th": peak,
         "design_peak_kW_th": design_peak,
         "minimum_cop": min(cop.values()),

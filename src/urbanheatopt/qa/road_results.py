@@ -642,8 +642,10 @@ def audit_export(case: RoadCase, root: str | Path):
             available+=row.capacity_kW_th*np.asarray([
                 d.heat_pump_capacity_ratio_by_hour.get((row.technology_id,h),1.) for h in hours
             ],dtype=float)
-    required=(1+d.peak_capacity_margin_fraction)*(
-        np.sum(canonical_demand*connection_by_building[:,None],axis=0)+loss_total)
+    connected_building_demand=np.sum(
+        canonical_demand*connection_by_building[:,None],axis=0
+    )
+    required=(1+d.peak_capacity_margin_fraction)*connected_building_demand
     record('margin_kW',np.max(np.maximum(0.,required-available)))
     record('heat_balance_kW',np.max(np.abs(node_balance)))
     built_sites=[s for s in sites.index if sites.loc[s,'built']>.5]
@@ -707,5 +709,8 @@ def audit_export(case: RoadCase, root: str | Path):
     timing_seconds['total']=perf_counter()-audit_started
     return dict(passed=not violations and all(x<=1e-6 for x in errors.values()),max_errors=errors,
                 violations=violations,unserved_kWh=unserved,relative_unserved=unserved/heat if heat else 0,
+                capacity_margin_basis='connected_building_useful_heat_demand_only',
+                network_heat_loss_in_capacity_margin=False,
+                storage_counted_in_capacity_margin=False,
                 qa_basis='exported_decisions_and_canonical_input_not_model_expressions',
                 timing_seconds=timing_seconds)

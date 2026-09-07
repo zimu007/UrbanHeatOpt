@@ -673,9 +673,30 @@ def build_road_model(
                 thermal = sum(sign*m.flow[e,h]-m.edge_loss[e]/2 for e,sign in incident[n])
                 thermal += sum(sum(m.heat[s,t,h] for t in central)+m.discharge[s,h]-m.charge[s,h] for s in sources[n])
                 c(thermal == (m.network_heat[n,h] if n in d.demand_nodes else 0))
+        # Teacher-confirmed 2026-09-07 basis: the 20% equipment reserve is
+        # applied to useful connected-building demand only.  Pipe losses remain
+        # fully present in the nodal heat balances above, but are not multiplied
+        # by the planning reserve; TES charge/discharge is likewise excluded.
+        m.connected_building_demand = p.Expression(
+            m.HOURS,
+            rule=lambda _, h: sum(
+                d.heat_demand_kW[b, h] * m.connected[b]
+                for b in d.demand_nodes
+            ),
+        )
+        m.available_central_capacity = p.Expression(
+            m.HOURS,
+            rule=lambda _, h: sum(
+                m.capacity[s, t] * ratio(t, h)
+                for s in stations for t in central
+            ),
+        )
         for h in d.hours:
-            c(sum(m.capacity[s,t]*ratio(t,h) for s in stations for t in central)
-              >= (1+d.peak_capacity_margin_fraction)*(sum(d.heat_demand_kW[b,h]*m.connected[b] for b in d.demand_nodes)+sum(m.edge_loss[e] for e in edges)))
+            c(
+                m.available_central_capacity[h]
+                >= (1 + d.peak_capacity_margin_fraction)
+                * m.connected_building_demand[h]
+            )
     m.electricity = p.Expression(m.HOURS, rule=lambda _,h:
         sum(m.heat[s,t,h]/cop(t,h) for s in stations for t in central if central[t].energy_carrier == 'electricity')
         +sum(m.local_heat[b,h]/cop(local.technology_id,h) for b in d.demand_nodes)+sum(m.pump[e,h] for e in edges))

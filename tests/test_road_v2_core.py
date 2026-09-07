@@ -257,6 +257,28 @@ def test_fixed_modes_and_demand_identity_remove_only_determined_variables():
             assert value(distributed.unserved_heat_kW[building,hour]) == 0
 
 
+def test_capacity_margin_applies_to_building_demand_not_network_loss(tmp_path):
+    case = shared_case("central", loss=0.1)
+    model = solve(case, "S1")
+
+    installed = sum(value(model.capacity["S1", tech]) for tech in model.T)
+    peak_building_demand = max(
+        sum(case.common.heat_demand_kW[building, hour] for building in case.common.demand_nodes)
+        for hour in case.common.hours
+    )
+    total_loss = sum(value(model.edge_loss[edge]) for edge in model.E)
+    assert value(model.connected_building_demand[1]) == pytest.approx(peak_building_demand)
+    assert installed == pytest.approx(peak_building_demand + total_loss, abs=1e-6)
+    assert installed >= 1.2 * peak_building_demand - 1e-6
+    assert installed < 1.2 * (peak_building_demand + total_loss)
+
+    qa = export_solution(case, model, tmp_path / "capacity_margin_scope")
+    assert qa["passed"]
+    assert qa["capacity_margin_basis"] == "connected_building_useful_heat_demand_only"
+    assert qa["network_heat_loss_in_capacity_margin"] is False
+    assert qa["storage_counted_in_capacity_margin"] is False
+
+
 def test_nonuniform_pumping_fallback_exports_grade_weighted_flow(tmp_path):
     case = with_pumping_rates(shared_case(), (1e-5, 2e-5, 3e-5))
     model = solve(case, 'S1')

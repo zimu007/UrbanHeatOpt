@@ -35,6 +35,8 @@ def patch(tmp_path):
     _csv(root / "scenario_parameter_manifest.csv", [
         {**common, "scenario_id": scenario, "pipe_capacity_file": "pipe_capacity_limits.csv",
          "pipe_types_file": pipe_file, "tes_limits_file": "tes_limits.csv",
+         "capacity_margin_rule_file": "capacity_margin_rules.csv",
+         "capacity_margin_validation_file": "capacity_margin_validation.csv",
          "station_cost_scenario": station, "allowed_for_primary_economic_conclusion": allowed}
         for scenario, pipe_file, station, allowed in (
             ("v2_debug", "pipe_types_v2_debug.csv", "base", 0),
@@ -89,6 +91,47 @@ def patch(tmp_path):
         **common, "building_count": 62, "simultaneous_peak_kW_th": 132267.81395,
         "qa_status": "verified",
     }])
+    _csv(root / "capacity_margin_rules.csv", [
+        {**common, "rule_id": "CM001", "constraint_group": "capacity_margin",
+         "applies_to_modes": "centralized;hybrid", "time_scope": "each_hour",
+         "left_hand_side": "available_central_capacity[t]", "operator": ">=",
+         "right_hand_side": "capacity_margin_ratio*connected_building_demand[t]",
+         "capacity_margin_ratio": 1.2, "include_network_heat_loss_in_constraint": 0,
+         "include_tes_discharge_in_constraint": 0,
+         "building_peak_demand_kW_th": 132267.81395,
+         "station_total_installed_capacity_upper_kW_th": 158721.37674,
+         "code_use_allowed": 1, "parameter_status": "teacher_confirmed",
+         "source_id": source_ids["teacher"], "implementation_action": "replace_existing_margin_rhs",
+         "notes": "test"},
+        {**common, "rule_id": "EB001", "constraint_group": "heat_balance",
+         "applies_to_modes": "centralized;hybrid", "time_scope": "each_hour",
+         "left_hand_side": "central_heat_output[t]+tes_discharge[t]-tes_charge[t]",
+         "operator": "=",
+         "right_hand_side": "connected_building_demand[t]+network_heat_loss[t]",
+         "capacity_margin_ratio": "", "include_network_heat_loss_in_constraint": 1,
+         "include_tes_discharge_in_constraint": 1, "building_peak_demand_kW_th": "",
+         "station_total_installed_capacity_upper_kW_th": "", "code_use_allowed": 1,
+         "parameter_status": "teacher_confirmed", "source_id": source_ids["teacher"],
+         "implementation_action": "keep_existing_heat_balance", "notes": "test"},
+        {**common, "rule_id": "CU001", "constraint_group": "station_capacity_upper",
+         "applies_to_modes": "centralized;hybrid", "time_scope": "planning",
+         "left_hand_side": "central_hp_installed_capacity+central_boiler_installed_capacity",
+         "operator": "<=", "right_hand_side": "station_total_installed_capacity_upper_kW_th",
+         "capacity_margin_ratio": "", "include_network_heat_loss_in_constraint": 0,
+         "include_tes_discharge_in_constraint": 0,
+         "building_peak_demand_kW_th": 132267.81395,
+         "station_total_installed_capacity_upper_kW_th": 158721.37674,
+         "code_use_allowed": 1, "parameter_status": "teacher_confirmed",
+         "source_id": source_ids["teacher"], "implementation_action": "keep_existing_station_upper_bound",
+         "notes": "test"},
+    ])
+    _csv(root / "capacity_margin_validation.csv", [
+        {"check_id": f"CM_QA_{index:03d}", "check_name": f"check_{index}",
+         "applies_to": "test", "required_value_or_rule": "test",
+         "pass_criterion": "test", "severity": "required", "code_use_allowed": 1,
+         "source_id": source_ids["teacher"], "notes": "test"}
+        for index in range(1, 9)
+    ])
     _csv(root / "pipe_capacity_engineering_reference.csv", [
         {**common, "pipe_type_id": pid, "dn_mm": dn, "capacity_kW_th": ref,
          "parameter_status": "research_reference", "code_use_allowed": 0,
@@ -107,6 +150,10 @@ def test_primary_patch_selects_expansion_cost_base_station_and_tes(patch):
     assert result["station_cost"]["station_fixed_capex_CNY_per_site"] == 3_000_000
     assert result["tes_limits"]["energy_capacity_upper_kWh_th"] == 793606.88
     assert result["engineering_reference_consumed"] is False
+    assert result["capacity_margin_rule"]["capacity_margin_ratio"] == 1.2
+    assert result["capacity_margin_rule"]["include_network_heat_loss_in_constraint"] is False
+    assert result["capacity_margin_rule"]["include_tes_discharge_in_constraint"] is False
+    assert len(result["capacity_margin_validation"]) == 8
     assert [row["capacity_kW_th"] for row in result["pipe_capacity_limits"]] == pytest.approx(
         [158721.38, 79360.69, 39680.345]
     )
@@ -127,4 +174,12 @@ def test_station_cost_cannot_be_additive(patch):
     rows[0]["add_with_other_station_fixed_cost"] = "1"
     _csv(patch / "station_cost_scenarios.csv", rows)
     with pytest.raises(ValueError, match="替换而不得叠加"):
+        read_v2_freeze_0907(patch, "v2_primary_expansion_check")
+
+
+def test_capacity_margin_rule_cannot_include_pipe_loss(patch):
+    rows = list(csv.DictReader((patch / "capacity_margin_rules.csv").open(encoding="utf-8-sig")))
+    rows[0]["include_network_heat_loss_in_constraint"] = "1"
+    _csv(patch / "capacity_margin_rules.csv", rows)
+    with pytest.raises(ValueError, match="排除管损/TES"):
         read_v2_freeze_0907(patch, "v2_primary_expansion_check")

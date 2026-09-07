@@ -845,11 +845,17 @@ def build_compact_model(
         model.soc = p.Expression(model.S, model.HOURS, rule=lambda *_: 0.0)
         model.charging = p.Expression(model.S, model.HOURS, rule=lambda *_: 0.0)
 
+    model.connected_building_demand = p.Expression(
+        model.HOURS,
+        rule=lambda _, hour: sum(
+            d.heat_demand_kW[b, hour] * model.connected[b]
+            for b in d.demand_nodes
+        ),
+    )
     model.source_heat_requirement = p.Expression(
         model.HOURS,
         rule=lambda _, hour: (
-            sum(d.heat_demand_kW[b, hour] * model.connected[b] for b in d.demand_nodes)
-            + model.total_edge_loss
+            model.connected_building_demand[hour] + model.total_edge_loss
         ),
     )
     model.source_generation_requirement = p.Expression(
@@ -916,7 +922,7 @@ def build_compact_model(
                     for tech in central.values()
                 )
                 >= (1 + d.peak_capacity_margin_fraction)
-                * model.source_heat_requirement[hour]
+                * model.connected_building_demand[hour]
             )
         if b2_site is not None:
             model.b2_site_total_heat_capacity_limit = p.Constraint(
@@ -1413,13 +1419,12 @@ def audit_compact_solution(
         dtype=float,
     )
     available_by_hour = availability_ratios @ capacities_by_technology
-    source_by_hour = (
+    connected_demand_by_hour = (
         np.asarray(model._compact_connection_vector, dtype=float)
         @ np.asarray(model._compact_demand_matrix, dtype=float)
-        + float(np.sum(losses))
     )
     margin_shortfall = (
-        (1.0 + d.peak_capacity_margin_fraction) * source_by_hour
+        (1.0 + d.peak_capacity_margin_fraction) * connected_demand_by_hour
         - available_by_hour
     )
     max_margin_shortfall = 0.0
@@ -1478,6 +1483,9 @@ def audit_compact_solution(
         "worst_pipe_capacity_pair": worst_pipe,
         "max_central_margin_shortfall_kW": max_margin_shortfall,
         "worst_central_margin_hour": worst_margin_hour,
+        "capacity_margin_basis": "connected_building_useful_heat_demand_only",
+        "network_heat_loss_in_capacity_margin": False,
+        "storage_counted_in_capacity_margin": False,
         "max_storage_soc_residual_kWh": max_soc_residual,
         "worst_storage_soc_pair": worst_soc_pair,
         "max_simultaneous_charge_discharge_kW": max_simultaneous,

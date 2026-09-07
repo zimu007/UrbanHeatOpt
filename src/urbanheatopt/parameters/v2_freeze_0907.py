@@ -15,6 +15,9 @@ PATCH_DIRECTORY = "0907_V2参数冻结补丁"
 PATCH_ID = "V2_FREEZE_20260907"
 PATCH_DATA_VERSION = "guanggu-v0.3.1-20260823"
 PATCH_FILES = (
+    "capacity_margin_rules.csv",
+    "capacity_margin_validation.csv",
+    "给代码组说明.txt",
     "load_peak_check.csv",
     "parameter_sources_v2.csv",
     "pipe_capacity_engineering_reference.csv",
@@ -33,6 +36,8 @@ SCENARIOS = (
     "v2_primary_expansion_check",
     "v2_station_high_cost_stress",
 )
+CAPACITY_MARGIN_RULE_IDS = ("CM001", "EB001", "CU001")
+CAPACITY_MARGIN_VALIDATION_IDS = tuple(f"CM_QA_{index:03d}" for index in range(1, 9))
 
 
 def _rows(path: Path, required: set[str]) -> list[dict[str, str]]:
@@ -57,11 +62,23 @@ def _number(value: Any, label: str, *, positive: bool = False) -> float:
     return value
 
 
+def _optional_number(value: Any, label: str) -> float | None:
+    if value == "":
+        return None
+    return _number(value, label)
+
+
 def _strict_flag(row: dict[str, str], name: str) -> bool:
     try:
         return strict_bool(row[name])
     except (KeyError, ValueError) as exc:
         raise PackageError(f"{name}: 必须为0/1布尔值") from exc
+
+
+def _optional_flag(row: dict[str, str], name: str) -> bool | None:
+    if row[name] == "":
+        return None
+    return _strict_flag(row, name)
 
 
 def _identity(row: dict[str, str], file_name: str) -> None:
@@ -92,6 +109,7 @@ def read_v2_freeze_0907(root: str | Path, scenario_id: str) -> dict[str, Any]:
     manifest_rows = _rows(root / "scenario_parameter_manifest.csv", {
         "data_version", "parameter_patch_id", "scenario_id", "pipe_capacity_file",
         "pipe_types_file", "tes_limits_file", "station_cost_scenario",
+        "capacity_margin_rule_file", "capacity_margin_validation_file",
         "allowed_for_primary_economic_conclusion",
     })
     manifest = {row["scenario_id"]: row for row in manifest_rows}
@@ -102,7 +120,10 @@ def read_v2_freeze_0907(root: str | Path, scenario_id: str) -> dict[str, Any]:
         row["allowed_for_primary_economic_conclusion"] = _strict_flag(
             row, "allowed_for_primary_economic_conclusion"
         )
-        for field in ("pipe_capacity_file", "pipe_types_file", "tes_limits_file"):
+        for field in (
+            "pipe_capacity_file", "pipe_types_file", "tes_limits_file",
+            "capacity_margin_rule_file", "capacity_margin_validation_file",
+        ):
             if row[field] not in expected or not (root / row[field]).is_file():
                 raise PackageError(f"scenario_parameter_manifest.csv: {field}引用不存在")
     if manifest["v2_primary_expansion_check"]["allowed_for_primary_economic_conclusion"] is not True:
@@ -111,6 +132,87 @@ def read_v2_freeze_0907(root: str | Path, scenario_id: str) -> dict[str, Any]:
         "v2_debug", "v2_station_high_cost_stress"
     )):
         raise PackageError("调试/压力情景不得单独支撑主要经济结论")
+
+    rule_rows = _rows(root / "capacity_margin_rules.csv", {
+        "rule_id", "constraint_group", "applies_to_modes", "time_scope",
+        "left_hand_side", "operator", "right_hand_side", "capacity_margin_ratio",
+        "include_network_heat_loss_in_constraint", "include_tes_discharge_in_constraint",
+        "building_peak_demand_kW_th", "station_total_installed_capacity_upper_kW_th",
+        "code_use_allowed", "parameter_status", "source_id", "data_version",
+        "parameter_patch_id", "implementation_action", "notes",
+    })
+    rules = {row["rule_id"]: row for row in rule_rows}
+    if tuple(sorted(rules)) != tuple(sorted(CAPACITY_MARGIN_RULE_IDS)) or len(rules) != len(rule_rows):
+        raise PackageError("capacity_margin_rules.csv: CM001/EB001/CU001必须唯一完整")
+    for row in rule_rows:
+        _identity(row, "capacity_margin_rules.csv")
+        if row["source_id"] not in sources or not _strict_flag(row, "code_use_allowed"):
+            raise PackageError("capacity_margin_rules.csv: 来源缺失或执行被禁用")
+        if row["parameter_status"] != "teacher_confirmed":
+            raise PackageError("capacity_margin_rules.csv: 仅接受teacher_confirmed规则")
+        row["code_use_allowed"] = True
+        row["include_network_heat_loss_in_constraint"] = _optional_flag(
+            row, "include_network_heat_loss_in_constraint"
+        )
+        row["include_tes_discharge_in_constraint"] = _optional_flag(
+            row, "include_tes_discharge_in_constraint"
+        )
+        for field in (
+            "capacity_margin_ratio", "building_peak_demand_kW_th",
+            "station_total_installed_capacity_upper_kW_th",
+        ):
+            row[field] = _optional_number(row[field], f"{row['rule_id']}.{field}")
+
+    margin_rule = rules["CM001"]
+    if (
+        margin_rule["constraint_group"] != "capacity_margin"
+        or set(margin_rule["applies_to_modes"].split(";")) != {"centralized", "hybrid"}
+        or margin_rule["time_scope"] != "each_hour"
+        or margin_rule["left_hand_side"] != "available_central_capacity[t]"
+        or margin_rule["operator"] != ">="
+        or margin_rule["right_hand_side"]
+        != "capacity_margin_ratio*connected_building_demand[t]"
+        or not math.isclose(float(margin_rule["capacity_margin_ratio"] or -1), 1.2)
+        or margin_rule["include_network_heat_loss_in_constraint"] is not False
+        or margin_rule["include_tes_discharge_in_constraint"] is not False
+    ):
+        raise PackageError("CM001必须冻结为可用设备容量>=1.20×接网建筑有用热负荷，且排除管损/TES")
+    balance_rule = rules["EB001"]
+    if (
+        balance_rule["constraint_group"] != "heat_balance"
+        or balance_rule["left_hand_side"]
+        != "central_heat_output[t]+tes_discharge[t]-tes_charge[t]"
+        or balance_rule["operator"] != "="
+        or balance_rule["right_hand_side"]
+        != "connected_building_demand[t]+network_heat_loss[t]"
+        or balance_rule["include_network_heat_loss_in_constraint"] is not True
+        or balance_rule["include_tes_discharge_in_constraint"] is not True
+    ):
+        raise PackageError("EB001必须保持管损和TES进入逐时热平衡")
+    station_rule = rules["CU001"]
+    if (
+        station_rule["constraint_group"] != "station_capacity_upper"
+        or station_rule["left_hand_side"]
+        != "central_hp_installed_capacity+central_boiler_installed_capacity"
+        or station_rule["operator"] != "<="
+        or station_rule["right_hand_side"]
+        != "station_total_installed_capacity_upper_kW_th"
+    ):
+        raise PackageError("CU001站点安装容量上限表达式不符合冻结口径")
+
+    validation_rows = _rows(root / "capacity_margin_validation.csv", {
+        "check_id", "check_name", "applies_to", "required_value_or_rule",
+        "pass_criterion", "severity", "code_use_allowed", "source_id", "notes",
+    })
+    validations = {row["check_id"]: row for row in validation_rows}
+    if tuple(sorted(validations)) != tuple(sorted(CAPACITY_MARGIN_VALIDATION_IDS)) or len(validations) != len(validation_rows):
+        raise PackageError("capacity_margin_validation.csv: CM_QA_001…008必须唯一完整")
+    for row in validation_rows:
+        if row["severity"] != "required" or row["source_id"] not in sources:
+            raise PackageError("capacity_margin_validation.csv: 验收项必须required且来源有效")
+        row["code_use_allowed"] = _strict_flag(row, "code_use_allowed")
+        if not row["code_use_allowed"]:
+            raise PackageError("capacity_margin_validation.csv: 必需验收项不得禁用")
 
     capacities = _rows(root / "pipe_capacity_limits.csv", {
         "data_version", "parameter_patch_id", "pipe_type_id", "capacity_kW_th",
@@ -251,6 +353,18 @@ def read_v2_freeze_0907(root: str | Path, scenario_id: str) -> dict[str, Any]:
     if int(peak["building_count"]) != 62 or peak["qa_status"] != "verified":
         raise PackageError("峰值核验建筑数或QA状态错误")
     peak_value = _number(peak["simultaneous_peak_kW_th"], "simultaneous_peak", positive=True)
+    frozen_peak = margin_rule["building_peak_demand_kW_th"]
+    frozen_station_upper = margin_rule["station_total_installed_capacity_upper_kW_th"]
+    station_rule_upper = station_rule["station_total_installed_capacity_upper_kW_th"]
+    if (
+        frozen_peak is None
+        or frozen_station_upper is None
+        or station_rule_upper is None
+        or not math.isclose(peak_value, frozen_peak, abs_tol=1e-6)
+        or not math.isclose(frozen_station_upper, station_rule_upper, abs_tol=1e-9)
+        or not math.isclose(frozen_station_upper, 1.2 * frozen_peak, abs_tol=1e-6)
+    ):
+        raise PackageError("容量裕度规则、峰值核验与站点总容量上限不一致")
 
     engineering = _rows(root / "pipe_capacity_engineering_reference.csv", {
         "data_version", "parameter_patch_id", "pipe_type_id", "capacity_kW_th",
@@ -279,6 +393,10 @@ def read_v2_freeze_0907(root: str | Path, scenario_id: str) -> dict[str, Any]:
         "tes_limits": tes,
         "station_cost": station,
         "load_peak": {"building_count": 62, "simultaneous_peak_kW_th": peak_value},
+        "capacity_margin_rule": dict(margin_rule),
+        "heat_balance_rule": dict(balance_rule),
+        "station_capacity_rule": dict(station_rule),
+        "capacity_margin_validation": [dict(validations[key]) for key in sorted(validations)],
         "engineering_reference_consumed": False,
         "engineering_reference_rows": engineering,
         "program_feasibility_scope": scenario_id == "v2_debug",
@@ -294,5 +412,6 @@ def read_v2_freeze_0907(root: str | Path, scenario_id: str) -> dict[str, Any]:
 
 __all__ = [
     "PATCH_DIRECTORY", "PATCH_ID", "PATCH_DATA_VERSION", "PATCH_FILES",
-    "SCENARIOS", "read_v2_freeze_0907",
+    "SCENARIOS", "CAPACITY_MARGIN_RULE_IDS", "CAPACITY_MARGIN_VALIDATION_IDS",
+    "read_v2_freeze_0907",
 ]
