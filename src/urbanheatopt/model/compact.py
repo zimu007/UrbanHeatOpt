@@ -25,6 +25,8 @@ import numpy as np
 import pyomo.environ as p
 
 from urbanheatopt.model.costing.annualized import capital_recovery_factor as crf
+from urbanheatopt.model.reference_core import capacity_margin_requirement
+from urbanheatopt.model.reference_core import CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS
 from urbanheatopt.optimization.reference_budget import _site_tree
 from urbanheatopt.model.road_core import PipeDesign, RoadCase, validate_case
 from urbanheatopt.spatial.atomic_network import access_options
@@ -176,7 +178,10 @@ def _hour_matrix(case: RoadCase, buildings: Iterable[str]) -> np.ndarray:
     )
 
 
-def _central_dominance(case: RoadCase) -> tuple[tuple[int, ...], dict[int, int]]:
+def _central_dominance(
+    case: RoadCase,
+    network_loss_kW: float,
+) -> tuple[tuple[int, ...], dict[int, int]]:
     d = case.common
     central = tuple(t for t in d.technologies if t.applicable_scope == "central")
     demand = _hour_matrix(case, d.demand_nodes)
@@ -186,7 +191,21 @@ def _central_dominance(case: RoadCase) -> tuple[tuple[int, ...], dict[int, int]]
           for tech in central] for hour in d.hours],
         dtype=float,
     )
-    return _nondominated_rows(d.hours, np.concatenate((demand, inverse_ratios), axis=1))
+    if d.peak_capacity_margin_fraction > 0:
+        margin_requirement = np.asarray(
+            capacity_margin_requirement(
+                demand.sum(axis=1),
+                network_loss_kW,
+                d.peak_capacity_margin_fraction,
+                d.capacity_margin_basis,
+            ),
+            dtype=float,
+        ).reshape((-1, 1))
+    else:
+        margin_requirement = np.empty((len(d.hours), 0), dtype=float)
+    return _nondominated_rows(
+        d.hours, np.concatenate((demand, margin_requirement, inverse_ratios), axis=1)
+    )
 
 
 def _root_tree(tree: nx.Graph, root: str) -> tuple[dict[str, str | None], dict[str, str], list[str]]:
@@ -327,7 +346,14 @@ def _build_design(case: RoadCase, site_id: str) -> CompactTreeDesign:
         retained, witness = dominance_cache[downstream]
         capacity_hours_by_edge[edge_id] = retained
         capacity_witness_by_edge[edge_id] = witness
-    central_hours, central_witness = _central_dominance(case)
+    selected_network_loss = sum(
+        float(edge_lookup[edge]["length_m"])
+        * level_lookup[pipe_type_by_edge[edge]].pair_loss_kW_per_route_m
+        for edge in raw["selected_edge_ids"]
+    )
+    central_hours, central_witness = _central_dominance(
+        case, selected_network_loss
+    )
     smallest = levels[0]
     # A small pipe is fixed only when it can carry the all-central peak and is
     # weakly better than every alternative in capex, loss and pumping.  Edges
@@ -914,16 +940,24 @@ def build_compact_model(
                 <= model._central_capacity[boiler.technology_id]
                 * d.heat_pump_capacity_ratio_by_hour.get((boiler.technology_id, hour), 1.0)
             )
-        for hour in design.central_capacity_hours:
-            model.central_constraints.add(
-                sum(
-                    model._central_capacity[tech.technology_id]
-                    * d.heat_pump_capacity_ratio_by_hour.get((tech.technology_id, hour), 1.0)
-                    for tech in central.values()
+        if d.peak_capacity_margin_fraction > 0:
+            for hour in design.central_capacity_hours:
+                model.central_constraints.add(
+                    sum(
+                        model._central_capacity[tech.technology_id]
+                        * d.heat_pump_capacity_ratio_by_hour.get((tech.technology_id, hour), 1.0)
+                        for tech in central.values()
+                    )
+                    >= capacity_margin_requirement(
+                        sum(
+                            d.heat_demand_kW[b, hour] * model.connected[b]
+                            for b in d.demand_nodes
+                        ),
+                        model.total_edge_loss,
+                        d.peak_capacity_margin_fraction,
+                        d.capacity_margin_basis,
+                    )
                 )
-                >= (1 + d.peak_capacity_margin_fraction)
-                * model.connected_building_demand[hour]
-            )
         if b2_site is not None:
             model.b2_site_total_heat_capacity_limit = p.Constraint(
                 expr=sum(model._central_capacity[tech] for tech in model.T)
@@ -1419,14 +1453,20 @@ def audit_compact_solution(
         dtype=float,
     )
     available_by_hour = availability_ratios @ capacities_by_technology
-    connected_demand_by_hour = (
+    useful_by_hour = (
         np.asarray(model._compact_connection_vector, dtype=float)
         @ np.asarray(model._compact_demand_matrix, dtype=float)
     )
-    margin_shortfall = (
-        (1.0 + d.peak_capacity_margin_fraction) * connected_demand_by_hour
-        - available_by_hour
-    )
+    if d.peak_capacity_margin_fraction > 0:
+        required_by_hour = capacity_margin_requirement(
+            useful_by_hour,
+            float(np.sum(losses)),
+            d.peak_capacity_margin_fraction,
+            d.capacity_margin_basis,
+        )
+        margin_shortfall = required_by_hour - available_by_hour
+    else:
+        margin_shortfall = np.zeros_like(available_by_hour)
     max_margin_shortfall = 0.0
     worst_margin_hour: int | None = None
     if margin_shortfall.size:
@@ -1483,8 +1523,10 @@ def audit_compact_solution(
         "worst_pipe_capacity_pair": worst_pipe,
         "max_central_margin_shortfall_kW": max_margin_shortfall,
         "worst_central_margin_hour": worst_margin_hour,
-        "capacity_margin_basis": "connected_building_useful_heat_demand_only",
-        "network_heat_loss_in_capacity_margin": False,
+        "capacity_margin_basis": d.capacity_margin_basis,
+        "network_heat_loss_in_capacity_margin": (
+            d.capacity_margin_basis == CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS
+        ),
         "storage_counted_in_capacity_margin": False,
         "max_storage_soc_residual_kWh": max_soc_residual,
         "worst_storage_soc_pair": worst_soc_pair,

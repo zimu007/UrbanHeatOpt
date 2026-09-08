@@ -3,4 +3,7 @@
 MODEL_VERSION = "road_joint_v2.0.0-dev"
 # Relocation-only hash, after tools/verify_layout.py verified all function bodies.
 # The original V1 hash and source are retained in the baseline manifest/Git tag.
-FROZEN_LEGACY_CORE_SHA256 = "a9b34907b66504d181edd4a54c11dd004cb8366f56bb9c6088023c2f4a9e9d69"
+# The original relocated V1 hash remains recorded in core_model_freeze.yaml.
+# This executable hash is the teacher-confirmed 2026-09-07 capacity-margin
+# revision shared by the reference, road and compact regression paths.
+FROZEN_LEGACY_CORE_SHA256 = "77a33f9f71e93bf71898599818a9ebc18d04f1330a32634161b5748f81777210"

@@ -18,6 +18,7 @@ from shapely.geometry import LineString, Point
 
 import urbanheatopt.optimization.solvers as solver_module
 from urbanheatopt.model.reference_core import (
+    CAPACITY_MARGIN_BASIS_BUILDING_USEFUL,
     CoreModelInput,
     CoreModelInputError,
     EconomicInput,
@@ -450,6 +451,7 @@ def test_multi_candidate_standard_results_keep_true_station_mapping(
 def test_peak_capacity_margin_is_configurable_and_excludes_storage() -> None:
     data = _core_input(
         peak_capacity_margin_fraction=0.2,
+        capacity_margin_basis=CAPACITY_MARGIN_BASIS_BUILDING_USEFUL,
         technologies=_technologies(
             central_ashp={"capacity_max_kW": 120.0, "capex_CNY_per_kW": 1.0},
             central_gas_boiler={"capacity_max_kW": 120.0, "capex_CNY_per_kW": 10.0},
@@ -483,6 +485,7 @@ def test_distributed_peak_margin_applies_per_demand_node() -> None:
     data = _core_input(
         mode="distributed",
         peak_capacity_margin_fraction=0.2,
+        capacity_margin_basis=CAPACITY_MARGIN_BASIS_BUILDING_USEFUL,
         technologies=_technologies(
             local_ashp={"capacity_max_kW": 150.0, "capex_CNY_per_kW": 1.0},
         ),

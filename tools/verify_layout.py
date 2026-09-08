@@ -26,6 +26,10 @@ TARGETS = {
 # claiming that intentionally versioned post-migration mathematics is equal to
 # the old pre-migration implementation.
 APPROVED_POST_MIGRATION_CHANGES = {
+    "src/urbanheatopt/model/reference_core.py": {
+        "CoreModelInput", "capacity_margin_requirement", "validate_core_input",
+        "build_core_model",
+    },
     "src/urbanheatopt/model/road_core.py": {
         "BoundaryEvidence", "SiteCapacityBoundary", "PipeCapacityBoundary",
         "B2CapacityInput", "MonthlyDemandChargeInput", "RoadCase",
@@ -35,7 +39,8 @@ APPROVED_POST_MIGRATION_CHANGES = {
     # the compact constraint and its independent certificate: pipe loss stays
     # in heat balance but is excluded from the 20% useful-load reserve basis.
     "src/urbanheatopt/model/compact.py": {
-        "build_compact_model", "audit_compact_solution",
+        "_central_dominance", "_build_design", "build_compact_model",
+        "audit_compact_solution",
     },
     "src/urbanheatopt/model/costing/annualized.py": {"monthly_demand_charge"},
 }

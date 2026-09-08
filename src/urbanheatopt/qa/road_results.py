@@ -14,6 +14,10 @@ from pyomo.environ import value
 from shapely.geometry import LineString, mapping
 
 from urbanheatopt.model.road_core import RoadCase, classify_direction_solution
+from urbanheatopt.model.reference_core import (
+    CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS,
+    capacity_margin_requirement,
+)
 from urbanheatopt.optimization.mode_diagnostics import classify_realized_mode
 from urbanheatopt.spatial.atomic_network import access_options
 
@@ -642,11 +646,16 @@ def audit_export(case: RoadCase, root: str | Path):
             available+=row.capacity_kW_th*np.asarray([
                 d.heat_pump_capacity_ratio_by_hour.get((row.technology_id,h),1.) for h in hours
             ],dtype=float)
-    connected_building_demand=np.sum(
-        canonical_demand*connection_by_building[:,None],axis=0
-    )
-    required=(1+d.peak_capacity_margin_fraction)*connected_building_demand
-    record('margin_kW',np.max(np.maximum(0.,required-available)))
+    if d.peak_capacity_margin_fraction > 0:
+        required=capacity_margin_requirement(
+            np.sum(canonical_demand*connection_by_building[:,None],axis=0),
+            loss_total,
+            d.peak_capacity_margin_fraction,
+            d.capacity_margin_basis,
+        )
+        record('margin_kW',np.max(np.maximum(0.,required-available)))
+    else:
+        record('margin_kW',0.)
     record('heat_balance_kW',np.max(np.abs(node_balance)))
     built_sites=[s for s in sites.index if sites.loc[s,'built']>.5]
     if len(built_sites)>1:
@@ -709,8 +718,10 @@ def audit_export(case: RoadCase, root: str | Path):
     timing_seconds['total']=perf_counter()-audit_started
     return dict(passed=not violations and all(x<=1e-6 for x in errors.values()),max_errors=errors,
                 violations=violations,unserved_kWh=unserved,relative_unserved=unserved/heat if heat else 0,
-                capacity_margin_basis='connected_building_useful_heat_demand_only',
-                network_heat_loss_in_capacity_margin=False,
+                capacity_margin_basis=d.capacity_margin_basis,
+                network_heat_loss_in_capacity_margin=(
+                    d.capacity_margin_basis == CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS
+                ),
                 storage_counted_in_capacity_margin=False,
                 qa_basis='exported_decisions_and_canonical_input_not_model_expressions',
                 timing_seconds=timing_seconds)

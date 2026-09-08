@@ -245,7 +245,7 @@ def build_capacity_boundaries(
         ),
         "technology_role_mapping": TECHNOLOGY_ROLE_MAPPING,
         "peak_capacity_margin_fraction": margin,
-        "capacity_margin_basis": "connected_building_useful_heat_demand_only",
+        "capacity_margin_basis": "connected_building_useful_heat_demand",
         "network_heat_loss_in_capacity_margin": False,
         "tes_discharge_in_capacity_margin": False,
         "full_park_peak_kW_th": peak,

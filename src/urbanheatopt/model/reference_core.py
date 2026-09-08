@@ -41,9 +41,38 @@ ELECTRICITY = "electricity"
 GAS = "gas"
 SUPPORTED_MODES = ("central", "distributed", "hybrid")
 
+CAPACITY_MARGIN_BASIS_BUILDING_USEFUL = "connected_building_useful_heat_demand"
+CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS = (
+    "source_side_heat_demand_including_network_loss"
+)
+CAPACITY_MARGIN_BASES = frozenset({
+    CAPACITY_MARGIN_BASIS_BUILDING_USEFUL,
+    CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS,
+})
+
 
 class CoreModelInputError(ValueError):
     """竞赛核心输入不满足物理或接口约束。"""
+
+
+def capacity_margin_requirement(
+    useful_heat_demand_kW: Any,
+    network_heat_loss_kW: Any,
+    margin_fraction: Any,
+    basis: str | None,
+) -> Any:
+    """Project one explicit reserve-margin basis without a semantic default."""
+
+    if basis not in CAPACITY_MARGIN_BASES:
+        raise CoreModelInputError(
+            "capacity_margin_basis必须显式为"
+            "connected_building_useful_heat_demand或"
+            "source_side_heat_demand_including_network_loss"
+        )
+    base = useful_heat_demand_kW
+    if basis == CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS:
+        base = base + network_heat_loss_kW
+    return (1 + margin_fraction) * base
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +203,7 @@ class CoreModelInput:
     heat_pump_capacity_ratio_by_hour: Mapping[tuple[str, int], float] = field(default_factory=dict)
     allow_unserved: bool = True
     peak_capacity_margin_fraction: float = 0.0
+    capacity_margin_basis: str | None = None
     candidate_station_nodes: tuple[str, ...] = ()
     max_built_stations: int = 1
 
@@ -734,6 +764,15 @@ def validate_core_input(data: CoreModelInput) -> None:
     )
     if peak_margin < 0 or peak_margin > 1:
         raise CoreModelInputError("peak_capacity_margin_fraction 必须位于 [0, 1]")
+    if peak_margin > 0 and data.capacity_margin_basis not in CAPACITY_MARGIN_BASES:
+        raise CoreModelInputError(
+            "正容量裕度必须显式声明capacity_margin_basis；禁止模型自行推断"
+        )
+    if (
+        data.capacity_margin_basis is not None
+        and data.capacity_margin_basis not in CAPACITY_MARGIN_BASES
+    ):
+        raise CoreModelInputError("未知capacity_margin_basis")
     hours = _validate_hours(data.hours)
     stations = _station_nodes(data)
     demand_nodes = _validate_nodes(data, stations)
@@ -1301,28 +1340,8 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
         initialize=float(data.peak_capacity_margin_fraction),
         within=NonNegativeReals,
     )
-    # 峰值容量裕度是规划容量校核，不是 N-1，也不指定锅炉份额。储热充放功率
-    # 不进入可用供热设备容量；热泵逐时低温能力衰减通过 capacity_ratio 扣减。
-    model.central_peak_capacity_margin = Constraint(
-        model.HOURS,
-        rule=lambda m, hour: Constraint.Skip
-        if data.peak_capacity_margin_fraction <= 0
-        else sum(
-            m.central_capacity_by_station_kW[station, technology_id]
-            * (
-                m.central_ashp_capacity_ratio[technology_id, hour]
-                if technology_id in m.CENTRAL_AIR_SOURCE_HEAT_PUMPS
-                else 1.0
-            )
-            for station in m.STATIONS
-            for technology_id in m.CENTRAL_TECHNOLOGIES
-        )
-        >= (1 + m.peak_capacity_margin_fraction)
-        * sum(
-            m.heat_demand_kW[node, hour] * m.connected[node]
-            for node in m.DEMAND_NODES
-        ),
-    )
+    # The central reserve row is created after the network-loss expression so
+    # both approved candidate bases can share one explicit projection.
     model.local_peak_capacity_margin = Constraint(
         model.DEMAND_NODES,
         model.HOURS,
@@ -1628,6 +1647,32 @@ def build_core_model(data: CoreModelInput) -> ConcreteModel:
                 for pipe_type_id in m.PIPE_LEVELS
             ),
         )
+    # 峰值容量裕度是规划容量校核，不是 N-1，也不指定锅炉份额。储热充放功率
+    # 不进入可用供热设备容量；热泵逐时低温能力衰减通过 capacity_ratio 扣减。
+    model.central_peak_capacity_margin = Constraint(
+        model.HOURS,
+        rule=lambda m, hour: Constraint.Skip
+        if data.peak_capacity_margin_fraction <= 0
+        else sum(
+            m.central_capacity_by_station_kW[station, technology_id]
+            * (
+                m.central_ashp_capacity_ratio[technology_id, hour]
+                if technology_id in m.CENTRAL_AIR_SOURCE_HEAT_PUMPS
+                else 1.0
+            )
+            for station in m.STATIONS
+            for technology_id in m.CENTRAL_TECHNOLOGIES
+        )
+        >= capacity_margin_requirement(
+            sum(
+                m.heat_demand_kW[node, hour] * m.connected[node]
+                for node in m.DEMAND_NODES
+            ),
+            m.pipe_heat_loss_kW[hour],
+            m.peak_capacity_margin_fraction,
+            data.capacity_margin_basis,
+        ),
+    )
     maximum_loss_kW = sum(
         segment.length_m
         * max(

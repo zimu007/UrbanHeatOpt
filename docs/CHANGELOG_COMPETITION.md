@@ -860,3 +860,10 @@ git status --short --branch
 - 目的：形成可回溯的竞赛展示与软件著作权截图前端，同时保持GUI与优化核心通过接口隔离；启动器可以在已激活环境或PATH可发现的Conda环境中使用。
 - 验证：源码编译和包惰性导入通过；`run_gui.py --help`退出0；Windows原生平台运行成功生成空闲态和演示态截图，中文字体渲染及界面布局完成视觉检查；全量回归`697 passed / 3 skipped`。远端拉取后将再次检查集成状态。
 - 边界：GUI展示层不改变数学模型、输入数据或既有求解结果；演示数据不得作为正式优化结果证据。
+
+# 2026-09-08 拉取B/C组更新并闭合容量裕度接口
+
+- 合并：拉取远端`WH_heatOPT_li`至`e9bf06c`，纳入B组显式容量裕度基准、TES研究接口和C组独立QA/展示交付文档及复核脚本；未采用简单的ours/theirs覆盖方式。
+- 冲突处理：保留B组可在两种历史口径间显式选择且未知口径封闭失败的`capacity_margin_requirement`公共函数；生产`RoadCase Builder`固定选择老师确认的`connected_building_useful_heat_demand`，并把该字段写入RoadCase序列化及内容哈希。通用道路核心、紧凑核心和独立QA共同调用同一投影函数，管损仍进入热平衡，TES仍不抵扣设备裕度。
+- 目的：使A侧0907规则文件、B侧数学投影和生产RoadCase真正闭合，避免远端合并后因缺少显式`capacity_margin_basis`导致真实案例在构模前失败；旧历史适配器继续显式使用其原有源侧含损失口径，不静默改变历史回归语义。
+- 验证：冲突解决后容量裕度、0907补丁、通用/紧凑核心、RoadCase Builder、交接对象及TES专项`124 passed`；首次全量检查暴露23项旧Canonical/冻结哈希未跟随显式口径更新的问题，补齐后原失败集合`71 passed`，最终完整回归`710 passed / 3 skipped`。真实生产`prepare`再次退出0，464项输入哈希不变，生成62栋×2160小时、399节点、578边、5候选站、184接入方案的RoadCase，显式口径为`connected_building_useful_heat_demand`。

@@ -9,6 +9,7 @@ from typing import Any, Mapping
 import pandas as pd
 
 from urbanheatopt.model.reference_core import (
+    CAPACITY_MARGIN_BASIS_BUILDING_USEFUL,
     CoreModelInput,
     EconomicInput,
     PipeLevelSpec,
@@ -194,6 +195,7 @@ class CanonicalCaseData:
     raw_config: Mapping[str, Any]
     building_archetype_map: tuple[Mapping[str, Any], ...] = ()
     peak_capacity_margin_fraction: float = 0.0
+    capacity_margin_basis: str = CAPACITY_MARGIN_BASIS_BUILDING_USEFUL
     candidate_station_nodes: tuple[str, ...] = ()
     max_built_stations: int = 1
 
@@ -286,6 +288,7 @@ class CanonicalCaseData:
             ),
             allow_unserved=self.profile != "v1-full",
             peak_capacity_margin_fraction=self.peak_capacity_margin_fraction,
+            capacity_margin_basis=self.capacity_margin_basis,
             candidate_station_nodes=self.candidate_station_nodes,
             max_built_stations=self.max_built_stations,
         )

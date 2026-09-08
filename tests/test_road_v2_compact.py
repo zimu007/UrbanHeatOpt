@@ -16,7 +16,10 @@ from urbanheatopt.model.compact import (
 )
 from urbanheatopt.model.road_core import MonthlyDemandChargeInput, build_road_model
 from urbanheatopt.data.road_builder import load_case, save_case
-from urbanheatopt.model.reference_core import ThermalStorageSpec
+from urbanheatopt.model.reference_core import (
+    CAPACITY_MARGIN_BASIS_BUILDING_USEFUL,
+    ThermalStorageSpec,
+)
 from urbanheatopt.model.costing.annualized import capital_recovery_factor
 from urbanheatopt.qa.road_results import export_solution
 from urbanheatopt.optimization.solvers import solve_pyomo_model
@@ -261,7 +264,11 @@ def test_central_compact_matches_generic_physics_and_existing_export(tmp_path):
 
 
 def test_compact_capacity_margin_excludes_network_loss_and_matches_generic():
-    case = shared_case("central", loss=0.1)
+    case = shared_case(
+        "central",
+        loss=0.1,
+        capacity_margin_basis=CAPACITY_MARGIN_BASIS_BUILDING_USEFUL,
+    )
     design = _design(case)
     compact = build_compact_model(case, design)
     solve_pyomo_model(compact)
@@ -282,7 +289,7 @@ def test_compact_capacity_margin_excludes_network_loss_and_matches_generic():
     assert compact_capacity < 1.2 * (building_peak + total_loss)
     audit = audit_compact_solution(case, compact)
     assert audit["passed"]
-    assert audit["capacity_margin_basis"] == "connected_building_useful_heat_demand_only"
+    assert audit["capacity_margin_basis"] == CAPACITY_MARGIN_BASIS_BUILDING_USEFUL
     assert audit["network_heat_loss_in_capacity_margin"] is False
     assert audit["storage_counted_in_capacity_margin"] is False
 

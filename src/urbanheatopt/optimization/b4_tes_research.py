@@ -9,7 +9,10 @@ from time import perf_counter
 from pyomo.environ import value
 
 from urbanheatopt.model.costing.annualized import capital_recovery_factor
-from urbanheatopt.model.reference_core import CoreModelInput, EconomicInput, TechnologySpec, ThermalStorageSpec
+from urbanheatopt.model.reference_core import (
+    CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS,
+    CoreModelInput, EconomicInput, TechnologySpec, ThermalStorageSpec,
+)
 from urbanheatopt.model.road_core import MonthlyDemandChargeInput, PipeDesign, RoadCase, build_road_model
 from urbanheatopt.optimization.solvers import SolverSettings, solve_pyomo_model
 
@@ -18,6 +21,7 @@ RESEARCH_SCENARIO_ID = 'B4_single_case'
 RESEARCH_EVIDENCE = {
     'status': 'research_assumption',
     'formal_engineering_result': False,
+    'capacity_margin_basis': CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS,
     'tes_energy_capacity_max_kWh_th': 500.0,
     'tes_charge_capacity_max_kW_th': 150.0,
     'tes_discharge_capacity_max_kW_th': 150.0,
@@ -101,6 +105,7 @@ def build_b4_research_case() -> RoadCase:
             **{('central_hp', hour): 1. for hour in hours},
             **{('local_hp', hour): 1. for hour in hours}},
         allow_unserved=False, peak_capacity_margin_fraction=.2,
+        capacity_margin_basis=CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS,
         candidate_station_nodes=('SOURCE_SITE',),
     )
     network = {

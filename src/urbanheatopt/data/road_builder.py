@@ -17,7 +17,14 @@ from typing import Any
 import pandas as pd
 
 from urbanheatopt.data.bundles import CaseBundle, INTERFACE_VERSION, SolveRequest
-from urbanheatopt.model.reference_core import CoreModelInput, EconomicInput, TechnologySpec, ThermalStorageSpec
+from urbanheatopt.model.reference_core import (
+    CAPACITY_MARGIN_BASIS_BUILDING_USEFUL,
+    CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS,
+    CoreModelInput,
+    EconomicInput,
+    TechnologySpec,
+    ThermalStorageSpec,
+)
 from urbanheatopt.model.physical_interfaces import TabularASHPPerformanceProvider
 from urbanheatopt.model.road_core import (
     B2CapacityInput, BoundaryEvidence, MonthlyDemandChargeInput,
@@ -254,6 +261,7 @@ def build_road_case(case_bundle: str | Path | CaseBundle) -> RoadCaseBuildResult
             heat_pump_capacity_ratio_by_hour=performance.capacity_ratio_by_technology_hour,
             allow_unserved=False,
             peak_capacity_margin_fraction=float(capacity_payload["peak_capacity_margin_fraction"]),
+            capacity_margin_basis=CAPACITY_MARGIN_BASIS_BUILDING_USEFUL,
             candidate_station_nodes=site_ids,
         )
         b1_pipe = {row.pipe_type_id: row for row in b1.pipe_routes}
@@ -361,6 +369,7 @@ def build_season_case(adaptation, network: dict, snapshot: dict) -> RoadCase:
         techs,(),econ,storage=storage,heat_pump_cop_by_hour=performance.cop_by_technology_hour,
         heat_pump_capacity_ratio_by_hour=performance.capacity_ratio_by_technology_hour,
         allow_unserved=False,peak_capacity_margin_fraction=v['peak_margin'],
+        capacity_margin_basis=CAPACITY_MARGIN_BASIS_SOURCE_INCLUDING_LOSS,
         candidate_station_nodes=tuple(s['site_id'] for s in network['sites']))
     pipes=tuple(PipeDesign(tid,v['pipe_capacity_kW_th'][i],v['pipe_cost'][i],v['pipe_life'],
         v['pipe_loss'][i],v['pipe_pump'][i],v['pipe_dn_mm'][i]) for i,tid in enumerate(v['pipe_type_ids']))
@@ -403,7 +412,8 @@ def case_payload(case: RoadCase) -> dict[str, Any]:
         ) if case.monthly_demand_charge else None), b2_capacity=b2_payload,
         cop=[[t,h,x] for (t,h),x in sorted(d.heat_pump_cop_by_hour.items())],
         capacity_ratio=[[t,h,x] for (t,h),x in sorted(d.heat_pump_capacity_ratio_by_hour.items())],
-        allow_unserved=d.allow_unserved,peak_margin=d.peak_capacity_margin_fraction)
+        allow_unserved=d.allow_unserved,peak_margin=d.peak_capacity_margin_fraction,
+        capacity_margin_basis=d.capacity_margin_basis)
 
 
 def road_case_content_sha256(case: RoadCase) -> str:
@@ -430,6 +440,7 @@ def load_case(path: str | Path) -> RoadCase:
         heat_pump_cop_by_hour={(t,h):x for t,h,x in obj['cop']},
         heat_pump_capacity_ratio_by_hour={(t,h):x for t,h,x in obj['capacity_ratio']},
         allow_unserved=obj['allow_unserved'],peak_capacity_margin_fraction=obj['peak_margin'],
+        capacity_margin_basis=obj['capacity_margin_basis'],
         candidate_station_nodes=tuple(obj['sites']))
     demand_charge = obj.get('monthly_demand_charge')
     if demand_charge is not None:
