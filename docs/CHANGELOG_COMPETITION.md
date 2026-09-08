@@ -867,3 +867,9 @@ git status --short --branch
 - 冲突处理：保留B组可在两种历史口径间显式选择且未知口径封闭失败的`capacity_margin_requirement`公共函数；生产`RoadCase Builder`固定选择老师确认的`connected_building_useful_heat_demand`，并把该字段写入RoadCase序列化及内容哈希。通用道路核心、紧凑核心和独立QA共同调用同一投影函数，管损仍进入热平衡，TES仍不抵扣设备裕度。
 - 目的：使A侧0907规则文件、B侧数学投影和生产RoadCase真正闭合，避免远端合并后因缺少显式`capacity_margin_basis`导致真实案例在构模前失败；旧历史适配器继续显式使用其原有源侧含损失口径，不静默改变历史回归语义。
 - 验证：冲突解决后容量裕度、0907补丁、通用/紧凑核心、RoadCase Builder、交接对象及TES专项`124 passed`；首次全量检查暴露23项旧Canonical/冻结哈希未跟随显式口径更新的问题，补齐后原失败集合`71 passed`，最终完整回归`710 passed / 3 skipped`。真实生产`prepare`再次退出0，464项输入哈希不变，生成62栋×2160小时、399节点、578边、5候选站、184接入方案的RoadCase，显式口径为`connected_building_useful_heat_demand`。
+
+# 2026-09-08 固定可移植Conda环境入口
+
+- 修改：新增`RUN_URBANHEATOPT.cmd`统一入口，按显式变量、仓库内环境、仓库同级环境的顺序定位固定Conda前缀，并在启动主程序、测试或GUI前执行版本及求解器门禁；`gui.bat`改为复用同一入口。补充新电脑安装、精确依赖版本和排错说明。
+- 目的：消除PowerShell未初始化Conda时找不到命令，以及`conda run -n urbanheatopt_env`误选用户目录旧环境的问题。运行环境必须使用`environment.yml`固定的Python 3.12.2、Pyomo 6.8.2和HiGHS 1.15.1等版本。
+- 边界：本节点不修改数学模型、输入或运行结果；环境门禁通过只证明依赖正确，不代替真实求解和独立QA。

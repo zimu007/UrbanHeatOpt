@@ -9,6 +9,7 @@ htmlcov/
 # 本地环境与编辑器状态
 .env
 .venv/
+/.conda_envs/
 .vscode/
 .idea/
 

@@ -6,19 +6,21 @@
 
 新主线源码为 `src/urbanheatopt/`，根入口为 `run.py`。本轮只负责目录、输入参数和模块集成，不实现B的模型升级或C的可视化。
 
-V0 smoke command (synthetic test data only):
+固定环境和统一启动命令：
 
 ```powershell
-conda run --no-capture-output -n urbanheatopt_env python tools/check_environment.py
-conda run --no-capture-output -n urbanheatopt_env python run.py --help
-conda run --no-capture-output -n urbanheatopt_env python -m pytest -q
+.\RUN_URBANHEATOPT.cmd --check
+.\RUN_URBANHEATOPT.cmd --pytest -q
+.\RUN_URBANHEATOPT.cmd --help
 ```
+
+启动器使用实际环境前缀而非同名环境，避免误用另一套Python或HiGHS。新电脑安装方式、固定版本和排错见[固定环境说明](docs/runbooks/ENVIRONMENT_SETUP_CN.md)。
 
 `run.py validate/prepare`已接入自动源校验、新经济包、全供暖季标准化和RoadCase构建；`run.py solve`显式消费CaseBundle与SolveRequest，调用紧凑五树新核心，不回退旧模型。report、diagnose、tes-check仍是未启用门禁。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
 
 ```powershell
-python run.py validate --config configs/cases/guanggu_v2.yaml
-python run.py prepare --config configs/cases/guanggu_v2.yaml
+.\RUN_URBANHEATOPT.cmd validate --config configs\cases\guanggu_v2.yaml
+.\RUN_URBANHEATOPT.cmd prepare --config configs\cases\guanggu_v2.yaml
 ```
 
 准备输出在`work/guanggu_v2/<新RUN_ID>/`，求解输出在`runs/v2/<新RUN_ID>/`。真实输入、参数、网络和62栋×2160h RoadCase已能自动准备；求解只有在显式给出请求、新目录且全部候选站界与QA合格时才产生ResultBundle。代码接线通过不代表真实全季结果已经完成。详细操作与状态见[集成手册](docs/runbooks/A_INTEGRATION_CN.md)，总体方向及三人分工见`docs/team/`。
