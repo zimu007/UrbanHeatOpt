@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pyomo.environ import Binary, ConcreteModel, Constraint, NonNegativeReals, Objective, Var
 
 from urbanheatopt.data.bundles import (
     INTERFACE_VERSION,
@@ -78,6 +79,41 @@ def _request(bundle: CaseBundle, mode: str) -> SolveRequest:
             "time_limit_s": 30,
         },
     })
+
+
+def test_integer_polish_removes_solver_tolerant_false_capacity(tmp_path):
+    model = ConcreteModel()
+    model.built = Var(domain=Binary, initialize=0)
+    model.capacity = Var(domain=NonNegativeReals, initialize=0)
+    model.capacity_limit = Constraint(expr=model.capacity <= 40_000 * model.built)
+    model.objective = Objective(expr=model.capacity)
+    model.built.set_value(7.5e-10)
+    settings = solve_executor.SolverSettings(
+        name="highs", threads=1, mip_gap=0.01, time_limit_seconds=30,
+    )
+
+    evidence = solve_executor._polish_integer_solution(
+        model, settings, tmp_path / "polish"
+    )
+
+    assert evidence["polish_executed"] is True
+    assert evidence["max_binary_integrality_residual_before"] == pytest.approx(7.5e-10)
+    assert model.built.fixed is True
+    assert model.built.value == pytest.approx(0.0)
+    assert model.capacity.value == pytest.approx(0.0)
+    assert (tmp_path / "polish" / "integer_polish.json").is_file()
+
+
+def test_integer_polish_rejects_materially_fractional_binary(tmp_path):
+    model = ConcreteModel()
+    model.built = Var(domain=Binary, initialize=0)
+    model.objective = Objective(expr=model.built)
+    model.built.set_value(0.01)
+    settings = solve_executor.SolverSettings(name="highs", threads=1)
+
+    with pytest.raises(ValueError, match="非整数二元变量"):
+        solve_executor._polish_integer_solution(model, settings, tmp_path)
+    assert model.built.fixed is False
 
 
 @pytest.mark.parametrize("mode", ["central", "distributed", "hybrid"])

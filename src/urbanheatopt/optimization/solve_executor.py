@@ -5,6 +5,7 @@ carbon, storage, or network physics and it never calls a legacy model.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 import gc
 import hashlib
@@ -18,7 +19,7 @@ from time import perf_counter
 from typing import Any
 
 import pandas as pd
-from pyomo.environ import value
+from pyomo.environ import Var, value
 
 from urbanheatopt.data.bundles import (
     CaseBundle, ResultBundle, SolveRequest, sha256_file,
@@ -41,7 +42,7 @@ from urbanheatopt.optimization.pareto import (
 from urbanheatopt.paths import REPOSITORY_ROOT
 
 
-SOLVE_EXECUTOR_VERSION = "solve_request_executor_1.2.0"
+SOLVE_EXECUTOR_VERSION = "solve_request_executor_1.2.1"
 MODEL_PROFILE = "compact_five_tree_fullseason_v2"
 PARETO_INTERNAL_FRACTIONS = (0.25, 0.50, 0.75)
 PARETO_EPSILON_TOLERANCE_KG = 1e-6
@@ -124,6 +125,84 @@ def _objective_value(model, objective: str) -> float:
     if not math.isfinite(result):
         raise ValueError("求解目标值不是有限数值")
     return result
+
+
+def _polish_integer_solution(
+    model: Any,
+    settings: SolverSettings,
+    task_root: Path,
+    *,
+    trigger_tolerance: float = 1e-12,
+    acceptance_tolerance: float = 1e-6,
+) -> dict[str, Any]:
+    """Fix solver-tolerant binary values to 0/1 and re-solve the continuous model.
+
+    HiGHS may return a certified MIP solution whose binary values differ from an
+    integer by a few 1e-10.  Multiplying that harmless solver residue by a large
+    pipe capacity can create a false 1e-5 kW flow in the independent QA.  This
+    pass does not change the selected discrete design: every binary must already
+    be within ``acceptance_tolerance`` of its nearest integer.  It only fixes the
+    certified design exactly and re-optimizes the remaining continuous variables.
+    """
+    binaries = tuple(
+        variable
+        for variable in model.component_data_objects(Var, active=True, descend_into=True)
+        if variable.is_binary()
+    )
+    values: list[tuple[Any, float, int, float]] = []
+    for variable in binaries:
+        raw = float(value(variable))
+        if not math.isfinite(raw):
+            raise ValueError(f"二元变量{variable.name}不是有限数值")
+        rounded = int(round(raw))
+        residual = abs(raw - rounded)
+        values.append((variable, raw, rounded, residual))
+    max_residual = max((item[3] for item in values), default=0.0)
+    metadata: dict[str, Any] = {
+        "schema_version": "urbanheatopt_integer_polish_v1",
+        "binary_variable_count": len(values),
+        "trigger_tolerance": trigger_tolerance,
+        "acceptance_tolerance": acceptance_tolerance,
+        "max_binary_integrality_residual_before": max_residual,
+        "polish_executed": False,
+        "fixed_binary_count": 0,
+    }
+    if max_residual > acceptance_tolerance:
+        raise ValueError(
+            "MIP结果包含超过允许容差的非整数二元变量："
+            f"最大残差={max_residual:.12g}"
+        )
+    if max_residual <= trigger_tolerance:
+        task_root.mkdir(parents=True, exist_ok=True)
+        _write_json(task_root / "integer_polish.json", metadata)
+        return metadata
+
+    task_root.mkdir(parents=True, exist_ok=True)
+    for variable, _raw, rounded, _residual in values:
+        variable.fix(rounded)
+    polish_settings = replace(
+        settings,
+        log_file=str(task_root / "polish_solver.log"),
+        evidence_file=str(task_root / "polish_solver_evidence.json"),
+        model_file=None,
+    )
+    polish_results = solve_pyomo_model(model, polish_settings)
+    polish_evidence = get_solver_evidence(polish_results)
+    max_after = max(
+        (
+            abs(float(value(variable)) - int(round(float(value(variable)))))
+            for variable in binaries
+        ),
+        default=0.0,
+    )
+    metadata.update({
+        "polish_executed": True,
+        "fixed_binary_count": len(values),
+        "max_binary_integrality_residual_after": max_after,
+        "polish_solver_evidence": polish_evidence,
+    })
+    _write_json(task_root / "integer_polish.json", metadata)
+    return metadata
 
 
 def _carbon_breakdown(solution_root: Path) -> None:
@@ -332,8 +411,11 @@ def execute_request(
                 if fixed_structure is not None else None
             )
             _write_json(task_root / "model_metadata.json", metadata)
-            results = solve_pyomo_model(model, _request_settings(request_payload, task_root))
+            settings = _request_settings(request_payload, task_root)
+            results = solve_pyomo_model(model, settings)
             evidence = get_solver_evidence(results)
+            integer_polish = _polish_integer_solution(model, settings, task_root)
+            evidence["integer_polish"] = integer_polish
             if fixed_structure is not None:
                 _assert_fixed_structure_solution(model, fixed_structure)
             compact_qa = audit_compact_solution(case, model)
@@ -355,6 +437,10 @@ def execute_request(
                 "best_bound": evidence["best_objective_bound"],
                 "reported_gap": evidence["relative_mip_gap"],
                 "termination_condition": evidence["termination_condition"],
+                "integer_polish_executed": integer_polish["polish_executed"],
+                "max_binary_integrality_residual_before": integer_polish[
+                    "max_binary_integrality_residual_before"
+                ],
                 "compact_qa": compact_qa,
                 "independent_qa_passed": independent_qa.get("passed") is True,
                 "finished_at": datetime.now(timezone.utc).isoformat(),
