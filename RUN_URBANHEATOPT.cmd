@@ -39,18 +39,26 @@ if errorlevel 1 (
 )
 
 if /I "%~1"=="--check" exit /b 0
+set "UHO_MODE=run"
+if /I "%~1"=="--pytest" set "UHO_MODE=pytest"& shift
+if /I "%~1"=="--gui" set "UHO_MODE=gui"& shift
 
-if /I "%~1"=="--pytest" (
-    shift
-    "%UHO_CONDA_EXE%" run --no-capture-output -p "%UHO_ENV_PREFIX%" python -m pytest %*
-    exit /b %ERRORLEVEL%
+setlocal EnableDelayedExpansion
+set "UHO_FORWARD_ARGS="
+:collect_args
+if "%~1"=="" goto :execute
+set UHO_FORWARD_ARGS=!UHO_FORWARD_ARGS! "%~1"
+shift
+goto :collect_args
+
+:execute
+if /I "%UHO_MODE%"=="pytest" (
+    "%UHO_CONDA_EXE%" run --no-capture-output -p "%UHO_ENV_PREFIX%" python -m pytest !UHO_FORWARD_ARGS!
+    exit /b !ERRORLEVEL!
 )
-
-if /I "%~1"=="--gui" (
-    shift
-    "%UHO_CONDA_EXE%" run --no-capture-output -p "%UHO_ENV_PREFIX%" python run_gui.py %*
-    exit /b %ERRORLEVEL%
+if /I "%UHO_MODE%"=="gui" (
+    "%UHO_CONDA_EXE%" run --no-capture-output -p "%UHO_ENV_PREFIX%" python run_gui.py !UHO_FORWARD_ARGS!
+    exit /b !ERRORLEVEL!
 )
-
-"%UHO_CONDA_EXE%" run --no-capture-output -p "%UHO_ENV_PREFIX%" python run.py %*
-exit /b %ERRORLEVEL%
+"%UHO_CONDA_EXE%" run --no-capture-output -p "%UHO_ENV_PREFIX%" python run.py !UHO_FORWARD_ARGS!
+exit /b !ERRORLEVEL!

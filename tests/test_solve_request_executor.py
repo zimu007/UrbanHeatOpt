@@ -12,9 +12,12 @@ from urbanheatopt.data.bundles import (
 )
 from urbanheatopt.optimization.solve_executor import (
     MODEL_PROFILE,
+    execute_pareto_knee_set,
     execute_request,
+    execute_request_set,
     validate_run_id,
 )
+import urbanheatopt.optimization.solve_executor as solve_executor
 
 from test_road_v2_core import shared_case
 
@@ -126,3 +129,45 @@ def test_executor_never_overwrites_existing_run_directory(tmp_path):
 def test_run_id_is_path_safe(value):
     with pytest.raises(ValueError):
         validate_run_id(value)
+
+
+def _prepared_requests(tmp_path: Path, bundle: CaseBundle) -> Path:
+    prepared = tmp_path / "prepared"
+    prepared.mkdir()
+    bundle_path = prepared / "case_bundle.json"
+    bundle.write(bundle_path)
+    requests = prepared / "solve_requests"
+    requests.mkdir()
+    for mode in ("central", "distributed", "hybrid"):
+        _request(bundle, mode).write(requests / f"{mode}_cost.json")
+    return bundle_path
+
+
+def test_pareto_request_set_runs_real_tiny_models_and_never_fabricates_knee(
+    tmp_path, monkeypatch
+):
+    bundle = _case_bundle(tmp_path)
+    bundle_path = _prepared_requests(tmp_path, bundle)
+    monkeypatch.setattr(
+        solve_executor,
+        "load_prepared_road_case",
+        lambda _path: (bundle, shared_case(), {"synthetic": True}),
+    )
+    output = tmp_path / "pareto"
+    result = execute_pareto_knee_set(bundle_path, output)
+    assert result["qualified"] is True
+    assert result["method"] == "epsilon_constraint"
+    assert (output / "pareto_points.csv").is_file()
+    assert (output / "pareto_frontiers.json").is_file()
+    knees = json.loads((output / "knee_points.json").read_text(encoding="utf-8"))
+    assert knees["no_fabricated_knee_when_fewer_than_three_distinct_points"] is True
+    points = pd.read_csv(output / "pareto_points.csv")
+    assert set(points["mode"]) == {"central", "distributed", "hybrid"}
+    assert points["unserved_heat_kWh"].abs().max() <= 1e-6
+
+
+def test_full_study_fails_closed_until_tes_pair_executor_exists(tmp_path):
+    target = tmp_path / "not_created"
+    with pytest.raises(ValueError, match="TES固定结构配对"):
+        execute_request_set(tmp_path / "missing.json", target, "full-study")
+    assert not target.exists()

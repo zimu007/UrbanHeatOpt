@@ -16,7 +16,10 @@ def main(argv=None):
     parser.add_argument("--bundle", type=Path)
     request_group = parser.add_mutually_exclusive_group()
     request_group.add_argument("--request", type=Path)
-    request_group.add_argument("--request-set", choices=("cost-endpoints",))
+    request_group.add_argument(
+        "--request-set",
+        choices=("cost-endpoints", "carbon-endpoints", "pareto-knee", "full-study"),
+    )
     args = parser.parse_args(argv)
     try:
         from urbanheatopt.data.integration import load_config, run_input_pipeline
@@ -31,8 +34,8 @@ def main(argv=None):
             if args.request is None and args.request_set is None:
                 raise ValueError("solve必须提供--request或--request-set")
             from urbanheatopt.optimization.solve_executor import (
-                execute_cost_endpoint_set,
                 execute_prepared_request,
+                execute_request_set,
                 validate_run_id,
             )
             run_id = validate_run_id(args.run_id)
@@ -53,7 +56,7 @@ def main(argv=None):
                     "qualified": result.to_dict()["qualified"],
                 }
             else:
-                payload = execute_cost_endpoint_set(args.bundle, target)
+                payload = execute_request_set(args.bundle, target, args.request_set)
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 0
         if args.bundle:

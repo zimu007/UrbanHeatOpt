@@ -34,11 +34,16 @@ from urbanheatopt.model.road_core import RoadCase
 from urbanheatopt.optimization.solvers import (
     SolverNotOptimalError, SolverSettings, get_solver_evidence, solve_pyomo_model,
 )
+from urbanheatopt.optimization.pareto import (
+    ParetoPoint, ParetoSpec, assemble_pareto_run, point_to_dict,
+)
 from urbanheatopt.paths import REPOSITORY_ROOT
 
 
-SOLVE_EXECUTOR_VERSION = "solve_request_executor_1.0.0"
+SOLVE_EXECUTOR_VERSION = "solve_request_executor_1.1.0"
 MODEL_PROFILE = "compact_five_tree_fullseason_v2"
+PARETO_INTERNAL_FRACTIONS = (0.25, 0.50, 0.75)
+PARETO_EPSILON_TOLERANCE_KG = 1e-6
 
 
 def _write_json(path: Path, value_: Any, *, exclusive: bool = True) -> None:
@@ -163,6 +168,7 @@ def execute_request(
     candidate_ids = _candidate_ids(case, mode)
     candidate_rows: list[dict[str, Any]] = []
     candidates: list[tuple[float, str, Path, dict, dict]] = []
+    certified_infeasible = 0
 
     for site_id in candidate_ids:
         task_root = output / "candidate_tasks" / site_id
@@ -209,13 +215,23 @@ def execute_request(
             })
             candidates.append((objective, site_id, solution_root, evidence, independent_qa))
         except SolverNotOptimalError as exc:
+            is_certified_infeasible = (
+                "infeasible" in exc.termination_condition.lower()
+                and not exc.has_feasible_solution
+            )
             status.update({
-                "status": "not_qualified", "error": str(exc),
+                "status": (
+                    "certified_infeasible"
+                    if is_certified_infeasible else "not_qualified"
+                ),
+                "error": None if is_certified_infeasible else str(exc),
                 "termination_condition": exc.termination_condition,
                 "incumbent": exc.incumbent_objective, "best_bound": exc.best_objective_bound,
                 "reported_gap": exc.reported_mip_gap,
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             })
+            if is_certified_infeasible:
+                certified_infeasible += 1
         except Exception as exc:
             status.update({
                 "status": "error", "error": f"{type(exc).__name__}: {exc}",
@@ -234,18 +250,22 @@ def execute_request(
             gc.collect()
 
     comparison = pd.DataFrame(candidate_rows)
-    if len(candidates) != len(candidate_ids):
+    if len(candidates) + certified_infeasible != len(candidate_ids) or not candidates:
         comparison["selected"] = False
         comparison.to_csv(output / "candidate_site_comparison.csv", index=False, encoding="utf-8-sig")
         _write_json(output / "run_manifest.json", {
             "executor_version": SOLVE_EXECUTOR_VERSION, "model_profile": MODEL_PROFILE,
             "mode": mode, "candidate_count": len(candidate_ids),
-            "qualified_candidate_count": len(candidates), "result_qualified": False,
+            "qualified_candidate_count": len(candidates),
+            "certified_infeasible_candidate_count": certified_infeasible,
+            "result_qualified": False,
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "legacy_fallback_used": False,
         })
-        raise RuntimeError("并非全部候选站子任务均有合格解和有效界，不能认证五树范围全局结果")
+        raise RuntimeError(
+            "候选站子任务存在未认证失败，或全部候选均不可行，不能认证五树范围全局结果"
+        )
 
     selected = min(candidates, key=lambda row: (row[0], row[1]))
     selected_objective, selected_site, selected_root, selected_evidence, selected_qa = selected
@@ -274,6 +294,8 @@ def execute_request(
         "selected_site_id": selected_site,
         "optimization_scope": "five_candidate_shortest_path_trees",
         "all_candidate_sites_certified": True,
+        "qualified_candidate_site_count": len(candidates),
+        "certified_infeasible_candidate_site_count": certified_infeasible,
         "road_constrained": True,
         "construction_feasibility_verified": False,
     })
@@ -304,6 +326,8 @@ def execute_request(
         "building_count": len(case.common.demand_nodes),
         "hour_count": len(case.common.hours),
         "candidate_count": len(candidate_ids),
+        "qualified_candidate_count": len(candidates),
+        "certified_infeasible_candidate_count": certified_infeasible,
         "selected_site_id": selected_site,
         "optimization_scope": "five_candidate_shortest_path_trees",
         "legacy_fallback_used": False,
@@ -393,6 +417,263 @@ def execute_cost_endpoint_set(
     }
     _write_json(output / "request_set_summary.json", summary)
     return summary
+
+
+def _request_from_base(
+    base: SolveRequest,
+    *,
+    objective: str,
+    epsilon: float | None = None,
+    tes_enabled: bool = False,
+) -> SolveRequest:
+    payload = base.to_dict()
+    payload.update({
+        "objective": objective,
+        "epsilon_carbon_kg": epsilon,
+        "tes_enabled": tes_enabled,
+    })
+    return SolveRequest.from_dict(payload)
+
+
+def _base_request(bundle_path: Path, mode: str) -> SolveRequest:
+    request = SolveRequest.read(
+        bundle_path.parent / "solve_requests" / f"{mode}_cost.json"
+    )
+    if request.to_dict()["mode"] != mode:
+        raise ValueError(f"基础SolveRequest模式错位：{mode}")
+    return request
+
+
+def _point_from_result(
+    point_id: str,
+    labels: tuple[str, ...],
+    epsilon: float | None,
+    output: Path,
+) -> ParetoPoint:
+    summary = json.loads(
+        (output / "solution_summary.json").read_text(encoding="utf-8")
+    )
+    evidence = json.loads(
+        (output / "solver_evidence.json").read_text(encoding="utf-8")
+    )
+    qa = json.loads((output / "independent_qa.json").read_text(encoding="utf-8"))
+    if qa.get("passed") is not True:
+        raise ValueError(f"Pareto点{point_id}独立QA未通过")
+    return ParetoPoint(
+        point_id=point_id,
+        mode=str(summary["mode"]),
+        labels=labels,
+        epsilon_kgCO2e_per_year=epsilon,
+        annual_real_cost_CNY_per_year=float(summary["real_cost_CNY"]),
+        annual_operating_carbon_kgCO2e_per_year=float(summary["carbon_kgCO2e"]),
+        annual_hns_penalty_CNY_per_year=float(summary["hns_penalty_CNY"]),
+        unserved_heat_kWh=float(qa["unserved_kWh"]),
+        solver_status="ok",
+        termination_condition=(
+            "optimal" if float(evidence["certified_gap"]) <= 1e-12 else "feasible"
+        ),
+        reported_mip_gap=float(evidence["certified_gap"]),
+        incumbent_objective=float(evidence["incumbent"]),
+        best_objective_bound=float(evidence["best_bound"]),
+        solver_evidence_file=str((output / "solver_evidence.json").resolve()),
+    )
+
+
+def _execute_pareto_point(
+    *,
+    bundle: CaseBundle,
+    road_case: RoadCase,
+    road_case_evidence: dict[str, Any],
+    base_request: SolveRequest,
+    root: Path,
+    point_id: str,
+    objective: str,
+    labels: tuple[str, ...],
+    epsilon: float | None = None,
+) -> ParetoPoint:
+    request = _request_from_base(
+        base_request, objective=objective, epsilon=epsilon, tes_enabled=False
+    )
+    requests = root / "requests"
+    requests.mkdir(parents=True, exist_ok=True)
+    _write_json(requests / f"{point_id}.json", request.to_dict())
+    point_root = root / "points" / point_id
+    execute_request(
+        bundle,
+        road_case,
+        request,
+        point_root,
+        road_case_evidence=road_case_evidence,
+    )
+    return _point_from_result(point_id, labels, epsilon, point_root)
+
+
+def _write_pareto_outputs(
+    root: Path,
+    points: list[ParetoPoint],
+    collapsed_modes: dict[str, str],
+) -> dict[str, Any]:
+    run = assemble_pareto_run(tuple(points), ParetoSpec(point_count=5))
+    rows = []
+    for point in points:
+        row = point_to_dict(point)
+        row["labels"] = "|".join(point.labels)
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(
+        root / "pareto_points.csv", index=False, encoding="utf-8-sig"
+    )
+    mode_frontiers = {
+        mode: [point_to_dict(point) for point in frontier]
+        for mode, frontier in run.mode_frontiers.items()
+    }
+    combined = [point_to_dict(point) for point in run.combined_frontier]
+    _write_json(root / "pareto_frontiers.json", {
+        "method": "epsilon_constraint",
+        "internal_fractions": list(PARETO_INTERNAL_FRACTIONS),
+        "mode_frontiers": mode_frontiers,
+        "combined_frontier": combined,
+        "collapsed_modes": collapsed_modes,
+    })
+    knees = {
+        "modes": {
+            mode: next(
+                (point_to_dict(point) for point in frontier if point.is_knee),
+                None,
+            )
+            for mode, frontier in run.mode_frontiers.items()
+        },
+        "combined": next(
+            (point_to_dict(point) for point in run.combined_frontier if point.is_knee),
+            None,
+        ),
+        "rule": "maximum_distance_in_normalized_cost_carbon_space",
+        "no_fabricated_knee_when_fewer_than_three_distinct_points": True,
+    }
+    _write_json(root / "knee_points.json", knees)
+    return {
+        "point_count": len(points),
+        "mode_frontier_counts": {
+            mode: len(frontier) for mode, frontier in run.mode_frontiers.items()
+        },
+        "combined_frontier_count": len(run.combined_frontier),
+        "knees": knees,
+        "collapsed_modes": collapsed_modes,
+    }
+
+
+def execute_carbon_endpoint_set(
+    bundle_path: str | Path,
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Solve carbon first, then minimize cost at the certified carbon floor."""
+    bundle_path = Path(bundle_path).expanduser().resolve(strict=True)
+    bundle, road_case, evidence = load_prepared_road_case(bundle_path)
+    output = Path(output_root).expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    points: list[ParetoPoint] = []
+    for mode in ("central", "distributed", "hybrid"):
+        base = _base_request(bundle_path, mode)
+        primary = _execute_pareto_point(
+            bundle=bundle, road_case=road_case, road_case_evidence=evidence,
+            base_request=base, root=output,
+            point_id=f"{mode}_carbon_primary", objective="carbon",
+            labels=("carbon_primary_certificate",),
+        )
+        endpoint = _execute_pareto_point(
+            bundle=bundle, road_case=road_case, road_case_evidence=evidence,
+            base_request=base, root=output,
+            point_id=f"{mode}_carbon_endpoint", objective="cost",
+            epsilon=primary.annual_operating_carbon_kgCO2e_per_year,
+            labels=("carbon_endpoint", "lexicographic_cost_tiebreak"),
+        )
+        points.append(endpoint)
+    payload = {
+        "request_set": "carbon-endpoints",
+        "method": "lexicographic_carbon_then_cost",
+        "case_bundle_id": bundle.bundle_id,
+        "points": [point_to_dict(point) for point in points],
+        "qualified": len(points) == 3,
+    }
+    _write_json(output / "request_set_summary.json", payload)
+    return payload
+
+
+def execute_pareto_knee_set(
+    bundle_path: str | Path,
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Run three no-TES mode frontiers and expose knee points, not four labels."""
+    bundle_path = Path(bundle_path).expanduser().resolve(strict=True)
+    bundle, road_case, evidence = load_prepared_road_case(bundle_path)
+    output = Path(output_root).expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    points: list[ParetoPoint] = []
+    collapsed_modes: dict[str, str] = {}
+    for mode in ("central", "distributed", "hybrid"):
+        base = _base_request(bundle_path, mode)
+        cost = _execute_pareto_point(
+            bundle=bundle, road_case=road_case, road_case_evidence=evidence,
+            base_request=base, root=output,
+            point_id=f"{mode}_cost_endpoint", objective="cost",
+            labels=("cost_endpoint",),
+        )
+        primary = _execute_pareto_point(
+            bundle=bundle, road_case=road_case, road_case_evidence=evidence,
+            base_request=base, root=output,
+            point_id=f"{mode}_carbon_primary", objective="carbon",
+            labels=("carbon_primary_certificate",),
+        )
+        carbon = _execute_pareto_point(
+            bundle=bundle, road_case=road_case, road_case_evidence=evidence,
+            base_request=base, root=output,
+            point_id=f"{mode}_carbon_endpoint", objective="cost",
+            epsilon=primary.annual_operating_carbon_kgCO2e_per_year,
+            labels=("carbon_endpoint", "lexicographic_cost_tiebreak"),
+        )
+        points.extend((cost, carbon))
+        low = carbon.annual_operating_carbon_kgCO2e_per_year
+        high = cost.annual_operating_carbon_kgCO2e_per_year
+        if high < low - PARETO_EPSILON_TOLERANCE_KG:
+            raise ValueError(f"模式{mode}成本端点碳排低于认证最低碳端点")
+        if high - low <= PARETO_EPSILON_TOLERANCE_KG:
+            collapsed_modes[mode] = "成本端点与最低碳端点重合，无需伪造内部ε点"
+            continue
+        for fraction in PARETO_INTERNAL_FRACTIONS:
+            epsilon = low + (high - low) * fraction
+            tag = int(round(fraction * 100))
+            points.append(_execute_pareto_point(
+                bundle=bundle, road_case=road_case, road_case_evidence=evidence,
+                base_request=base, root=output,
+                point_id=f"{mode}_epsilon_{tag:03d}", objective="cost",
+                epsilon=epsilon, labels=("epsilon", f"fraction_{fraction:.2f}"),
+            ))
+    summary = _write_pareto_outputs(output, points, collapsed_modes)
+    payload = {
+        "request_set": "pareto-knee",
+        "method": "epsilon_constraint",
+        "case_bundle_id": bundle.bundle_id,
+        "tes_enabled": False,
+        "qualified": True,
+        **summary,
+    }
+    _write_json(output / "request_set_summary.json", payload)
+    return payload
+
+
+def execute_request_set(
+    bundle_path: str | Path,
+    output_root: str | Path,
+    request_set: str,
+) -> dict[str, Any]:
+    if request_set == "cost-endpoints":
+        return execute_cost_endpoint_set(bundle_path, output_root)
+    if request_set == "carbon-endpoints":
+        return execute_carbon_endpoint_set(bundle_path, output_root)
+    if request_set == "pareto-knee":
+        return execute_pareto_knee_set(bundle_path, output_root)
+    if request_set == "full-study":
+        raise ValueError("full-study需等待TES固定结构配对节点完成，未静默回退无TES结果")
+    raise ValueError(f"未知request-set：{request_set}")
 
 
 def validate_run_id(run_id: str) -> str:

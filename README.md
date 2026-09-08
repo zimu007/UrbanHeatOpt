@@ -16,7 +16,7 @@
 
 启动器使用实际环境前缀而非同名环境，避免误用另一套Python或HiGHS。新电脑安装方式、固定版本和排错见[固定环境说明](docs/runbooks/ENVIRONMENT_SETUP_CN.md)。
 
-`run.py validate/prepare`已接入自动源校验、新经济包、全供暖季标准化和RoadCase构建；`run.py solve`显式消费CaseBundle与SolveRequest，调用紧凑五树新核心，不回退旧模型。report、diagnose、tes-check仍是未启用门禁。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
+`run.py validate/prepare`已接入自动源校验、新经济包、全供暖季标准化和RoadCase构建；`run.py solve`显式消费CaseBundle与SolveRequest，调用紧凑五树新核心，不回退旧模型。生产请求集支持三模式成本端点、词典序碳端点及无TES的ε-constraint膝点；TES固定结构配对接入前，`full-study`保持封闭失败。report、diagnose、tes-check仍是未启用门禁。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
 
 ```powershell
 .\RUN_URBANHEATOPT.cmd validate --config configs\cases\guanggu_v2.yaml
