@@ -16,11 +16,12 @@
 
 启动器使用实际环境前缀而非同名环境，避免误用另一套Python或HiGHS。新电脑安装方式、固定版本和排错见[固定环境说明](docs/runbooks/ENVIRONMENT_SETUP_CN.md)。
 
-`run.py validate/prepare`已接入自动源校验、新经济包、全供暖季标准化和RoadCase构建；`run.py solve`显式消费CaseBundle与SolveRequest，调用紧凑五树新核心，不回退旧模型。生产请求集支持三模式成本端点、词典序碳端点及无TES的ε-constraint膝点；TES固定结构配对接入前，`full-study`保持封闭失败。report、diagnose、tes-check仍是未启用门禁。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
+`run.py validate/prepare`已接入自动源校验、新经济包、全供暖季标准化和RoadCase构建；`run.py solve`显式消费CaseBundle与SolveRequest，调用紧凑五树新核心，不回退旧模型。生产请求集支持三模式成本端点、词典序碳端点、无TES的ε-constraint前沿与膝点，以及集中式/混合式膝点结构固定后的TES ON复算；纯分布式没有区域站TES，明确记为不适用。report、diagnose仍是未启用门禁。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
 
 ```powershell
 .\RUN_URBANHEATOPT.cmd validate --config configs\cases\guanggu_v2.yaml
 .\RUN_URBANHEATOPT.cmd prepare --config configs\cases\guanggu_v2.yaml
+.\RUN_URBANHEATOPT.cmd solve --config configs\cases\guanggu_v2.yaml --bundle "<prepare目录>\case_bundle.json" --request-set full-study --run-id "<唯一RUN_ID>" --output-root runs\v2
 ```
 
 准备输出在`work/guanggu_v2/<新RUN_ID>/`，求解输出在`runs/v2/<新RUN_ID>/`。真实输入、参数、网络和62栋×2160h RoadCase已能自动准备；求解只有在显式给出请求、新目录且全部候选站界与QA合格时才产生ResultBundle。代码接线通过不代表真实全季结果已经完成。详细操作与状态见[集成手册](docs/runbooks/A_INTEGRATION_CN.md)，总体方向及三人分工见`docs/team/`。

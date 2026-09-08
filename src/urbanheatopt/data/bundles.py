@@ -374,7 +374,7 @@ def ready_report(
         "solver_executed": False,
         "result_qualified": False,
         "registered_model_adapter": (
-            "handoff_v1+site_capacity_v1+road_case_builder_1.0.0+solve_request_executor_1.0.0"
+            "handoff_v1+site_capacity_v1+road_case_builder_1.0.0+solve_request_executor_1.2.0"
             if b1_ready and b2_ready and road_case_ready and solver_pipeline_ready
             else None
         ),

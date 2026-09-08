@@ -186,7 +186,7 @@ def test_executable_adapter_evidence_unlocks_research_but_not_publication(case_p
     assert report["model_capability_ready"] and report["research_solve_ready"]
     assert report["model_ready"] and not report["publication_ready"]
     assert not report["solver_executed"] and not report["result_qualified"]
-    assert report["registered_model_adapter"].endswith("solve_request_executor_1.0.0")
+    assert report["registered_model_adapter"].endswith("solve_request_executor_1.2.0")
 
 
 def result_payload(case_payload):

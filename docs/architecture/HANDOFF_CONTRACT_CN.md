@@ -109,7 +109,7 @@ build_road_case(case_bundle) -> RoadCaseBuildResult
 
 ## 7. SolveRequest生产执行器
 
-执行器版本为`solve_request_executor_1.0.0`，统一入口为`run.py solve`。它首先重新复核CaseBundle及RoadCase哈希，再按请求构建新紧凑模型。分布式只求一个无站网结果；集中式、混合式分别枚举5个候选站的确定性道路树。只有5个站点子任务均取得有效可行解和下界，合成gap不超过请求阈值，且选中方案的紧凑全时域QA与导出后独立QA均通过，才能写`qualified=true`。
+执行器版本为`solve_request_executor_1.2.0`，统一入口为`run.py solve`。它首先重新复核CaseBundle及RoadCase哈希，再按请求构建新紧凑模型。分布式只求一个无站网结果；集中式、混合式分别枚举5个候选站的确定性道路树。每个候选站必须取得合格解与有效界，或被求解器证明不可行；合成gap不超过请求阈值，且选中方案的紧凑全时域QA与导出后独立QA均通过，才能写`qualified=true`。
 
 执行结果固定标注`optimization_scope=five_candidate_shortest_path_trees`，不能称为完整自由拓扑或施工级最优。每个候选站保留独立日志、求解证据和状态；根目录保存站点比较、选中方案、标准结果文件、合成界和ResultBundle。输出目录必须是仓库`runs/`内不存在的新目录。
 
@@ -122,7 +122,7 @@ python run.py solve --config configs/cases/guanggu_v2.yaml `
   --run-id "<唯一RUN_ID>" --output-root runs/v2
 ```
 
-本接口不复用旧任务成功状态，不接受未供热，不会在候选失败时用其余站点冒充全局证书。TES由请求显式开关；首轮自动请求固定为关闭。
+本接口不复用旧任务成功状态，不接受未供热，不会在候选未认证失败时用其余站点冒充全局证书。`pareto-knee`以成本端点、最低碳端点和最多三个内部ε点生成分模式及合并前沿。`full-study`在此基础上，只对集中式、混合式的模式膝点（无可识别膝点时为明确标注的成本端点回退）固定站址、接网和管型，再启用TES复算；纯分布式不含区域站TES。固定结构哈希、TES实际容量、最大充放功率、上限触及状态及有/无TES差值均进入配对QA。
 
 ## 8. 调用与验证
 

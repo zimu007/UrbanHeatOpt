@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -17,9 +18,20 @@ from urbanheatopt.optimization.solve_executor import (
     execute_request_set,
     validate_run_id,
 )
+from urbanheatopt.model.reference_core import ThermalStorageSpec
 import urbanheatopt.optimization.solve_executor as solve_executor
 
 from test_road_v2_core import shared_case
+
+
+def _tes_case():
+    source = shared_case()
+    storage = ThermalStorageSpec(
+        "tes", 200.0, 200.0, 200.0, 0.9, 0.9, 0.01,
+        0.01, 0.01, 0.01, 20,
+    )
+    return replace(source, common=replace(source.common, storage=storage))
+from test_road_v2_compact_tes import _tes_case
 
 
 def _case_bundle(tmp_path: Path) -> CaseBundle:
@@ -151,7 +163,7 @@ def test_pareto_request_set_runs_real_tiny_models_and_never_fabricates_knee(
     monkeypatch.setattr(
         solve_executor,
         "load_prepared_road_case",
-        lambda _path: (bundle, shared_case(), {"synthetic": True}),
+        lambda _path: (bundle, _tes_case(), {"synthetic": True}),
     )
     output = tmp_path / "pareto"
     result = execute_pareto_knee_set(bundle_path, output)
@@ -166,8 +178,21 @@ def test_pareto_request_set_runs_real_tiny_models_and_never_fabricates_knee(
     assert points["unserved_heat_kWh"].abs().max() <= 1e-6
 
 
-def test_full_study_fails_closed_until_tes_pair_executor_exists(tmp_path):
-    target = tmp_path / "not_created"
-    with pytest.raises(ValueError, match="TES固定结构配对"):
-        execute_request_set(tmp_path / "missing.json", target, "full-study")
-    assert not target.exists()
+def test_full_study_runs_pareto_and_fixed_structure_tes_pairs(tmp_path, monkeypatch):
+    bundle = _case_bundle(tmp_path)
+    bundle_path = _prepared_requests(tmp_path, bundle)
+    monkeypatch.setattr(
+        solve_executor,
+        "load_prepared_road_case",
+        lambda _path: (bundle, _tes_case(), {"synthetic": True}),
+    )
+    output = tmp_path / "full_study"
+    result = execute_request_set(bundle_path, output, "full-study")
+    assert result["qualified"] is True
+    assert result["distributed_tes_status"] == "not_applicable_no_regional_station"
+    for mode in ("central", "hybrid"):
+        pair = result["tes_pairs"][mode]
+        assert pair["structure_match"] is True
+        assert pair["fixed_pipe_connection_cost_residual_CNY_per_year"] <= 1e-6
+        assert pair["independent_qa_passed"] is True
+        assert (output / "tes_pairs" / mode / "tes_pair_qa.json").is_file()

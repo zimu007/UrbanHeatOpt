@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import gc
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -40,10 +41,11 @@ from urbanheatopt.optimization.pareto import (
 from urbanheatopt.paths import REPOSITORY_ROOT
 
 
-SOLVE_EXECUTOR_VERSION = "solve_request_executor_1.1.0"
+SOLVE_EXECUTOR_VERSION = "solve_request_executor_1.2.0"
 MODEL_PROFILE = "compact_five_tree_fullseason_v2"
 PARETO_INTERNAL_FRACTIONS = (0.25, 0.50, 0.75)
 PARETO_EPSILON_TOLERANCE_KG = 1e-6
+FIXED_STRUCTURE_SCHEMA = "urbanheatopt_tes_fixed_structure_1"
 
 
 def _write_json(path: Path, value_: Any, *, exclusive: bool = True) -> None:
@@ -132,11 +134,144 @@ def _carbon_breakdown(solution_root: Path) -> None:
     ]).to_csv(solution_root / "carbon_breakdown.csv", index=False, encoding="utf-8-sig")
 
 
-def _candidate_ids(case: RoadCase, mode: str) -> tuple[str, ...]:
+def _canonical_sha256(payload: Any) -> str:
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _candidate_ids(
+    case: RoadCase,
+    mode: str,
+    fixed_structure: dict[str, Any] | None = None,
+) -> tuple[str, ...]:
     sites = tuple(sorted(str(row["site_id"]) for row in case.network["sites"]))
     if len(case.common.demand_nodes) == 62 and len(case.common.hours) == 2160 and len(sites) != 5:
         raise ValueError("62栋×2160小时生产执行固定要求5个候选站")
+    if fixed_structure is not None:
+        site_id = str(fixed_structure["site_id"])
+        if site_id not in sites:
+            raise ValueError(f"TES固定结构引用未知候选站：{site_id}")
+        return (site_id,)
     return (sites[0],) if mode == "distributed" else sites
+
+
+def _load_fixed_structure(solution_root: Path) -> dict[str, Any]:
+    """Read the exact site, connection and pipe design of one qualified run."""
+    required = (
+        "selected_site.json",
+        "building_connection.csv",
+        "network_decisions.csv",
+        "solution_summary.json",
+        "solver_evidence.json",
+        "independent_qa.json",
+    )
+    missing = [name for name in required if not (solution_root / name).is_file()]
+    if missing:
+        raise ValueError("TES配对源点缺少结果文件：" + ", ".join(missing))
+    site_payload = json.loads(
+        (solution_root / "selected_site.json").read_text(encoding="utf-8")
+    )
+    summary = json.loads(
+        (solution_root / "solution_summary.json").read_text(encoding="utf-8")
+    )
+    qa = json.loads(
+        (solution_root / "independent_qa.json").read_text(encoding="utf-8")
+    )
+    if qa.get("passed") is not True:
+        raise ValueError("TES配对源点独立QA未通过")
+    connections = pd.read_csv(solution_root / "building_connection.csv")
+    if connections["building_id"].duplicated().any():
+        raise ValueError("TES配对源点存在重复building_id")
+    connection_vector: dict[str, int] = {}
+    for row in connections.itertuples(index=False):
+        raw = float(row.connected)
+        selected = int(round(raw))
+        if selected not in (0, 1) or abs(raw - selected) > 1e-7:
+            raise ValueError(f"TES配对源点接网决策不是二元值：{row.building_id}")
+        connection_vector[str(row.building_id)] = selected
+    pipes = pd.read_csv(
+        solution_root / "network_decisions.csv", keep_default_na=False
+    )
+    if pipes["edge_id"].duplicated().any():
+        raise ValueError("TES配对源点存在重复edge_id")
+    pipe_grade_by_edge: dict[str, str | None] = {}
+    for row in pipes.itertuples(index=False):
+        built = float(row.built)
+        grade = str(row.pipe_type_id).strip()
+        if built > 0.5 and not grade:
+            raise ValueError(f"已建边{row.edge_id}缺少pipe_type_id")
+        pipe_grade_by_edge[str(row.edge_id)] = grade if built > 0.5 else None
+    payload = {
+        "schema": FIXED_STRUCTURE_SCHEMA,
+        "source_result": str(solution_root.resolve()),
+        "source_artifact_sha256": {
+            name: sha256_file(solution_root / name) for name in required
+        },
+        "mode": str(summary["mode"]),
+        "site_id": str(site_payload["selected_site_id"]),
+        "connection_vector": connection_vector,
+        "pipe_grade_by_edge": pipe_grade_by_edge,
+    }
+    payload["fixed_structure_sha256"] = _canonical_sha256(payload)
+    return payload
+
+
+def _apply_fixed_structure(model, case: RoadCase, fixed: dict[str, Any]) -> None:
+    if fixed.get("schema") != FIXED_STRUCTURE_SCHEMA:
+        raise ValueError("TES固定结构schema不受支持")
+    declared_hash = fixed.get("fixed_structure_sha256")
+    hash_payload = {
+        key: value_
+        for key, value_ in fixed.items()
+        if key != "fixed_structure_sha256"
+    }
+    if declared_hash != _canonical_sha256(hash_payload):
+        raise ValueError("TES固定结构内容哈希不一致")
+    if fixed.get("mode") != case.common.mode:
+        raise ValueError("TES固定结构与SolveRequest模式不一致")
+    connection = dict(fixed.get("connection_vector", {}))
+    if set(connection) != set(case.common.demand_nodes):
+        raise ValueError("TES固定结构的建筑集合与RoadCase不一致")
+    if case.common.mode == "central" and any(
+        selected != 1 for selected in connection.values()
+    ):
+        raise ValueError("集中式TES源点必须全部接网")
+    if case.common.mode == "distributed":
+        raise ValueError("纯分布式没有区域站TES，不执行TES固定结构配对")
+    if case.common.mode == "hybrid":
+        for building, selected in connection.items():
+            model.connected[building].fix(int(selected))
+    grades = dict(fixed.get("pipe_grade_by_edge", {}))
+    if set(grades) != {str(edge) for edge in model.E}:
+        raise ValueError("TES固定结构的管段集合与RoadCase不一致")
+    for edge in model.VARIABLE_GRADE_E:
+        selected_grade = grades[str(edge)]
+        if selected_grade is not None and selected_grade not in model.K:
+            raise ValueError(f"TES固定结构管型未知：{edge}/{selected_grade}")
+        for grade in model.K:
+            model._grade_selected[edge, grade].fix(int(selected_grade == grade))
+    model._tes_fixed_structure_sha256 = fixed["fixed_structure_sha256"]
+
+
+def _assert_fixed_structure_solution(model, fixed: dict[str, Any]) -> None:
+    for building, selected in fixed["connection_vector"].items():
+        if abs(float(value(model.connected[building])) - int(selected)) > 1e-7:
+            raise ValueError(f"TES配对改变了建筑接网决策：{building}")
+    for edge, selected_grade in fixed["pipe_grade_by_edge"].items():
+        chosen = [
+            str(grade)
+            for grade in model.K
+            if float(value(model.grade[edge, grade])) > 0.5
+        ]
+        expected = [] if selected_grade is None else [selected_grade]
+        if chosen != expected:
+            raise ValueError(f"TES配对改变了管段/管型决策：{edge}")
 
 
 def execute_request(
@@ -146,6 +281,7 @@ def execute_request(
     output_dir: str | Path,
     *,
     road_case_evidence: dict[str, Any] | None = None,
+    fixed_structure: dict[str, Any] | None = None,
 ) -> ResultBundle:
     """Execute one request and emit a qualified ResultBundle or fail closed."""
     request_payload = request.to_dict()
@@ -165,7 +301,9 @@ def execute_request(
     started_clock = perf_counter()
     mode = request_payload["mode"]
     case = road_case.with_mode(mode)
-    candidate_ids = _candidate_ids(case, mode)
+    if fixed_structure is not None and request_payload["tes_enabled"] is not True:
+        raise ValueError("fixed_structure只允许用于TES ON配对求解")
+    candidate_ids = _candidate_ids(case, mode, fixed_structure)
     candidate_rows: list[dict[str, Any]] = []
     candidates: list[tuple[float, str, Path, dict, dict]] = []
     certified_infeasible = 0
@@ -186,10 +324,18 @@ def execute_request(
                 epsilon_kgCO2e_per_year=request_payload["epsilon_carbon_kg"],
                 enable_tes=request_payload["tes_enabled"],
             )
+            if fixed_structure is not None:
+                _apply_fixed_structure(model, case, fixed_structure)
             metadata = compact_model_metadata(model)
+            metadata["fixed_structure_sha256"] = (
+                fixed_structure["fixed_structure_sha256"]
+                if fixed_structure is not None else None
+            )
             _write_json(task_root / "model_metadata.json", metadata)
             results = solve_pyomo_model(model, _request_settings(request_payload, task_root))
             evidence = get_solver_evidence(results)
+            if fixed_structure is not None:
+                _assert_fixed_structure_solution(model, fixed_structure)
             compact_qa = audit_compact_solution(case, model)
             if compact_qa.get("passed") is not True:
                 raise ValueError(f"紧凑模型全时域QA失败: {compact_qa}")
@@ -290,14 +436,23 @@ def execute_request(
     for name in standard_files:
         shutil.copy2(selected_target / name, output / name)
     shutil.copy2(output / "qa_summary.json", output / "independent_qa.json")
+    realized_scope = (
+        "fixed_structure_tes_pair"
+        if fixed_structure is not None
+        else "five_candidate_shortest_path_trees"
+    )
     _write_json(output / "selected_site.json", {
         "selected_site_id": selected_site,
-        "optimization_scope": "five_candidate_shortest_path_trees",
-        "all_candidate_sites_certified": True,
+        "optimization_scope": realized_scope,
+        "all_candidate_sites_certified": fixed_structure is None,
         "qualified_candidate_site_count": len(candidates),
         "certified_infeasible_candidate_site_count": certified_infeasible,
         "road_constrained": True,
         "construction_feasibility_verified": False,
+        "fixed_structure_sha256": (
+            fixed_structure["fixed_structure_sha256"]
+            if fixed_structure is not None else None
+        ),
     })
     global_evidence = {
         "executor_version": SOLVE_EXECUTOR_VERSION,
@@ -307,6 +462,11 @@ def execute_request(
         "certified_gap": global_gap,
         "accepted_gap": accepted_gap,
         "selected_site_id": selected_site,
+        "optimization_scope": realized_scope,
+        "fixed_structure_sha256": (
+            fixed_structure["fixed_structure_sha256"]
+            if fixed_structure is not None else None
+        ),
         "candidate_evidence": {item[1]: item[3] for item in candidates},
     }
     _write_json(output / "solver_evidence.json", global_evidence)
@@ -329,8 +489,12 @@ def execute_request(
         "qualified_candidate_count": len(candidates),
         "certified_infeasible_candidate_count": certified_infeasible,
         "selected_site_id": selected_site,
-        "optimization_scope": "five_candidate_shortest_path_trees",
+        "optimization_scope": realized_scope,
         "legacy_fallback_used": False,
+        "fixed_structure_sha256": (
+            fixed_structure["fixed_structure_sha256"]
+            if fixed_structure is not None else None
+        ),
         "git_sha": _git_sha(),
         "started_at": started_at.isoformat(),
         "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -339,6 +503,8 @@ def execute_request(
         "result_qualified": True,
     }
     _write_json(output / "run_manifest.json", manifest)
+    if fixed_structure is not None:
+        _write_json(output / "fixed_structure.json", fixed_structure)
 
     artifacts = []
     role_by_name = {
@@ -352,6 +518,8 @@ def execute_request(
         "carbon_breakdown.csv": "carbon_breakdown",
         "run_manifest.json": "run_manifest",
     }
+    if fixed_structure is not None:
+        role_by_name["fixed_structure.json"] = "fixed_structure"
     for name, role in role_by_name.items():
         path = output / name
         artifacts.append({"role": role, "path": str(path), "sha256": sha256_file(path)})
@@ -660,6 +828,188 @@ def execute_pareto_knee_set(
     return payload
 
 
+def _frontier_representative(
+    pareto_root: Path, mode: str
+) -> tuple[dict[str, Any], str]:
+    frontiers = json.loads(
+        (pareto_root / "pareto_frontiers.json").read_text(encoding="utf-8")
+    )
+    points = list(frontiers["mode_frontiers"].get(mode, ()))
+    if not points:
+        raise ValueError(f"模式{mode}没有合格Pareto前沿，无法进行TES配对")
+    knee = next((point for point in points if point.get("is_knee") is True), None)
+    if knee is not None:
+        return knee, "normalized_knee"
+    # A two-point or collapsed frontier has no mathematical interior knee.  Use
+    # the minimum-cost endpoint as the documented representative, without
+    # relabelling it as a fabricated knee.
+    endpoint = min(
+        points,
+        key=lambda point: (
+            float(point["annual_real_cost_CNY_per_year"]),
+            float(point["annual_operating_carbon_kgCO2e_per_year"]),
+            str(point["point_id"]),
+        ),
+    )
+    return endpoint, "cost_endpoint_fallback_no_distinct_knee"
+
+
+def _read_costs(root: Path) -> dict[str, float]:
+    table = pd.read_csv(root / "cost_breakdown.csv")
+    if table["component"].duplicated().any():
+        raise ValueError("成本分项存在重复component")
+    return {
+        str(row.component): float(row.annual_CNY)
+        for row in table.itertuples(index=False)
+    }
+
+
+def _compare_tes_pair(
+    off_root: Path,
+    on_root: Path,
+    fixed: dict[str, Any],
+    role: str,
+) -> dict[str, Any]:
+    off_summary = json.loads(
+        (off_root / "solution_summary.json").read_text(encoding="utf-8")
+    )
+    on_summary = json.loads(
+        (on_root / "solution_summary.json").read_text(encoding="utf-8")
+    )
+    on_manifest = json.loads(
+        (on_root / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    on_qa = json.loads(
+        (on_root / "independent_qa.json").read_text(encoding="utf-8")
+    )
+    realized = _load_fixed_structure(on_root)
+    structure_match = (
+        realized["site_id"] == fixed["site_id"]
+        and realized["connection_vector"] == fixed["connection_vector"]
+        and realized["pipe_grade_by_edge"] == fixed["pipe_grade_by_edge"]
+    )
+    off_costs, on_costs = _read_costs(off_root), _read_costs(on_root)
+    fixed_cost_components = ("pipe_investment", "connection_investment")
+    fixed_cost_residual = max(
+        abs(on_costs[name] - off_costs[name]) for name in fixed_cost_components
+    )
+    storage = pd.read_csv(on_root / "storage_decisions.csv")
+    active = storage.loc[storage["built"].astype(float) > 0.5]
+    if active.empty:
+        tes = {
+            "built": False,
+            "energy_capacity_kWh_th": 0.0,
+            "charge_capacity_kW_th": 0.0,
+            "discharge_capacity_kW_th": 0.0,
+            "actual_peak_charge_kW_th": 0.0,
+            "actual_peak_discharge_kW_th": 0.0,
+            "energy_upper_bound_binding": False,
+            "charge_upper_bound_binding": False,
+            "discharge_upper_bound_binding": False,
+        }
+    else:
+        row = active.iloc[0]
+        tes = {
+            "built": True,
+            "energy_capacity_kWh_th": float(row["energy_capacity_kWh"]),
+            "charge_capacity_kW_th": float(row["charge_capacity_kW"]),
+            "discharge_capacity_kW_th": float(row["discharge_capacity_kW"]),
+            "actual_peak_charge_kW_th": float(row["actual_peak_charge_kW_th"]),
+            "actual_peak_discharge_kW_th": float(row["actual_peak_discharge_kW_th"]),
+            "energy_upper_bound_binding": bool(row["energy_upper_bound_binding"]),
+            "charge_upper_bound_binding": bool(row["charge_upper_bound_binding"]),
+            "discharge_upper_bound_binding": bool(row["discharge_upper_bound_binding"]),
+        }
+    passed = (
+        structure_match
+        and fixed_cost_residual <= 1e-6
+        and on_qa.get("passed") is True
+        and on_manifest.get("result_qualified") is True
+    )
+    return {
+        "representative_role": role,
+        "mode": off_summary["mode"],
+        "fixed_structure_sha256": fixed["fixed_structure_sha256"],
+        "structure_match": structure_match,
+        "fixed_pipe_connection_cost_residual_CNY_per_year": fixed_cost_residual,
+        "tes": tes,
+        "tes_off": {
+            "result_path": str(off_root.resolve()),
+            "annual_real_cost_CNY_per_year": float(off_summary["real_cost_CNY"]),
+            "annual_operating_carbon_kgCO2e_per_year": float(off_summary["carbon_kgCO2e"]),
+        },
+        "tes_on": {
+            "result_path": str(on_root.resolve()),
+            "annual_real_cost_CNY_per_year": float(on_summary["real_cost_CNY"]),
+            "annual_operating_carbon_kgCO2e_per_year": float(on_summary["carbon_kgCO2e"]),
+        },
+        "delta_cost_CNY_per_year": (
+            float(on_summary["real_cost_CNY"]) - float(off_summary["real_cost_CNY"])
+        ),
+        "delta_carbon_kgCO2e_per_year": (
+            float(on_summary["carbon_kgCO2e"]) - float(off_summary["carbon_kgCO2e"])
+        ),
+        "independent_qa_passed": on_qa.get("passed") is True,
+        "passed": passed,
+    }
+
+
+def execute_full_study_set(
+    bundle_path: str | Path,
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Run no-TES Pareto and fixed-structure TES comparisons for regional modes."""
+    bundle_path = Path(bundle_path).expanduser().resolve(strict=True)
+    bundle, road_case, evidence = load_prepared_road_case(bundle_path)
+    output = Path(output_root).expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    pareto_root = output / "pareto_no_tes"
+    pareto_summary = execute_pareto_knee_set(bundle_path, pareto_root)
+    pairs: dict[str, dict[str, Any]] = {}
+    for mode in ("central", "hybrid"):
+        point, role = _frontier_representative(pareto_root, mode)
+        point_id = str(point["point_id"])
+        off_root = pareto_root / "points" / point_id
+        fixed = _load_fixed_structure(off_root)
+        source_request = SolveRequest.read(pareto_root / "requests" / f"{point_id}.json")
+        tes_request = _request_from_base(
+            source_request,
+            objective=source_request.to_dict()["objective"],
+            epsilon=source_request.to_dict()["epsilon_carbon_kg"],
+            tes_enabled=True,
+        )
+        pair_root = output / "tes_pairs" / mode
+        pair_root.mkdir(parents=True, exist_ok=False)
+        _write_json(pair_root / "tes_on_request.json", tes_request.to_dict())
+        _write_json(pair_root / "fixed_structure.json", fixed)
+        on_root = pair_root / "tes_on"
+        execute_request(
+            bundle,
+            road_case,
+            tes_request,
+            on_root,
+            road_case_evidence=evidence,
+            fixed_structure=fixed,
+        )
+        comparison = _compare_tes_pair(off_root, on_root, fixed, role)
+        _write_json(pair_root / "tes_pair_qa.json", comparison)
+        pairs[mode] = comparison
+    payload = {
+        "request_set": "full-study",
+        "method": "epsilon_constraint_with_fixed_structure_tes_pair",
+        "case_bundle_id": bundle.bundle_id,
+        "pareto": pareto_summary,
+        "tes_pairs": pairs,
+        "distributed_tes_status": "not_applicable_no_regional_station",
+        "qualified": (
+            pareto_summary.get("qualified") is True
+            and all(pair["passed"] for pair in pairs.values())
+        ),
+    }
+    _write_json(output / "request_set_summary.json", payload)
+    return payload
+
+
 def execute_request_set(
     bundle_path: str | Path,
     output_root: str | Path,
@@ -672,7 +1022,7 @@ def execute_request_set(
     if request_set == "pareto-knee":
         return execute_pareto_knee_set(bundle_path, output_root)
     if request_set == "full-study":
-        raise ValueError("full-study需等待TES固定结构配对节点完成，未静默回退无TES结果")
+        return execute_full_study_set(bundle_path, output_root)
     raise ValueError(f"未知request-set：{request_set}")
 
 
