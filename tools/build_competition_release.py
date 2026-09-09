@@ -8,6 +8,7 @@ Source can be read from an immutable Git commit or from a clean export directory
 from __future__ import annotations
 
 import argparse
+import gc
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -16,6 +17,7 @@ import os
 from pathlib import Path, PurePosixPath
 import subprocess
 import tempfile
+import time
 from typing import Mapping, Sequence
 import zipfile
 
@@ -687,12 +689,26 @@ def build_release(
             ]
         )
         (staging / "INDEX.md").write_text("\n".join(lines), encoding="utf-8")
-        os.replace(staging, output_root)
+        _publish_staging_directory(staging, output_root)
         return index
     except Exception:
         # Do not recursively delete anything after a failed build.  The uniquely
         # named staging directory is intentionally retained for diagnosis.
         raise
+
+
+def _publish_staging_directory(staging: Path, output_root: Path) -> None:
+    """Publish a completed package directory despite short Windows scan locks."""
+
+    for attempt in range(6):
+        try:
+            os.replace(staging, output_root)
+            return
+        except PermissionError:
+            if output_root.exists() or attempt == 5:
+                raise
+            gc.collect()
+            time.sleep(0.25 * (attempt + 1))
 
 
 def _parser() -> argparse.ArgumentParser:
