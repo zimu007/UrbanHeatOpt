@@ -4,7 +4,7 @@
 
 ## 当前入口与状态
 
-新主线源码为 `src/urbanheatopt/`，根入口为 `run.py`。本轮只负责目录、输入参数和模块集成，不实现B的模型升级或C的可视化。
+新主线源码为 `src/urbanheatopt/`，根入口为 `run.py`。输入准备、三模式全季求解、成本—碳排 Pareto、TES 固定结构配对、独立 QA 和静态成果展示均通过显式子命令进入同一条竞赛主线。
 
 固定环境和统一启动命令：
 
@@ -16,15 +16,17 @@
 
 启动器使用实际环境前缀而非同名环境，避免误用另一套Python或HiGHS。新电脑安装方式、固定版本和排错见[固定环境说明](docs/runbooks/ENVIRONMENT_SETUP_CN.md)。
 
-`run.py validate/prepare`已接入自动源校验、新经济包、全供暖季标准化和RoadCase构建；`run.py solve`显式消费CaseBundle与SolveRequest，调用紧凑五树新核心，不回退旧模型。生产请求集支持三模式成本端点、词典序碳端点、无TES的ε-constraint前沿与膝点，以及集中式/混合式膝点结构固定后的TES ON复算；纯分布式没有区域站TES，明确记为不适用。report、diagnose仍是未启用门禁。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
+`run.py validate/prepare`已接入自动源校验、新经济包、全供暖季标准化和RoadCase构建；`run.py solve`显式消费CaseBundle与SolveRequest，调用紧凑五树新核心，不回退旧模型。生产请求集支持三模式成本端点、词典序碳端点、无TES的ε-constraint前沿与膝点，以及集中式/混合式膝点结构固定后的TES ON复算；纯分布式没有区域站TES，明确记为不适用。`run.py report`可从合格结果生成PPT级PNG/SVG、PDF图册和展示数据，`run.py tes-check`只改变TES投资乘数并验证实际充放热；`diagnose`仍为显式未启用门禁。源码入口无需安装新依赖；项目打包定义见pyproject.toml。
 
 ```powershell
 .\RUN_URBANHEATOPT.cmd validate --config configs\cases\guanggu_v2.yaml
 .\RUN_URBANHEATOPT.cmd prepare --config configs\cases\guanggu_v2.yaml
 .\RUN_URBANHEATOPT.cmd solve --config configs\cases\guanggu_v2.yaml --bundle "<prepare目录>\case_bundle.json" --request-set full-study --run-id "<唯一RUN_ID>" --output-root runs\v2
+.\RUN_URBANHEATOPT.cmd report --run-root "runs\v2\<合格全季RUN_ID>" --tes-sensitivity-root "runs\v2\tes_sensitivity\<TES_RUN_ID>" --output-root "deliverables\competition_final\<展示RUN_ID>\presentation"
+.\RUN_URBANHEATOPT.cmd tes-check --bundle "<prepare目录>\case_bundle.json" --study-root "runs\v2\<合格全季RUN_ID>" --run-id "<唯一TES_RUN_ID>" --output-root runs\v2\tes_sensitivity --threads 4
 ```
 
-准备输出在`work/guanggu_v2/<新RUN_ID>/`，求解输出在`runs/v2/<新RUN_ID>/`。真实输入、参数、网络和62栋×2160h RoadCase已能自动准备；求解只有在显式给出请求、新目录且全部候选站界与QA合格时才产生ResultBundle。代码接线通过不代表真实全季结果已经完成。详细操作与状态见[集成手册](docs/runbooks/A_INTEGRATION_CN.md)，总体方向及三人分工见`docs/team/`。
+准备输出在`work/guanggu_v2/<新RUN_ID>/`，求解输出在`runs/v2/<新RUN_ID>/`。真实输入、参数、网络和62栋×2160h RoadCase已能自动准备；求解只有在显式给出请求、新目录且全部候选站界与QA合格时才产生ResultBundle。当前合格研究结果、展示入口、交付白名单和复现边界见[竞赛最终运行与交付手册](docs/runbooks/FINAL_COMPETITION_DELIVERY_CN.md)；总体方向及三人分工见`docs/team/`。
 
 ## 目录
 
