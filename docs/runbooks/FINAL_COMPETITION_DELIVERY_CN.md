@@ -80,10 +80,12 @@ conda env create -p ..\.conda_envs\urbanheatopt_env -f environment.yml
 
 ```powershell
 .\RUN_URBANHEATOPT.cmd --pytest -q
-.\RUN_URBANHEATOPT.cmd tools\build_competition_release.py --repo-root . --git-ref "<最终提交SHA>" --example-input tests\fixtures\v3_smoke_case --result-root runs\v2\<合格全季RUN_ID> --tes-sensitivity-root runs\v2\tes_sensitivity\<TES_RUN_ID> --figure-root deliverables\competition_final\<展示RUN_ID>\presentation --output-root deliverables\competition_final\<展示RUN_ID>\packages
+conda run --no-capture-output -p ..\.conda_envs\urbanheatopt_env python tools\build_competition_release.py --repo-root . --git-ref "<最终提交SHA>" --example-input tests\fixtures\v3_smoke_case --result-root runs\v2\<合格全季RUN_ID> --tes-sensitivity-root runs\v2\tes_sensitivity\<TES_RUN_ID> --figure-root deliverables\competition_final\<展示RUN_ID>\presentation --output-root deliverables\competition_final\<展示RUN_ID>\packages
 ```
 
 输出分别为源码、合成示例输入、合格结果证据和图册。工具拒绝覆盖已有目录、拒绝从`IN_DATA/raw/原始输入数据`打包、拒绝损坏或非2160小时Parquet、拒绝未通过qualified/gap/独立QA的结果。源码包只含竞赛主线、必要配置、精选测试和复现工具；GUI、历史配置、旧输入适配器、原始数据及运行目录不进入源码包。
+
+上式直接运行独立工具脚本；`RUN_URBANHEATOPT.cmd`只转发`run.py`子命令，不能在其后直接填写工具脚本路径。
 
 `src/urbanheatopt/parameters/legacy_economics.py`目前虽然保留历史命名，但仍被现行经济适配器调用，因此随主线源码保留；这不代表运行时回退旧`model.run_model()`。后续若重命名，必须作为单独重构并完成全量回归，不能在赛前交付节点临时删除。
 
