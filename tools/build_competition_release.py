@@ -31,21 +31,14 @@ SOURCE_ROOT_FILES = {
 }
 SOURCE_PREFIXES = (
     "src/urbanheatopt/",
-    "configs/",
-    "scripts/",
     "baselines/spatial/guanggu_osm_20260828/",
-    "docs/architecture/",
-    "docs/model/",
-    "docs/runbooks/",
-    "docs/decisions/",
-    "docs/team/",
 )
 SOURCE_EXCLUDED_PREFIXES = (
     "src/urbanheatopt/gui/",
     "src/urbanheatopt/data/adapters/legacy_case.py",
-    "configs/legacy/",
-    "docs/decisions/history/",
 )
+SOURCE_CONFIG_FILES = {"configs/cases/guanggu_v2.yaml"}
+SOURCE_SCRIPT_FILES = {"scripts/verify_compact_v1_freeze.py"}
 SOURCE_TEST_FILES = {
     "tests/test_a_integration.py",
     "tests/test_b1_handoff_adapter.py",
@@ -67,7 +60,14 @@ SOURCE_TOOL_FILES = {
     "tools/build_competition_release.py",
     "tools/check_environment.py",
     "tools/verify_source_hashes.py",
+}
+SOURCE_DOC_FILES = {
     "docs/CHANGELOG_COMPETITION.md",
+    "docs/architecture/HANDOFF_CONTRACT_CN.md",
+    "docs/c_qa_report/README.md",
+    "docs/c_qa_report/schema_v1_inventory.md",
+    "docs/runbooks/ENVIRONMENT_SETUP_CN.md",
+    "docs/runbooks/FINAL_COMPETITION_DELIVERY_CN.md",
 }
 SOURCE_SUFFIXES = {
     ".py",
@@ -196,7 +196,13 @@ def _is_source_path(relative: str) -> bool:
     suffix = path.suffix.lower()
     if relative.startswith(SOURCE_EXCLUDED_PREFIXES):
         return False
-    if relative in SOURCE_ROOT_FILES or relative in SOURCE_TOOL_FILES:
+    if relative in (
+        SOURCE_ROOT_FILES
+        | SOURCE_CONFIG_FILES
+        | SOURCE_SCRIPT_FILES
+        | SOURCE_TOOL_FILES
+        | SOURCE_DOC_FILES
+    ):
         return suffix in SOURCE_SUFFIXES
     if relative.startswith("tests/"):
         return relative in SOURCE_TEST_FILES
