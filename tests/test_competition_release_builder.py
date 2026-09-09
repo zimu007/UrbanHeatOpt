@@ -166,6 +166,7 @@ def test_builds_four_whitelist_archives_with_deterministic_hashes(tmp_path: Path
         assert "candidate_tasks/independent_qa.json" not in names
 
     assert (first / "release_index.json").is_file()
+    assert json.loads((first / "_PACKAGE_BUILD_STATUS.json").read_text(encoding="utf-8"))["status"] == "complete"
     assert (first / "SHA256SUMS.txt").read_text(encoding="utf-8").count("  ") == 4
     assert "不含项目原始大数据" in (first / "INDEX.md").read_text(encoding="utf-8")
 

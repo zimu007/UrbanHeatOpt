@@ -8,16 +8,12 @@ Source can be read from an immutable Git commit or from a clean export directory
 from __future__ import annotations
 
 import argparse
-import gc
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
-import os
 from pathlib import Path, PurePosixPath
 import subprocess
-import tempfile
-import time
 from typing import Mapping, Sequence
 import zipfile
 
@@ -637,11 +633,16 @@ def build_release(
     if output_root.exists():
         raise ReleaseBuildError(f"输出目录已存在，拒绝覆盖: {output_root}")
     output_root.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{output_root.name}.building-", dir=output_root.parent))
+    output_root.mkdir()
+    status_path = output_root / "_PACKAGE_BUILD_STATUS.json"
+    status_path.write_text(
+        json.dumps({"status": "building"}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     package_rows: list[dict[str, object]] = []
     try:
         for plan in plans:
-            package_path = staging / plan.filename
+            package_path = output_root / plan.filename
             _write_deterministic_zip(package_path, plan)
             package_rows.append(
                 {
@@ -660,11 +661,11 @@ def build_release(
             "source_identity": dict(source_identity),
             "packages": package_rows,
         }
-        (staging / "release_index.json").write_text(
+        (output_root / "release_index.json").write_text(
             json.dumps(index, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        (staging / "SHA256SUMS.txt").write_text(
+        (output_root / "SHA256SUMS.txt").write_text(
             "".join(f"{row['sha256']}  {row['filename']}\n" for row in package_rows),
             encoding="utf-8",
         )
@@ -688,27 +689,24 @@ def build_release(
                 "",
             ]
         )
-        (staging / "INDEX.md").write_text("\n".join(lines), encoding="utf-8")
-        _publish_staging_directory(staging, output_root)
+        (output_root / "INDEX.md").write_text("\n".join(lines), encoding="utf-8")
+        status_path.write_text(
+            json.dumps(
+                {
+                    "status": "complete",
+                    "package_count": len(package_rows),
+                    "release_index": "release_index.json",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n",
+            encoding="utf-8",
+        )
         return index
     except Exception:
-        # Do not recursively delete anything after a failed build.  The uniquely
-        # named staging directory is intentionally retained for diagnosis.
+        # The unique output directory and its explicit ``building`` status are
+        # intentionally retained for diagnosis. A retry must use another path.
         raise
-
-
-def _publish_staging_directory(staging: Path, output_root: Path) -> None:
-    """Publish a completed package directory despite short Windows scan locks."""
-
-    for attempt in range(6):
-        try:
-            os.replace(staging, output_root)
-            return
-        except PermissionError:
-            if output_root.exists() or attempt == 5:
-                raise
-            gc.collect()
-            time.sleep(0.25 * (attempt + 1))
 
 
 def _parser() -> argparse.ArgumentParser:
