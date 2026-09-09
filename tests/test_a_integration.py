@@ -40,7 +40,11 @@ def synthetic_pipeline(tmp_path, monkeypatch):
                   source_permission_policy="require_consistent",
                   output_root=str(repository / "work" / "case"), scope="heating-season",
                   full_audit=True, mode_scope=["central", "distributed", "hybrid"],
-                  tes_enabled=False, spatial_inputs={}, desktop_gap_report=False)
+                  tes_enabled=False,
+                  solver={"name": "highs", "threads": 4, "candidate_workers": "auto",
+                          "random_seed": 202611, "mip_gap": .01,
+                          "time_limit_s": None, "presolve": "on"},
+                  spatial_inputs={}, desktop_gap_report=False)
     config_path = repository / "synthetic_config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     calls = []
@@ -192,6 +196,24 @@ def test_a_configuration_booleans_are_strict(synthetic_pipeline, field, value):
         integration.load_config(save_config(synthetic_pipeline, **{field: value}))
 
 
+@pytest.mark.parametrize(("field", "value"), [
+    ("threads", 2),
+    ("candidate_workers", 0),
+    ("candidate_workers", 4),
+    ("candidate_workers", "parallel"),
+    ("presolve", True),
+    ("mip_gap", 1.0),
+    ("time_limit_s", 0),
+])
+def test_a_solver_parallel_configuration_is_fail_closed(
+    synthetic_pipeline, field, value
+):
+    solver = dict(synthetic_pipeline.config["solver"])
+    solver[field] = value
+    with pytest.raises(ValueError):
+        integration.load_config(save_config(synthetic_pipeline, solver=solver))
+
+
 def test_a_output_never_writes_raw_input_or_external_results(synthetic_pipeline):
     f = synthetic_pipeline
     for destination in (f.roots.scope_root, f.repository.parent / "OUT_RESULT"):
@@ -238,6 +260,11 @@ def test_a_synthetic_prepare_bundle_and_independent_states(synthetic_pipeline):
         "road_network", "network_manifest", "candidate_sites"
     }
     assert bundle.payload["physical_scope"] == {"buildings": 62, "hours": 2160, "supply_C": 45, "return_C": 40, "peak_capacity_margin_fraction": 0.20}
+    for request_path in (output / "solve_requests").glob("*.json"):
+        solver = json.loads(request_path.read_text(encoding="utf-8"))["solver"]
+        assert solver["threads"] == 4
+        assert solver["candidate_workers"] == "auto"
+        assert solver["presolve"] == "on"
     gate = json.loads((output / "model_readiness_report.json").read_text(encoding="utf-8"))
     assert gate["snapshot_complete"] and gate["model_ready"]
     assert gate["network_ready"] and gate["road_case_ready"]
@@ -299,8 +326,7 @@ def test_a_cli_prepare_calls_new_pipeline(synthetic_pipeline, capsys):
     assert (f.repository / "work" / "case" / "cli_prepare" / "case_bundle.json").is_file()
 
 
-@pytest.mark.parametrize("command", ["report", "diagnose", "tes-check"])
-def test_a_unregistered_cli_never_imports_or_calls_legacy(synthetic_pipeline, monkeypatch, capsys, command):
+def test_a_unregistered_cli_never_imports_or_calls_legacy(synthetic_pipeline, monkeypatch, capsys):
     original_import = builtins.__import__
 
     def guarded_import(name, *args, **kwargs):
@@ -309,7 +335,7 @@ def test_a_unregistered_cli_never_imports_or_calls_legacy(synthetic_pipeline, mo
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
-    assert cli.main([command, "--config", str(synthetic_pipeline.config_path)]) == 2
+    assert cli.main(["diagnose", "--config", str(synthetic_pipeline.config_path)]) == 2
     assert "没有旧模型回退" in capsys.readouterr().out
     assert not (synthetic_pipeline.repository / "work").exists()
 

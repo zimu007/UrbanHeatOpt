@@ -228,6 +228,18 @@ class SolveRequest(_JsonBundle):
         if solver.get("time_limit_s") is not None:
             _number(solver["time_limit_s"], "solver.time_limit_s")
             _require(solver["time_limit_s"] > 0, "time_limit_s 必须为正数或 null")
+        sensitivity = payload.get("sensitivity")
+        if sensitivity is not None:
+            _require(isinstance(sensitivity, dict), "sensitivity 必须是对象")
+            _require(
+                set(sensitivity) == {"scenario_id", "tes_capex_multiplier"},
+                "sensitivity只允许scenario_id和tes_capex_multiplier",
+            )
+            _nonempty(sensitivity.get("scenario_id"), "sensitivity.scenario_id")
+            multiplier = sensitivity.get("tes_capex_multiplier")
+            _number(multiplier, "sensitivity.tes_capex_multiplier", maximum=1.0)
+            _require(multiplier > 0, "sensitivity.tes_capex_multiplier必须大于0")
+            _require(payload["tes_enabled"] is True, "TES投资敏感性只允许用于tes_enabled=true")
 
 
 class ResultBundle(_JsonBundle):

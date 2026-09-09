@@ -516,6 +516,8 @@ def solve_pyomo_model(model: Any, settings: SolverSettings | None = None) -> Any
         "time_limit_acceptance_mip_gap": time_limit_acceptance_gap,
         "configured_feasibility_tolerance": float(resolved.feasibility_tolerance),
         "threads": int(resolved.threads),
+        "parallel_mode": "on" if resolved.threads > 1 else "off",
+        "thread_configuration_applied": True,
         "time_limit_seconds": (
             float(resolved.time_limit_seconds)
             if resolved.time_limit_seconds is not None

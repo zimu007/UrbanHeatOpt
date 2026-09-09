@@ -52,7 +52,7 @@ def load_config(path: Path):
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(config, dict) or config.get("config_version") != "guanggu_v2_a_1.0.0":
         raise ValueError("未知运行配置版本")
-    allowed = {"config_version", "delivery_root", "source_profile", "economic_package", "economic_scenario", "v2_parameter_scenario", "source_permission_policy", "output_root", "scope", "full_audit", "mode_scope", "tes_enabled", "spatial_inputs", "desktop_gap_report"}
+    allowed = {"config_version", "delivery_root", "source_profile", "economic_package", "economic_scenario", "v2_parameter_scenario", "source_permission_policy", "output_root", "scope", "full_audit", "mode_scope", "tes_enabled", "solver", "spatial_inputs", "desktop_gap_report"}
     if set(config) != allowed:
         raise ValueError(f"配置缺少/未知字段: {sorted(set(config)^allowed)}")
     for key in ("tes_enabled", "full_audit", "desktop_gap_report"):
@@ -69,6 +69,41 @@ def load_config(path: Path):
     validate_source_policy(config["source_permission_policy"])
     if config["mode_scope"] != ["central", "distributed", "hybrid"]:
         raise ValueError("三模式必须共用一个输入边界")
+    solver = config.get("solver")
+    solver_fields = {
+        "name", "threads", "candidate_workers", "random_seed", "mip_gap",
+        "time_limit_s", "presolve",
+    }
+    if not isinstance(solver, dict) or set(solver) != solver_fields:
+        raise ValueError(
+            f"solver配置缺少/未知字段: "
+            f"{sorted(set(solver or {}) ^ solver_fields)}"
+        )
+    if solver["name"] not in {"highs", "gurobi", "auto"}:
+        raise ValueError("solver.name只能为highs、gurobi或auto")
+    if type(solver["threads"]) is not int or solver["threads"] not in {1, 4, 8}:
+        raise ValueError("solver.threads只能为1、4或8")
+    workers = solver["candidate_workers"]
+    if workers != "auto" and (
+        type(workers) is not int or workers not in {1, 2, 3}
+    ):
+        raise ValueError("solver.candidate_workers只能为auto、1、2或3")
+    if type(solver["random_seed"]) is not int or solver["random_seed"] < 0:
+        raise ValueError("solver.random_seed必须为非负整数")
+    if (
+        isinstance(solver["mip_gap"], bool)
+        or not isinstance(solver["mip_gap"], (int, float))
+        or not 0 <= float(solver["mip_gap"]) < 1
+    ):
+        raise ValueError("solver.mip_gap必须在[0,1)内")
+    if solver["time_limit_s"] is not None and (
+        isinstance(solver["time_limit_s"], bool)
+        or not isinstance(solver["time_limit_s"], (int, float))
+        or float(solver["time_limit_s"]) <= 0
+    ):
+        raise ValueError("solver.time_limit_s必须为正数或null")
+    if solver["presolve"] not in {"choose", "on", "off"}:
+        raise ValueError("solver.presolve只能为choose、on或off")
     if not isinstance(config["spatial_inputs"], dict):
         raise ValueError("spatial_inputs必须为映射")
     return config
@@ -333,7 +368,13 @@ def prepare_research_boundaries(
     }
 
 
-def generate_solve_requests(bundle: CaseBundle, output: Path, *, tes_enabled: bool):
+def generate_solve_requests(
+    bundle: CaseBundle,
+    output: Path,
+    *,
+    tes_enabled: bool,
+    solver_config: dict,
+):
     request_dir = output / "solve_requests"
     request_dir.mkdir()
     requests = []
@@ -349,11 +390,13 @@ def generate_solve_requests(bundle: CaseBundle, output: Path, *, tes_enabled: bo
             "tes_enabled": tes_enabled,
             "allow_unserved": False,
             "solver": {
-                "name": "highs",
-                "threads": 1,
-                "random_seed": 202611,
-                "mip_gap": 0.01,
-                "time_limit_s": None,
+                "name": solver_config["name"],
+                "threads": solver_config["threads"],
+                "candidate_workers": solver_config["candidate_workers"],
+                "random_seed": solver_config["random_seed"],
+                "mip_gap": solver_config["mip_gap"],
+                "time_limit_s": solver_config["time_limit_s"],
+                "presolve": solver_config["presolve"],
             },
         })
         path = request_dir / f"{mode}_cost.json"
@@ -586,7 +629,10 @@ def run_input_pipeline(command, config_path: Path, *, run_id=None, output_root=N
         try:
             bundle.write(output / "case_bundle.json")
             requests = generate_solve_requests(
-                bundle, output, tes_enabled=config["tes_enabled"]
+                bundle,
+                output,
+                tes_enabled=config["tes_enabled"],
+                solver_config=config["solver"],
             )
             evidence = run_ab_adapter_smoke(
                 bundle, requests, capacity_handoff["capacity_boundaries"], output

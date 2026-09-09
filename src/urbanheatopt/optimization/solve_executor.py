@@ -5,13 +5,16 @@ carbon, storage, or network physics and it never calls a legacy model.
 """
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import datetime, timezone
 import gc
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import subprocess
@@ -42,11 +45,15 @@ from urbanheatopt.optimization.pareto import (
 from urbanheatopt.paths import REPOSITORY_ROOT
 
 
-SOLVE_EXECUTOR_VERSION = "solve_request_executor_1.2.1"
+SOLVE_EXECUTOR_VERSION = "solve_request_executor_1.3.0"
 MODEL_PROFILE = "compact_five_tree_fullseason_v2"
 PARETO_INTERNAL_FRACTIONS = (0.25, 0.50, 0.75)
 PARETO_EPSILON_TOLERANCE_KG = 1e-6
 FIXED_STRUCTURE_SCHEMA = "urbanheatopt_tes_fixed_structure_1"
+AUTO_CANDIDATE_WORKER_LIMIT = 3
+CANDIDATE_WORKER_MEMORY_BUDGET_BYTES = 4 * 1024**3
+CANDIDATE_MEMORY_RESERVE_BYTES = 4 * 1024**3
+TES_SENSITIVITY_SCHEMA = "urbanheatopt_tes_capex_sensitivity_v1"
 
 
 def _write_json(path: Path, value_: Any, *, exclusive: bool = True) -> None:
@@ -87,6 +94,8 @@ def load_prepared_road_case(bundle_path: str | Path) -> tuple[CaseBundle, RoadCa
         raise ValueError("RoadCase重新构建结果与prepare冻结结果不一致")
     return bundle, serialized, {
         **declared,
+        "case_bundle_path": str(bundle_path),
+        "road_case_path": str(case_path),
         "road_case_rebuild_verified": True,
         "road_case_builder_report": rebuilt.report,
     }
@@ -110,7 +119,7 @@ def _request_settings(payload: dict, task_root: Path) -> SolverSettings:
         log_file=str(task_root / "solver.log"),
         evidence_file=str(task_root / "solver_evidence.json"),
         model_file=None,
-        presolve="on",
+        presolve=str(solver.get("presolve", "on")),
         feasibility_tolerance=1e-7,
     )
 
@@ -125,6 +134,38 @@ def _objective_value(model, objective: str) -> float:
     if not math.isfinite(result):
         raise ValueError("求解目标值不是有限数值")
     return result
+
+
+def _effective_case_for_request(
+    road_case: RoadCase,
+    request_payload: dict[str, Any],
+) -> RoadCase:
+    """Apply an explicit, request-hashed TES cost sensitivity."""
+
+    sensitivity = request_payload.get("sensitivity")
+    if sensitivity is None:
+        return road_case
+    if request_payload.get("tes_enabled") is not True:
+        raise ValueError("TES投资敏感性要求tes_enabled=true")
+    storage = road_case.common.storage
+    if storage is None:
+        raise ValueError("RoadCase没有TES参数，不能执行TES投资敏感性")
+    multiplier = float(sensitivity["tes_capex_multiplier"])
+    if not math.isfinite(multiplier) or not 0 < multiplier <= 1:
+        raise ValueError("TES投资敏感性倍率必须在(0,1]内")
+    effective_storage = replace(
+        storage,
+        capex_CNY_per_kWh_th=storage.capex_CNY_per_kWh_th * multiplier,
+        power_capex_CNY_per_kW_th=storage.power_capex_CNY_per_kW_th * multiplier,
+        fixed_capex_CNY=storage.fixed_capex_CNY * multiplier,
+    )
+    return replace(
+        road_case,
+        common=replace(road_case.common, storage=effective_storage),
+        parameter_version=(
+            f"{road_case.parameter_version}|tes_capex_multiplier={multiplier:.12g}"
+        ),
+    )
 
 
 def _polish_integer_solution(
@@ -353,6 +394,257 @@ def _assert_fixed_structure_solution(model, fixed: dict[str, Any]) -> None:
             raise ValueError(f"TES配对改变了管段/管型决策：{edge}")
 
 
+def _available_memory_bytes() -> int | None:
+    """Return currently available physical memory without another dependency."""
+
+    if platform.system().lower() == "windows":
+        import ctypes
+
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = MemoryStatus()
+        status.dwLength = ctypes.sizeof(status)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullAvailPhys)
+        return None
+    meminfo = Path("/proc/meminfo")
+    if meminfo.is_file():
+        for line in meminfo.read_text(encoding="ascii").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    return None
+
+
+def _candidate_execution_plan(
+    request_payload: dict[str, Any],
+    candidate_count: int,
+    road_case_evidence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Resolve bounded process parallelism once; workers never nest."""
+
+    solver = request_payload["solver"]
+    requested = solver.get("candidate_workers", 1)
+    if requested != "auto" and (
+        type(requested) is not int or requested not in {1, 2, 3}
+    ):
+        raise ValueError("solver.candidate_workers只能为auto、1、2或3")
+    threads = int(solver["threads"])
+    logical_cpus = os.cpu_count() or 1
+    available = _available_memory_bytes()
+    cpu_limit = max(1, logical_cpus // threads)
+    memory_limit = (
+        max(
+            1,
+            (available - CANDIDATE_MEMORY_RESERVE_BYTES)
+            // CANDIDATE_WORKER_MEMORY_BUDGET_BYTES,
+        )
+        if available is not None
+        else 1
+    )
+    requested_limit = (
+        AUTO_CANDIDATE_WORKER_LIMIT if requested == "auto" else requested
+    )
+    effective_memory_limit = memory_limit if requested == "auto" else requested_limit
+    resolved = max(
+        1,
+        min(candidate_count, requested_limit, cpu_limit, effective_memory_limit),
+    )
+    case_path = (road_case_evidence or {}).get("road_case_path")
+    serialized_case_available = bool(
+        case_path and Path(case_path).is_file()
+    )
+    if resolved > 1 and not serialized_case_available:
+        raise ValueError(
+            "候选站并发要求prepare生成且通过哈希校验的road_case.json；"
+            "如需直接内存调用，请显式设置candidate_workers=1"
+        )
+    reasons = []
+    if candidate_count <= 1:
+        reasons.append("single_candidate")
+    if requested == 1:
+        reasons.append("explicit_serial")
+    if cpu_limit < requested_limit:
+        reasons.append("cpu_gate")
+    if requested == "auto" and memory_limit < requested_limit:
+        reasons.append("memory_gate")
+    return {
+        "schema": "urbanheatopt_candidate_execution_plan_v1",
+        "requested_candidate_workers": requested,
+        "resolved_candidate_workers": resolved,
+        "candidate_count": candidate_count,
+        "threads_per_candidate": threads,
+        "maximum_auto_workers": AUTO_CANDIDATE_WORKER_LIMIT,
+        "logical_cpu_count": logical_cpus,
+        "available_memory_bytes_at_start": available,
+        "memory_reserve_bytes": CANDIDATE_MEMORY_RESERVE_BYTES,
+        "memory_budget_per_candidate_bytes": CANDIDATE_WORKER_MEMORY_BUDGET_BYTES,
+        "cpu_worker_limit": cpu_limit,
+        "memory_worker_limit": memory_limit,
+        "memory_gate_applied": requested == "auto",
+        "serialized_case_available": serialized_case_available,
+        "process_isolation": resolved > 1,
+        "nested_parallelism": False,
+        "limit_reasons": reasons,
+    }
+
+
+def _run_candidate_task(
+    case: RoadCase,
+    request_payload: dict[str, Any],
+    site_id: str,
+    task_root: Path,
+    fixed_structure: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build, solve, audit and export one isolated candidate-site task."""
+
+    model = None
+    status: dict[str, Any] = {
+        "site_id": site_id,
+        "mode": request_payload["mode"],
+        "status": "running",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "worker_pid": os.getpid(),
+    }
+    candidate: dict[str, Any] | None = None
+    try:
+        design = build_compact_tree_design(case, site_id)
+        model = build_compact_model(
+            case,
+            design,
+            objective=request_payload["objective"],
+            epsilon_kgCO2e_per_year=request_payload["epsilon_carbon_kg"],
+            enable_tes=request_payload["tes_enabled"],
+        )
+        if fixed_structure is not None:
+            _apply_fixed_structure(model, case, fixed_structure)
+        metadata = compact_model_metadata(model)
+        metadata["fixed_structure_sha256"] = (
+            fixed_structure["fixed_structure_sha256"]
+            if fixed_structure is not None else None
+        )
+        metadata["semantic_model_sha256"] = _canonical_sha256({
+            "model_version": COMPACT_MODEL_VERSION,
+            "road_case_content_sha256": road_case_content_sha256(case),
+            "mathematical_request": {
+                key: value_ for key, value_ in request_payload.items()
+                if key != "solver"
+            },
+            "candidate_site_id": site_id,
+            "fixed_structure_sha256": metadata["fixed_structure_sha256"],
+        })
+        _write_json(task_root / "model_metadata.json", metadata)
+        settings = _request_settings(request_payload, task_root)
+        results = solve_pyomo_model(model, settings)
+        evidence = get_solver_evidence(results)
+        integer_polish = _polish_integer_solution(model, settings, task_root)
+        evidence["integer_polish"] = integer_polish
+        if evidence.get("model_sha256") is None:
+            evidence["model_sha256"] = metadata["semantic_model_sha256"]
+            evidence["model_sha256_kind"] = (
+                "semantic_model_identity_without_mps_serialization"
+            )
+        _write_json(
+            task_root / "solver_evidence.json", evidence, exclusive=False,
+        )
+        if fixed_structure is not None:
+            _assert_fixed_structure_solution(model, fixed_structure)
+        compact_qa = audit_compact_solution(case, model)
+        if compact_qa.get("passed") is not True:
+            raise ValueError(f"紧凑模型全时域QA失败: {compact_qa}")
+        solution_root = task_root / "solution"
+        independent_qa = export_compact_solution(case, model, solution_root)
+        if independent_qa.get("passed") is not True:
+            raise ValueError(f"独立导出QA失败: {independent_qa}")
+        _carbon_breakdown(solution_root)
+        objective = _objective_value(model, request_payload["objective"])
+        cost = float(value(model.annual_real_cost_CNY_per_year))
+        carbon = float(value(model.annual_operating_physical_carbon_kgCO2e_per_year))
+        status.update({
+            "status": "qualified",
+            "objective_value": objective,
+            "annual_real_cost_CNY_per_year": cost,
+            "annual_operating_carbon_kgCO2e_per_year": carbon,
+            "incumbent": evidence["incumbent_objective"],
+            "best_bound": evidence["best_objective_bound"],
+            "reported_gap": evidence["relative_mip_gap"],
+            "termination_condition": evidence["termination_condition"],
+            "integer_polish_executed": integer_polish["polish_executed"],
+            "max_binary_integrality_residual_before": integer_polish[
+                "max_binary_integrality_residual_before"
+            ],
+            "compact_qa": compact_qa,
+            "independent_qa_passed": independent_qa.get("passed") is True,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        })
+        candidate = {
+            "objective": objective,
+            "site_id": site_id,
+            "solution_root": str(solution_root.resolve()),
+            "evidence": evidence,
+            "independent_qa": independent_qa,
+        }
+    except SolverNotOptimalError as exc:
+        is_certified_infeasible = (
+            "infeasible" in exc.termination_condition.lower()
+            and not exc.has_feasible_solution
+        )
+        status.update({
+            "status": (
+                "certified_infeasible" if is_certified_infeasible
+                else "not_qualified"
+            ),
+            "error": None if is_certified_infeasible else str(exc),
+            "termination_condition": exc.termination_condition,
+            "incumbent": exc.incumbent_objective,
+            "best_bound": exc.best_objective_bound,
+            "reported_gap": exc.reported_mip_gap,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        status.update({
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        })
+    finally:
+        _write_json(task_root / "task_status.json", status)
+        del model
+        gc.collect()
+    return {"status": status, "candidate": candidate}
+
+
+def _run_candidate_from_serialized_case(
+    road_case_path: str,
+    request_payload: dict[str, Any],
+    site_id: str,
+    task_root: str,
+    fixed_structure: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Spawn-safe entry: every process loads an immutable RoadCase snapshot."""
+
+    case = _effective_case_for_request(
+        load_case(road_case_path), request_payload,
+    ).with_mode(request_payload["mode"])
+    return _run_candidate_task(
+        case,
+        request_payload,
+        site_id,
+        Path(task_root),
+        fixed_structure,
+    )
+
+
 def execute_request(
     bundle: CaseBundle,
     road_case: RoadCase,
@@ -379,7 +671,8 @@ def execute_request(
     started_at = datetime.now(timezone.utc)
     started_clock = perf_counter()
     mode = request_payload["mode"]
-    case = road_case.with_mode(mode)
+    effective_road_case = _effective_case_for_request(road_case, request_payload)
+    case = effective_road_case.with_mode(mode)
     if fixed_structure is not None and request_payload["tes_enabled"] is not True:
         raise ValueError("fixed_structure只允许用于TES ON配对求解")
     candidate_ids = _candidate_ids(case, mode, fixed_structure)
@@ -387,99 +680,82 @@ def execute_request(
     candidates: list[tuple[float, str, Path, dict, dict]] = []
     certified_infeasible = 0
 
-    for site_id in candidate_ids:
-        task_root = output / "candidate_tasks" / site_id
+    execution_plan = _candidate_execution_plan(
+        request_payload, len(candidate_ids), road_case_evidence,
+    )
+    _write_json(output / "candidate_execution_plan.json", execution_plan)
+    task_roots = {
+        site_id: output / "candidate_tasks" / site_id for site_id in candidate_ids
+    }
+    for task_root in task_roots.values():
         task_root.mkdir(parents=True, exist_ok=False)
-        model = None
-        status: dict[str, Any] = {
-            "site_id": site_id, "mode": mode, "status": "running",
-            "started_at": datetime.now(timezone.utc).isoformat(),
-        }
-        try:
-            design = build_compact_tree_design(case, site_id)
-            model = build_compact_model(
-                case, design,
-                objective=request_payload["objective"],
-                epsilon_kgCO2e_per_year=request_payload["epsilon_carbon_kg"],
-                enable_tes=request_payload["tes_enabled"],
+
+    results_by_site: dict[str, dict[str, Any]] = {}
+    worker_count = int(execution_plan["resolved_candidate_workers"])
+    if worker_count == 1:
+        for site_id in candidate_ids:
+            results_by_site[site_id] = _run_candidate_task(
+                case, request_payload, site_id, task_roots[site_id], fixed_structure,
             )
-            if fixed_structure is not None:
-                _apply_fixed_structure(model, case, fixed_structure)
-            metadata = compact_model_metadata(model)
-            metadata["fixed_structure_sha256"] = (
-                fixed_structure["fixed_structure_sha256"]
-                if fixed_structure is not None else None
+    else:
+        case_path = str((road_case_evidence or {})["road_case_path"])
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(
+                    _run_candidate_from_serialized_case,
+                    case_path,
+                    request_payload,
+                    site_id,
+                    str(task_roots[site_id]),
+                    fixed_structure,
+                ): site_id
+                for site_id in candidate_ids
+            }
+            for future in as_completed(futures):
+                site_id = futures[future]
+                try:
+                    results_by_site[site_id] = future.result()
+                except Exception as exc:
+                    status = {
+                        "site_id": site_id,
+                        "mode": mode,
+                        "status": "error",
+                        "error": f"worker_{type(exc).__name__}: {exc}",
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    status_path = task_roots[site_id] / "task_status.json"
+                    if not status_path.exists():
+                        _write_json(status_path, status)
+                    results_by_site[site_id] = {
+                        "status": status,
+                        "candidate": None,
+                    }
+
+    # Process completion order is intentionally discarded: certificates and
+    # comparisons remain stable in canonical candidate-id order.
+    for site_id in candidate_ids:
+        item = results_by_site[site_id]
+        status = item["status"]
+        candidate = item["candidate"]
+        if candidate is not None:
+            candidates.append((
+                float(candidate["objective"]),
+                str(candidate["site_id"]),
+                Path(candidate["solution_root"]),
+                candidate["evidence"],
+                candidate["independent_qa"],
+            ))
+        elif status["status"] == "certified_infeasible":
+            certified_infeasible += 1
+        candidate_rows.append({
+            key: status.get(key) for key in (
+                "site_id", "mode", "status", "objective_value",
+                "annual_real_cost_CNY_per_year",
+                "annual_operating_carbon_kgCO2e_per_year",
+                "incumbent", "best_bound", "reported_gap",
+                "termination_condition", "error", "worker_pid",
             )
-            _write_json(task_root / "model_metadata.json", metadata)
-            settings = _request_settings(request_payload, task_root)
-            results = solve_pyomo_model(model, settings)
-            evidence = get_solver_evidence(results)
-            integer_polish = _polish_integer_solution(model, settings, task_root)
-            evidence["integer_polish"] = integer_polish
-            if fixed_structure is not None:
-                _assert_fixed_structure_solution(model, fixed_structure)
-            compact_qa = audit_compact_solution(case, model)
-            if compact_qa.get("passed") is not True:
-                raise ValueError(f"紧凑模型全时域QA失败: {compact_qa}")
-            solution_root = task_root / "solution"
-            independent_qa = export_compact_solution(case, model, solution_root)
-            if independent_qa.get("passed") is not True:
-                raise ValueError(f"独立导出QA失败: {independent_qa}")
-            _carbon_breakdown(solution_root)
-            objective = _objective_value(model, request_payload["objective"])
-            cost = float(value(model.annual_real_cost_CNY_per_year))
-            carbon = float(value(model.annual_operating_physical_carbon_kgCO2e_per_year))
-            status.update({
-                "status": "qualified", "objective_value": objective,
-                "annual_real_cost_CNY_per_year": cost,
-                "annual_operating_carbon_kgCO2e_per_year": carbon,
-                "incumbent": evidence["incumbent_objective"],
-                "best_bound": evidence["best_objective_bound"],
-                "reported_gap": evidence["relative_mip_gap"],
-                "termination_condition": evidence["termination_condition"],
-                "integer_polish_executed": integer_polish["polish_executed"],
-                "max_binary_integrality_residual_before": integer_polish[
-                    "max_binary_integrality_residual_before"
-                ],
-                "compact_qa": compact_qa,
-                "independent_qa_passed": independent_qa.get("passed") is True,
-                "finished_at": datetime.now(timezone.utc).isoformat(),
-            })
-            candidates.append((objective, site_id, solution_root, evidence, independent_qa))
-        except SolverNotOptimalError as exc:
-            is_certified_infeasible = (
-                "infeasible" in exc.termination_condition.lower()
-                and not exc.has_feasible_solution
-            )
-            status.update({
-                "status": (
-                    "certified_infeasible"
-                    if is_certified_infeasible else "not_qualified"
-                ),
-                "error": None if is_certified_infeasible else str(exc),
-                "termination_condition": exc.termination_condition,
-                "incumbent": exc.incumbent_objective, "best_bound": exc.best_objective_bound,
-                "reported_gap": exc.reported_mip_gap,
-                "finished_at": datetime.now(timezone.utc).isoformat(),
-            })
-            if is_certified_infeasible:
-                certified_infeasible += 1
-        except Exception as exc:
-            status.update({
-                "status": "error", "error": f"{type(exc).__name__}: {exc}",
-                "finished_at": datetime.now(timezone.utc).isoformat(),
-            })
-        finally:
-            _write_json(task_root / "task_status.json", status)
-            candidate_rows.append({
-                key: status.get(key) for key in (
-                    "site_id", "mode", "status", "objective_value",
-                    "annual_real_cost_CNY_per_year", "annual_operating_carbon_kgCO2e_per_year",
-                    "incumbent", "best_bound", "reported_gap", "termination_condition", "error",
-                )
-            })
-            del model
-            gc.collect()
+        })
 
     comparison = pd.DataFrame(candidate_rows)
     if len(candidates) + certified_infeasible != len(candidate_ids) or not candidates:
@@ -490,6 +766,7 @@ def execute_request(
             "mode": mode, "candidate_count": len(candidate_ids),
             "qualified_candidate_count": len(candidates),
             "certified_infeasible_candidate_count": certified_infeasible,
+            "candidate_execution_plan": execution_plan,
             "result_qualified": False,
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -553,6 +830,11 @@ def execute_request(
             fixed_structure["fixed_structure_sha256"]
             if fixed_structure is not None else None
         ),
+        "candidate_execution_plan": execution_plan,
+        "sensitivity": request_payload.get("sensitivity"),
+        "effective_road_case_content_sha256": road_case_content_sha256(
+            effective_road_case
+        ),
         "candidate_evidence": {item[1]: item[3] for item in candidates},
     }
     _write_json(output / "solver_evidence.json", global_evidence)
@@ -563,7 +845,9 @@ def execute_request(
         "case_bundle_id": bundle.bundle_id,
         "case_bundle_content_id": bundle.content_id,
         "solve_request_id": request.bundle_id,
-        "road_case_content_sha256": road_case_content_sha256(road_case),
+        "road_case_content_sha256": road_case_content_sha256(effective_road_case),
+        "base_road_case_content_sha256": road_case_content_sha256(road_case),
+        "sensitivity": request_payload.get("sensitivity"),
         "road_case_evidence": road_case_evidence or {},
         "run_id": output.name,
         "mode": mode,
@@ -576,6 +860,7 @@ def execute_request(
         "certified_infeasible_candidate_count": certified_infeasible,
         "selected_site_id": selected_site,
         "optimization_scope": realized_scope,
+        "candidate_execution_plan": execution_plan,
         "legacy_fallback_used": False,
         "fixed_structure_sha256": (
             fixed_structure["fixed_structure_sha256"]
@@ -710,9 +995,14 @@ def _point_from_result(
     evidence = json.loads(
         (output / "solver_evidence.json").read_text(encoding="utf-8")
     )
+    manifest = json.loads(
+        (output / "run_manifest.json").read_text(encoding="utf-8")
+    )
     qa = json.loads((output / "independent_qa.json").read_text(encoding="utf-8"))
     if qa.get("passed") is not True:
         raise ValueError(f"Pareto点{point_id}独立QA未通过")
+    selected_site = str(evidence["selected_site_id"])
+    selected_evidence = dict(evidence["candidate_evidence"][selected_site])
     return ParetoPoint(
         point_id=point_id,
         mode=str(summary["mode"]),
@@ -729,6 +1019,9 @@ def _point_from_result(
         reported_mip_gap=float(evidence["certified_gap"]),
         incumbent_objective=float(evidence["incumbent"]),
         best_objective_bound=float(evidence["best_bound"]),
+        reported_wallclock_seconds=float(manifest["elapsed_seconds"]),
+        model_sha256=selected_evidence.get("model_sha256"),
+        solver_log_file=selected_evidence.get("solver_log_file"),
         solver_evidence_file=str((output / "solver_evidence.json").resolve()),
     )
 
@@ -768,9 +1061,19 @@ def _write_pareto_outputs(
     collapsed_modes: dict[str, str],
 ) -> dict[str, Any]:
     run = assemble_pareto_run(tuple(points), ParetoSpec(point_count=5))
+    knee_ids = {
+        point.point_id
+        for frontier in run.mode_frontiers.values()
+        for point in frontier
+        if point.is_knee
+    }
+    knee_ids.update(
+        point.point_id for point in run.combined_frontier if point.is_knee
+    )
     rows = []
     for point in points:
         row = point_to_dict(point)
+        row["is_knee"] = point.point_id in knee_ids
         row["labels"] = "|".join(point.labels)
         rows.append(row)
     pd.DataFrame(rows).to_csv(
@@ -980,10 +1283,21 @@ def _compare_tes_pair(
         abs(on_costs[name] - off_costs[name]) for name in fixed_cost_components
     )
     storage = pd.read_csv(on_root / "storage_decisions.csv")
-    active = storage.loc[storage["built"].astype(float) > 0.5]
+    if "tes_installed" in storage:
+        installed = storage["tes_installed"].map(
+            lambda item: item is True
+            or str(item).strip().casefold() in {"1", "true"}
+        )
+    else:
+        installed = storage[[
+            "energy_capacity_kWh", "charge_capacity_kW", "discharge_capacity_kW",
+        ]].abs().max(axis=1) > 1e-6
+    active = storage.loc[installed]
     if active.empty:
         tes = {
             "built": False,
+            "tes_installed": False,
+            "tes_used": False,
             "energy_capacity_kWh_th": 0.0,
             "charge_capacity_kW_th": 0.0,
             "discharge_capacity_kW_th": 0.0,
@@ -995,8 +1309,21 @@ def _compare_tes_pair(
         }
     else:
         row = active.iloc[0]
+        if "tes_used" in active:
+            used = (
+                bool(row["tes_used"])
+                if not isinstance(row["tes_used"], str)
+                else row["tes_used"].strip().casefold() in {"1", "true"}
+            )
+        else:
+            used = max(
+                abs(float(row["actual_peak_charge_kW_th"])),
+                abs(float(row["actual_peak_discharge_kW_th"])),
+            ) > 1e-6
         tes = {
             "built": True,
+            "tes_installed": True,
+            "tes_used": used,
             "energy_capacity_kWh_th": float(row["energy_capacity_kWh"]),
             "charge_capacity_kW_th": float(row["charge_capacity_kW"]),
             "discharge_capacity_kW_th": float(row["discharge_capacity_kW"]),
@@ -1093,6 +1420,148 @@ def execute_full_study_set(
         ),
     }
     _write_json(output / "request_set_summary.json", payload)
+    return payload
+
+
+def execute_tes_capex_sensitivity_set(
+    bundle_path: str | Path,
+    study_root: str | Path,
+    output_root: str | Path,
+    *,
+    multipliers: tuple[float, ...] = (1.0, 0.5, 0.25, 0.1),
+    threads: int = 4,
+) -> dict[str, Any]:
+    """Find the least-discounted TES cost case with real charge/discharge.
+
+    The no-TES combined knee fixes station, connection and pipe decisions.  We
+    then change only the three TES investment coefficients.  Every attempted
+    multiplier is a distinct SolveRequest and effective RoadCase hash.
+    """
+
+    if threads not in {1, 4, 8}:
+        raise ValueError("TES敏感性threads只能为1、4或8")
+    ordered = tuple(float(item) for item in multipliers)
+    if not ordered or any(not math.isfinite(item) or not 0 < item <= 1 for item in ordered):
+        raise ValueError("TES投资倍率必须是(0,1]内的有限数值")
+    if tuple(sorted(set(ordered), reverse=True)) != ordered:
+        raise ValueError("TES投资倍率必须唯一并按降序排列")
+
+    bundle_path = Path(bundle_path).expanduser().resolve(strict=True)
+    study = Path(study_root).expanduser().resolve(strict=True)
+    output = Path(output_root).expanduser().resolve()
+    bundle, road_case, evidence = load_prepared_road_case(bundle_path)
+    study_summary = json.loads(
+        (study / "request_set_summary.json").read_text(encoding="utf-8")
+    )
+    if study_summary.get("qualified") is not True:
+        raise ValueError("TES敏感性源full-study未通过资格门禁")
+    source_bundle_id = str(study_summary.get("case_bundle_id"))
+    pareto_root = study / "pareto_no_tes"
+    knees = json.loads((pareto_root / "knee_points.json").read_text(encoding="utf-8"))
+    knee = knees.get("combined")
+    if not isinstance(knee, dict) or not knee.get("point_id"):
+        raise ValueError("TES敏感性源结果缺少合并非支配前沿膝点")
+    point_id = str(knee["point_id"])
+    mode = str(knee["mode"])
+    if mode == "distributed":
+        raise ValueError("合并膝点为纯分布式，没有区域站TES可供配对")
+    off_root = pareto_root / "points" / point_id
+    source_manifest = json.loads(
+        (off_root / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    source_road_hash = str(source_manifest.get("road_case_content_sha256"))
+    current_road_hash = road_case_content_sha256(road_case)
+    if source_road_hash != current_road_hash:
+        raise ValueError(
+            "TES敏感性源结果与当前RoadCase数学输入不同，禁止跨案例固定结构配对"
+        )
+    fixed = _load_fixed_structure(off_root)
+    source_request = SolveRequest.read(pareto_root / "requests" / f"{point_id}.json")
+
+    output.mkdir(parents=True, exist_ok=False)
+    requests_root = output / "requests"
+    requests_root.mkdir()
+    attempts: list[dict[str, Any]] = []
+    selected_multiplier: float | None = None
+    selected_result_path: str | None = None
+    for multiplier in ordered:
+        scenario_id = f"tes_capex_x{multiplier:.6g}".replace(".", "p")
+        request_payload = source_request.to_dict()
+        request_payload["case_bundle_id"] = bundle.bundle_id
+        request_payload["tes_enabled"] = True
+        request_payload["sensitivity"] = {
+            "scenario_id": scenario_id,
+            "tes_capex_multiplier": multiplier,
+        }
+        request_payload["solver"].update({
+            "threads": threads,
+            "candidate_workers": 1,
+            "presolve": "on",
+        })
+        request = SolveRequest.from_dict(request_payload)
+        request_path = requests_root / f"{scenario_id}.json"
+        _write_json(request_path, request.to_dict())
+        attempt_root = output / scenario_id
+        result = execute_request(
+            bundle,
+            road_case,
+            request,
+            attempt_root,
+            road_case_evidence=evidence,
+            fixed_structure=fixed,
+        )
+        comparison = _compare_tes_pair(
+            off_root, attempt_root, fixed, "combined_normalized_knee",
+        )
+        tes = dict(comparison["tes"])
+        row = {
+            "scenario_id": scenario_id,
+            "tes_capex_multiplier": multiplier,
+            "request_id": request.bundle_id,
+            "result_bundle_id": result.bundle_id,
+            "result_path": str(attempt_root),
+            "qualified": result.to_dict()["qualified"],
+            "tes_installed": bool(tes.get("tes_installed")),
+            "tes_used": bool(tes.get("tes_used")),
+            "energy_capacity_kWh_th": float(tes["energy_capacity_kWh_th"]),
+            "actual_peak_charge_kW_th": float(tes["actual_peak_charge_kW_th"]),
+            "actual_peak_discharge_kW_th": float(tes["actual_peak_discharge_kW_th"]),
+            "pair_qa_passed": bool(comparison["passed"]),
+        }
+        _write_json(attempt_root / "tes_sensitivity_comparison.json", {
+            **comparison,
+            "sensitivity_schema": TES_SENSITIVITY_SCHEMA,
+            "scenario_id": scenario_id,
+            "tes_capex_multiplier": multiplier,
+        })
+        attempts.append(row)
+        if row["tes_used"]:
+            selected_multiplier = multiplier
+            selected_result_path = str(attempt_root)
+            break
+
+    payload = {
+        "schema": TES_SENSITIVITY_SCHEMA,
+        "source_study": str(study),
+        "source_point_id": point_id,
+        "source_mode": mode,
+        "source_case_bundle_id": source_bundle_id,
+        "effective_case_bundle_id": bundle.bundle_id,
+        "road_case_content_sha256": current_road_hash,
+        "road_case_equivalent_to_source": True,
+        "attempts": attempts,
+        "selected_multiplier": selected_multiplier,
+        "selected_result_path": selected_result_path,
+        "selection_rule": "highest_multiplier_with_actual_charge_and_discharge",
+        "demonstration_achieved": selected_multiplier is not None,
+        "all_attempted_results_qualified": all(
+            row["qualified"] and row["pair_qa_passed"] for row in attempts
+        ),
+    }
+    _write_json(output / "tes_sensitivity_summary.json", payload)
+    pd.DataFrame(attempts).to_csv(
+        output / "tes_sensitivity_summary.csv", index=False, encoding="utf-8-sig",
+    )
     return payload
 
 

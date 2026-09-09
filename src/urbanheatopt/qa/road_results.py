@@ -19,6 +19,12 @@ from urbanheatopt.model.reference_core import (
     capacity_margin_requirement,
 )
 from urbanheatopt.optimization.mode_diagnostics import classify_realized_mode
+from urbanheatopt.qa.tes_semantics import (
+    TES_RESULT_TOLERANCE,
+    activity_flag,
+    classify_tes_semantics,
+    clean_near_zero,
+)
 from urbanheatopt.spatial.atomic_network import access_options
 
 
@@ -77,22 +83,43 @@ def export_solution(case: RoadCase, model, root: str | Path):
     storage = []
     for s in m.S:
         spec = d.storage
-        energy = value(m.tes_energy[s])
-        charge_capacity = value(m.tes_charge_capacity[s])
-        discharge_capacity = value(m.tes_discharge_capacity[s])
-        peak_charge = max((value(m.charge[s, h]) for h in d.hours), default=0.0)
-        peak_discharge = max((value(m.discharge[s, h]) for h in d.hours), default=0.0)
+        energy = clean_near_zero(value(m.tes_energy[s]))
+        charge_capacity = clean_near_zero(value(m.tes_charge_capacity[s]))
+        discharge_capacity = clean_near_zero(value(m.tes_discharge_capacity[s]))
+        power_cost_capacity = clean_near_zero(value(m.tes_power_cost_capacity[s]))
+        peak_charge = clean_near_zero(
+            max((value(m.charge[s, h]) for h in d.hours), default=0.0)
+        )
+        peak_discharge = clean_near_zero(
+            max((value(m.discharge[s, h]) for h in d.hours), default=0.0)
+        )
         energy_upper = spec.energy_capacity_max_kWh_th if spec is not None else 0.0
         charge_upper = spec.charge_capacity_max_kW_th if spec is not None else 0.0
         discharge_upper = spec.discharge_capacity_max_kW_th if spec is not None else 0.0
-        tolerance = 1e-6
+        tolerance = TES_RESULT_TOLERANCE
+        semantics = classify_tes_semantics(
+            solver_built_binary=value(m.tes_built[s]),
+            energy_capacity_kWh_th=energy,
+            charge_capacity_kW_th=charge_capacity,
+            discharge_capacity_kW_th=discharge_capacity,
+            power_cost_capacity_kW_th=power_cost_capacity,
+            actual_peak_charge_kW_th=peak_charge,
+            actual_peak_discharge_kW_th=peak_discharge,
+            tolerance=tolerance,
+        )
         storage.append(dict(
             site_id=s,
-            built=value(m.tes_built[s]),
+            # ``built`` remains for compatibility, but now means a nonzero
+            # physical TES.  The raw optimization binary is retained separately.
+            built=semantics.semantic_built,
+            solver_built_binary=semantics.solver_built_binary,
+            tes_installed=semantics.tes_installed,
+            tes_used=semantics.tes_used,
+            result_activity_tolerance=TES_RESULT_TOLERANCE,
             energy_capacity_kWh=energy,
             charge_capacity_kW=charge_capacity,
             discharge_capacity_kW=discharge_capacity,
-            power_cost_capacity_kW=value(m.tes_power_cost_capacity[s]),
+            power_cost_capacity_kW=power_cost_capacity,
             energy_capacity_upper_kWh_th=energy_upper,
             charge_capacity_upper_kW_th=charge_upper,
             discharge_capacity_upper_kW_th=discharge_upper,
@@ -110,9 +137,28 @@ def export_solution(case: RoadCase, model, root: str | Path):
             capacity_margin_offset_allowed=False,
         ))
     pd.DataFrame(storage).to_csv(root/'storage_decisions.csv',index=False)
-    pd.DataFrame([dict(site_id=s,hour=h,timestamp=timestamps[h],charge_kW=value(m.charge[s,h]),
-        discharge_kW=value(m.discharge[s,h]),soc_kWh=value(m.soc[s,h]),charging=value(m.charging[s,h]))
-        for s in m.S for h in d.hours]).to_parquet(root/'storage_hourly.parquet',index=False)
+    storage_hourly = []
+    for s in m.S:
+        for h in d.hours:
+            charge = clean_near_zero(value(m.charge[s, h]))
+            discharge = clean_near_zero(value(m.discharge[s, h]))
+            soc = clean_near_zero(value(m.soc[s, h]))
+            storage_hourly.append(dict(
+                site_id=s,
+                hour=h,
+                timestamp=timestamps[h],
+                charge_kW=charge,
+                discharge_kW=discharge,
+                soc_kWh=soc,
+                # Retain the historical solver-facing field.  The compact core
+                # deliberately has no hourly charging binary, so consumers must
+                # use the two derived activity flags below for reporting.
+                charging=value(m.charging[s, h]),
+                is_charging=activity_flag(charge),
+                is_discharging=activity_flag(discharge),
+                result_activity_tolerance=TES_RESULT_TOLERANCE,
+            ))
+    pd.DataFrame(storage_hourly).to_parquet(root/'storage_hourly.parquet',index=False)
     if compact_fast_export:
         compact_demand=np.asarray(m._compact_demand_matrix,dtype=float)
         compact_connection=np.asarray(m._compact_connection_vector,dtype=float)
