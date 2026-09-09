@@ -38,5 +38,6 @@ htmlcov/
 # New package/build artifacts; no source or synthetic fixture exclusion.
 /build/
 /dist/
+/deliverables/
 *.egg-info/
 /work/
