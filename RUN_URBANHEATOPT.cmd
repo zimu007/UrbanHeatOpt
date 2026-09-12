@@ -19,6 +19,7 @@ if not defined UHO_ENV_PREFIX (
 
 set "UHO_CONDA_EXE="
 if defined CONDA_EXE if exist "%CONDA_EXE%" set "UHO_CONDA_EXE=%CONDA_EXE%"
+if not defined UHO_CONDA_EXE if exist "%~dp0..\.tooling\miniforge3_full\Scripts\conda.exe" set "UHO_CONDA_EXE=%~dp0..\.tooling\miniforge3_full\Scripts\conda.exe"
 if not defined UHO_CONDA_EXE if exist "%USERPROFILE%\anaconda3\Scripts\conda.exe" set "UHO_CONDA_EXE=%USERPROFILE%\anaconda3\Scripts\conda.exe"
 if not defined UHO_CONDA_EXE if exist "%USERPROFILE%\miniconda3\Scripts\conda.exe" set "UHO_CONDA_EXE=%USERPROFILE%\miniconda3\Scripts\conda.exe"
 if not defined UHO_CONDA_EXE if exist "D:\Miniforge\Scripts\conda.exe" set "UHO_CONDA_EXE=D:\Miniforge\Scripts\conda.exe"

@@ -316,7 +316,12 @@ def export_solution(case: RoadCase, model, root: str | Path):
     return qa
 
 
-def audit_export(case: RoadCase, root: str | Path):
+def audit_export(
+    case: RoadCase,
+    root: str | Path,
+    *,
+    audit_output: str | Path | None = None,
+):
     """Recompute solely from exported decisions, dispatch and canonical inputs."""
     audit_started=perf_counter()
     phase_started=audit_started
@@ -329,6 +334,8 @@ def audit_export(case: RoadCase, root: str | Path):
         phase_started=now
 
     root=Path(root)
+    audit_root=Path(audit_output) if audit_output is not None else root
+    audit_root.mkdir(parents=True, exist_ok=True)
     d, net, econ=case.common,case.network,case.common.economics
     caps=pd.read_csv(root/'capacity_decisions.csv')
     dispatch=pd.read_parquet(root/'dispatch_hourly.parquet')
@@ -757,8 +764,8 @@ def audit_export(case: RoadCase, root: str | Path):
         node_id=np.repeat(np.asarray(node_ids,dtype=object),len(hours)),
         hour=np.tile(np.asarray(hours),len(node_ids)),
         residual_kW=node_balance.reshape(-1),
-    )).to_parquet(root/'node_balance_check.parquet',index=False)
-    _json(root/'independent_recalculation.json',dict(cost=costs,carbon_electricity_kgCO2e=carbon_e,carbon_gas_kgCO2e=carbon_g,
+    )).to_parquet(audit_root/'node_balance_check.parquet',index=False)
+    _json(audit_root/'independent_recalculation.json',dict(cost=costs,carbon_electricity_kgCO2e=carbon_e,carbon_gas_kgCO2e=carbon_g,
          carbon_tCO2e=(carbon_e+carbon_g)/1000,unserved_kWh=unserved))
     finish_phase('write_audit_artifacts')
     timing_seconds['total']=perf_counter()-audit_started

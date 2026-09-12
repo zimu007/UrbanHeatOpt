@@ -13,13 +13,28 @@ selection.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import math
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+
+def _suppress_windows_crash_dialogs() -> None:
+    """Keep unattended report failures in logs instead of modal Windows UI."""
+
+    if os.name != "nt":
+        return
+    # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX.  This changes only the
+    # current reporting process and does not alter the user's system setting.
+    ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)
+
+
+_suppress_windows_crash_dialogs()
 
 import matplotlib
 
@@ -31,6 +46,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 
@@ -311,10 +327,29 @@ class FullStudyResultAdapter:
             if pair.get("independent_qa_passed") is not True or pair.get("structure_match") is not True:
                 raise FullStudyReportError(f"{mode}的TES结构或独立QA未通过")
             tes_dir = run_root / "tes_pairs" / mode / "tes_on"
-            if _read_json(tes_dir / "result_bundle.json").get("qualified") is not True:
-                raise FullStudyReportError(f"{mode} TES-on ResultBundle未通过")
-            if _read_json(tes_dir / "independent_qa.json").get("passed") is not True:
-                raise FullStudyReportError(f"{mode} TES-on独立QA未通过")
+            bundle_path = tes_dir / "result_bundle.json"
+            qa_path = tes_dir / "independent_qa.json"
+            if bundle_path.is_file() and qa_path.is_file():
+                if _read_json(bundle_path).get("qualified") is not True:
+                    raise FullStudyReportError(f"{mode} TES-on ResultBundle未通过")
+                if _read_json(qa_path).get("passed") is not True:
+                    raise FullStudyReportError(f"{mode} TES-on独立QA未通过")
+                continue
+
+            # The portable competition package deliberately keeps only the
+            # independently calculated pair evidence, not the duplicate
+            # TES-on ResultBundle.  Accept that compact form only when the
+            # summary and the retained QA file both prove the same checks.
+            compact_qa_path = run_root / "tes_pairs" / mode / "tes_pair_qa.json"
+            compact_qa = _read_json(compact_qa_path)
+            if (
+                pair.get("independent_qa_passed") is not True
+                or pair.get("structure_match") is not True
+                or compact_qa.get("passed") is not True
+                or compact_qa.get("independent_qa_passed") is not True
+                or compact_qa.get("structure_match") is not True
+            ):
+                raise FullStudyReportError(f"{mode}紧凑TES配对证据未通过")
 
 
 def _load_tes_sensitivity(
@@ -338,10 +373,20 @@ def _load_tes_sensitivity(
         raise FullStudyReportError("TES敏感性RoadCase与源full-study不等价")
     if str(summary.get("source_point_id")) != result.combined_knee_id:
         raise FullStudyReportError("TES敏感性不是基于当前权威膝点固定结构")
-    if Path(str(summary.get("source_study", ""))).expanduser().resolve() != result.run_root:
+    source_study_raw = str(summary.get("source_study", ""))
+    compact_delivery = (
+        (result.run_root / "REPRESENTATIVE_RESULTS.json").is_file()
+        and source_study_raw.startswith("<source-run>/")
+    )
+    if not compact_delivery and Path(source_study_raw).expanduser().resolve() != result.run_root:
         raise FullStudyReportError("TES敏感性引用了另一份full-study结果")
 
-    selected_root = Path(str(summary.get("selected_result_path", ""))).expanduser().resolve()
+    selected_raw = str(summary.get("selected_result_path", ""))
+    selected_root = (
+        (root / Path(selected_raw).name).resolve()
+        if compact_delivery and selected_raw.startswith("<source-run>/")
+        else Path(selected_raw).expanduser().resolve()
+    )
     try:
         selected_root.relative_to(root)
     except ValueError as exc:
@@ -434,11 +479,18 @@ def _save_figure(
     # not account for ``fig.text`` and previously let the provenance footer
     # overlap the x-axis title in the rendered PPT figures.
     fig.set_layout_engine(None)
-    fig.subplots_adjust(left=0.085, right=0.985, bottom=0.145, top=0.88)
-    _add_footer(fig, result)
+    clean_map = figure_id == "fig07_network_plan"
+    fig.subplots_adjust(
+        left=0.085,
+        right=0.985,
+        bottom=0.075 if clean_map else 0.145,
+        top=0.88,
+    )
+    if not clean_map:
+        _add_footer(fig, result)
     png = figures_dir / f"{figure_id}.png"
     svg = figures_dir / f"{figure_id}.svg"
-    fig.savefig(png, dpi=220, bbox_inches="tight")
+    fig.savefig(png, dpi=300, bbox_inches="tight")
     fig.savefig(svg, format="svg", bbox_inches="tight")
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
@@ -906,37 +958,51 @@ def _plot_network(result: FullStudyResult) -> plt.Figure:
     connected = {str(row.building_id): _as_bool(row.connected) for row in connections.itertuples(index=False)}
 
     fig, ax = _new_figure("权威膝点：候选站—道路管网—建筑接入方案")
-    built_edge_count = 0
-    built_length = 0.0
+    fig.set_size_inches(9, 9)
     pipe_colors = {"small": "#4C78A8", "medium": "#2A9D8F", "large": "#D1495B"}
+    focus_arrays: list[np.ndarray] = []
     for feature in network["features"]:
         props = feature.get("properties", {}) or {}
+        # ``network_decisions`` also contains synthetic building-service
+        # candidates.  They are access alternatives, not mapped roads, and
+        # drawing all unselected alternatives as gray lines creates misleading
+        # diagonals across the site.  Accesses are rendered from the dedicated
+        # access decision layer below; this layer is road-only.
+        if str(props.get("edge_type", "")) != "road":
+            continue
         is_built = _as_bool(props.get("built", False))
         for coordinates in _iter_line_coordinates(feature.get("geometry", {}) or {}):
             array = np.asarray(coordinates, dtype=float)
             if array.ndim != 2 or array.shape[0] < 2:
                 continue
+            pipe_type = str(props.get("pipe_type", ""))
             if is_built:
-                pipe_type = str(props.get("pipe_type", ""))
+                focus_arrays.append(array)
                 ax.plot(array[:, 0], array[:, 1], color=pipe_colors.get(pipe_type, "#D1495B"), linewidth=2.6, alpha=0.95, zorder=3)
             else:
-                ax.plot(array[:, 0], array[:, 1], color="#C7CDD3", linewidth=0.65, alpha=0.45, zorder=1)
-        if is_built:
-            built_edge_count += 1
-            built_length += float(props.get("length_m", 0.0) or 0.0)
+                ax.plot(array[:, 0], array[:, 1], color="#C7CDD3", linewidth=0.65, linestyle="--", alpha=0.45, zorder=1)
 
     boundary_points: dict[str, tuple[float, float]] = {}
     for feature in access["features"]:
         props = feature.get("properties", {}) or {}
         building_id = str(props.get("building_id", ""))
         raw_point = props.get("building_boundary_point")
-        if isinstance(raw_point, list) and len(raw_point) >= 2:
+        is_selected_access = _as_bool(props.get("selected", False))
+        if isinstance(raw_point, list) and len(raw_point) >= 2 and (
+            is_selected_access or building_id not in boundary_points
+        ):
+            # One building can have several candidate attachment directions,
+            # each with a different boundary point.  The marker must use the
+            # selected option's endpoint or it appears detached from its line.
             boundary_points.setdefault(building_id, (float(raw_point[0]), float(raw_point[1])))
-        if _as_bool(props.get("selected", False)):
+            if is_selected_access:
+                boundary_points[building_id] = (float(raw_point[0]), float(raw_point[1]))
+        if is_selected_access:
             for coordinates in _iter_line_coordinates(feature.get("geometry", {}) or {}):
                 array = np.asarray(coordinates, dtype=float)
                 if array.ndim == 2 and array.shape[0] >= 2:
-                    ax.plot(array[:, 0], array[:, 1], color="#F28E2B", linewidth=2.1, alpha=0.95, zorder=4)
+                    focus_arrays.append(array)
+                    ax.plot(array[:, 0], array[:, 1], color="#2A9D8F", linewidth=2.1, alpha=0.95, zorder=4)
 
     for expected, label, color in ((True, "集中接网建筑", "#2878B5"), (False, "分布式供热建筑", "#F28E2B")):
         selected_points = [point for building_id, point in boundary_points.items() if connected.get(building_id) is expected]
@@ -949,16 +1015,70 @@ def _plot_network(result: FullStudyResult) -> plt.Figure:
     selected_station = station.loc[station["built"]]
     if not selected_station.empty:
         ax.scatter(selected_station["x_m"], selected_station["y_m"], marker="*", s=270, color=_KNEE_COLOR, edgecolor="white", linewidth=0.8, label="优化选中能源站", zorder=8)
+
+    # The full candidate road graph contains long peripheral branches.  Letting
+    # those branches drive the limits compresses the actual 62-building plan
+    # into a tiny cluster.  The main panel therefore follows the decision area;
+    # a locator inset retains the complete candidate-network context.
+    if boundary_points:
+        focus_arrays.append(np.asarray(list(boundary_points.values()), dtype=float))
+    if not station.empty:
+        focus_arrays.append(station[["x_m", "y_m"]].to_numpy(dtype=float))
+    finite_focus = [array[np.isfinite(array).all(axis=1)] for array in focus_arrays]
+    finite_focus = [array for array in finite_focus if array.size]
+    if finite_focus:
+        focus = np.vstack(finite_focus)
+        x_min, y_min = focus.min(axis=0)
+        x_max, y_max = focus.max(axis=0)
+        x_pad = max(80.0, (x_max - x_min) * 0.12)
+        y_pad = max(80.0, (y_max - y_min) * 0.12)
+        focus_xlim = (x_min - x_pad, x_max + x_pad)
+        focus_ylim = (y_min - y_pad, y_max + y_pad)
+        ax.set_xlim(*focus_xlim)
+        ax.set_ylim(*focus_ylim)
+
+        scale_length = 200.0
+        scale_x = focus_xlim[0] + 25.0
+        scale_y = focus_ylim[0] + 35.0
+        ax.plot(
+            [scale_x, scale_x + scale_length], [scale_y, scale_y],
+            color="#111827", linewidth=2.2, solid_capstyle="butt", zorder=10,
+        )
+        ax.plot(
+            [scale_x, scale_x], [scale_y - 7.0, scale_y + 7.0],
+            color="#111827", linewidth=1.4, zorder=10,
+        )
+        ax.plot(
+            [scale_x + scale_length, scale_x + scale_length],
+            [scale_y - 7.0, scale_y + 7.0],
+            color="#111827", linewidth=1.4, zorder=10,
+        )
+        ax.text(
+            scale_x + scale_length / 2, scale_y + 10.0, "200 m",
+            ha="center", va="bottom", fontsize=9, color="#111827", zorder=10,
+        )
+        ax.text(
+            0.99, 0.985, "CRS: EPSG:32650 · 坐标单位：m",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8.5,
+            color="#4B5563",
+        )
+
+    # Keep projected metres undistorted while allowing the axes to occupy the
+    # original 16:9 report canvas.  With ``adjustable='box'`` the portrait-like
+    # decision bounds narrowed the axes and changed the exported image ratio.
     ax.set_aspect("equal", adjustable="datalim")
     ax.set_xlabel("投影坐标 X（m）")
     ax.set_ylabel("投影坐标 Y（m）")
     ax.grid(False)
-    ax.legend(loc="best", ncol=2, frameon=True)
-    annotation = (
-        f"建成原子边 {built_edge_count} 条，路线长度 {built_length / 1000:.2f} km；灰色为候选，彩色为建成。\n"
-        "范围：5个候选最短路径树；道路约束为规划概念，不代表施工可实施性。"
-    )
-    ax.text(0.01, 0.02, annotation, transform=ax.transAxes, fontsize=9, color="#374151", bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.82, "edgecolor": "#D1D5DB"})
+    handles, labels = ax.get_legend_handles_labels()
+    handles.extend((
+        Line2D([0], [0], color="#C7CDD3", linewidth=1.0, linestyle="--"),
+        Line2D([0], [0], color="#D1495B", linewidth=2.8),
+        Line2D([0], [0], color="#2A9D8F", linewidth=2.2),
+    ))
+    labels.extend(("候选道路（未建）", "建成道路管网", "选中建筑接入线"))
+    ax.legend(handles, labels, loc="upper left", ncol=3, frameon=True, fontsize=9)
+    ax.axis("off")
     return fig
 
 

@@ -9,7 +9,7 @@ from urbanheatopt.paths import REPOSITORY_ROOT
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="UrbanHeatOpt V2 输入与集成入口；V1仅显式回放")
-    parser.add_argument("command", choices=("validate", "prepare", "solve", "report", "diagnose", "tes-check"))
+    parser.add_argument("command", choices=("validate", "prepare", "solve", "report", "qa", "diagnose", "tes-check"))
     parser.add_argument("--config", type=Path)
     parser.add_argument("--run-id")
     parser.add_argument("--output-root", type=Path)
@@ -51,6 +51,14 @@ def main(argv=None):
                 "atlas_pdf": str(report.atlas_pdf),
             }, ensure_ascii=False, indent=2))
             return 0
+        if args.command == "qa":
+            if args.bundle is None or args.run_root is None or args.output_root is None:
+                raise ValueError("qa必须同时提供--bundle、--run-root和--output-root")
+            from urbanheatopt.qa.independent_runner import run_independent_qa
+
+            payload = run_independent_qa(args.bundle, args.run_root, args.output_root)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0 if payload["passed"] else 2
         if args.command == "tes-check":
             if any(value is None for value in (
                 args.bundle, args.study_root, args.run_id, args.output_root,
